@@ -60,13 +60,13 @@ CREATE INDEX idx_treatments_patient ON treatments(patient_id);
 CREATE INDEX idx_billings_patient ON billings(patient_id);
 
 -- Politiques de sécurité RLS (Row Level Security)
--- Exemple basique : autoriser l'accès aux utilisateurs authentifiés
+-- Pour le développement sans authentification, on autorise l'accès anonyme (anon)
 ALTER TABLE patients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE treatments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE billings ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Allow authenticated full access to patients" ON patients FOR ALL TO authenticated USING (true);
-CREATE POLICY "Allow authenticated full access to treatments" ON treatments FOR ALL TO authenticated USING (true);
-CREATE POLICY "Allow authenticated full access to appointments" ON appointments FOR ALL TO authenticated USING (true);
-CREATE POLICY "Allow authenticated full access to billings" ON billings FOR ALL TO authenticated USING (true);
+CREATE POLICY "Allow public full access to patients" ON patients FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public full access to treatments" ON treatments FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public full access to appointments" ON appointments FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public full access to billings" ON billings FOR ALL USING (true) WITH CHECK (true);
