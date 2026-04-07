@@ -90,9 +90,7 @@ export function CalendarView() {
       .from('appointments')
       .insert([{
         patient_id: selectedPatient,
-        date_heure: selectedDate.toISOString(),
-        duree: 30, // Par défaut 30min
-        statut: 'Confirmé'
+        date_heure: selectedDate.toISOString()
       }]);
 
     setLoading(false);
@@ -191,7 +189,7 @@ export function CalendarView() {
                               }`}
                               style={{
                                 top: `${(startMin / 60) * 100}%`,
-                                height: `calc(${(app.duree / 60) * 100}% - 4px)`,
+                                height: `calc(${((app.duree || 30) / 60) * 100}% - 4px)`,
                                 minHeight: '36px'
                               }}
                               onClick={(e) => e.stopPropagation()} // Prevent triggering slot click
@@ -201,7 +199,7 @@ export function CalendarView() {
                               </div>
                               <div className="flex items-center gap-1 mt-0.5 opacity-80">
                                 <Clock className="h-3 w-3" />
-                                <span>{app.duree} min - {isBilan ? 'Bilan' : 'Séance'}</span>
+                                <span>{app.duree || 30} min - {isBilan ? 'Bilan' : 'Séance'}</span>
                               </div>
                             </div>
                           );
