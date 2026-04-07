@@ -34,7 +34,6 @@ export function CalendarView() {
   
   // Form state
   const [selectedPatient, setSelectedPatient] = useState('');
-  const [appointmentType, setAppointmentType] = useState('Séance');
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -92,8 +91,8 @@ export function CalendarView() {
       .insert([{
         patient_id: selectedPatient,
         date_heure: selectedDate.toISOString(),
-        duree: appointmentType === 'Bilan' ? 60 : 30, // Bilan = 1h, Séance = 30min
-        notes_seance: appointmentType,
+        duree: 30, // Par défaut 30min
+        notes_seance: 'Séance',
         statut: 'Confirmé'
       }]);
 
@@ -101,7 +100,6 @@ export function CalendarView() {
     if (!error) {
       setIsModalOpen(false);
       setSelectedPatient('');
-      setAppointmentType('Séance');
       fetchAppointments();
     } else {
       setErrorMsg("Erreur d'ajout : " + error.message);
@@ -256,34 +254,6 @@ export function CalendarView() {
                 <option key={p.id} value={p.id}>{p.nom} {p.prenom}</option>
               ))}
             </select>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700">Type de rendez-vous</label>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setAppointmentType('Séance')}
-                className={`px-4 py-2.5 rounded-md text-sm font-medium border transition-all ${
-                  appointmentType === 'Séance' 
-                    ? 'bg-primary-50 border-primary-500 text-primary-700 ring-1 ring-primary-500' 
-                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                Séance (30 min)
-              </button>
-              <button
-                type="button"
-                onClick={() => setAppointmentType('Bilan')}
-                className={`px-4 py-2.5 rounded-md text-sm font-medium border transition-all ${
-                  appointmentType === 'Bilan' 
-                    ? 'bg-mint-50 border-mint-500 text-mint-700 ring-1 ring-mint-500' 
-                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                Bilan (1h)
-              </button>
-            </div>
           </div>
 
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
