@@ -92,7 +92,6 @@ export function CalendarView() {
         patient_id: selectedPatient,
         date_heure: selectedDate.toISOString(),
         duree: 30, // Par défaut 30min
-        notes_seance: 'Séance',
         statut: 'Confirmé'
       }]);
 
