@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { format, addDays, startOfWeek, isSameDay, setHours, setMinutes } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Euro, CheckCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -36,6 +36,12 @@ export function CalendarView() {
   const [selectedPatient, setSelectedPatient] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Billing Modal state
+  const [isBillingModalOpen, setIsBillingModalOpen] = useState(false);
+  const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+  const [billingAmount, setBillingAmount] = useState('50');
+  const [paymentType, setPaymentType] = useState('Patient');
 
   // Setup grid (Lundi à Vendredi, 8h à 20h)
   const startDate = startOfWeek(currentDate, { weekStartsOn: 1 });
@@ -100,6 +106,41 @@ export function CalendarView() {
       fetchAppointments();
     } else {
       setErrorMsg("Erreur d'ajout : " + error.message);
+    }
+  };
+
+  const handleSaveBilling = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+
+    if (!selectedAppointment) return;
+
+    setLoading(true);
+    
+    // 1. Mettre à jour le statut du rendez-vous
+    await supabase
+      .from('appointments')
+      .update({ statut: 'Effectué' })
+      .eq('id', selectedAppointment.id);
+
+    // 2. Créer la facture
+    const { error } = await supabase
+      .from('billings')
+      .insert([{
+        patient_id: selectedAppointment.patient_id,
+        appointment_id: selectedAppointment.id,
+        montant: parseFloat(billingAmount),
+        type_paiement: paymentType,
+        statut: 'Payé'
+      }]);
+
+    setLoading(false);
+    if (!error) {
+      setIsBillingModalOpen(false);
+      setSelectedAppointment(null);
+      fetchAppointments();
+    } else {
+      setErrorMsg("Erreur de facturation : " + error.message);
     }
   };
 
@@ -170,19 +211,34 @@ export function CalendarView() {
                         onClick={() => handleSlotClick(day, hour)}
                       >
                         {/* Hover indicator for empty slot */}
-                        <div className="absolute inset-1 rounded border-2 border-dashed border-primary-200 bg-primary-50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                          <span className="text-xs font-medium text-primary-600">+ Ajouter</span>
-                        </div>
+                        {slotAppointments.length === 0 && (
+                          <div className="absolute inset-1 rounded border-2 border-dashed border-primary-200 bg-primary-50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                            <span className="text-xs font-medium text-primary-600">+ Ajouter</span>
+                          </div>
+                        )}
+
+                        {/* Quick Add Button (always accessible on hover) */}
+                        <button 
+                          className="absolute top-1 right-1 z-30 p-1 rounded bg-white shadow-sm border border-slate-200 text-slate-500 opacity-0 group-hover:opacity-100 hover:text-primary-600 hover:bg-primary-50 transition-all"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSlotClick(day, hour);
+                          }}
+                          title="Ajouter un rendez-vous"
+                        >
+                          <Plus className="h-3 w-3" />
+                        </button>
 
                         {/* Appointments */}
-                        {slotAppointments.map((app) => {
+                        {slotAppointments.map((app, index) => {
                           const isBilan = app.notes_seance === 'Bilan';
                           const startMin = new Date(app.date_heure).getMinutes();
+                          const count = slotAppointments.length;
                           
                           return (
                             <div 
                               key={app.id} 
-                              className={`absolute left-1 right-1 rounded-md px-2 py-1.5 text-xs border shadow-sm z-10 overflow-hidden ${
+                              className={`absolute rounded-md px-2 py-1.5 text-xs border shadow-sm z-10 overflow-hidden ${
                                 isBilan 
                                   ? 'bg-mint-50 border-mint-200 text-mint-800' 
                                   : 'bg-primary-50 border-primary-200 text-primary-800'
@@ -190,12 +246,20 @@ export function CalendarView() {
                               style={{
                                 top: `${(startMin / 60) * 100}%`,
                                 height: `calc(${((app.duree || 30) / 60) * 100}% - 4px)`,
-                                minHeight: '36px'
+                                minHeight: '36px',
+                                left: count > 1 ? `calc(${(index / count) * 100}% + 2px)` : '4px',
+                                width: count > 1 ? `calc(${(100 / count)}% - 4px)` : 'calc(100% - 8px)',
                               }}
-                              onClick={(e) => e.stopPropagation()} // Prevent triggering slot click
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedAppointment(app);
+                                setErrorMsg(null);
+                                setIsBillingModalOpen(true);
+                              }}
                             >
-                              <div className="font-semibold truncate">
-                                {app.patients?.prenom} {app.patients?.nom}
+                              <div className="font-semibold truncate flex items-center justify-between">
+                                <span>{app.patients?.prenom} {app.patients?.nom}</span>
+                                {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-green-600" />}
                               </div>
                               <div className="flex items-center gap-1 mt-0.5 opacity-80">
                                 <Clock className="h-3 w-3" />
@@ -259,6 +323,71 @@ export function CalendarView() {
             </Button>
             <Button type="submit" disabled={loading}>
               {loading ? 'Enregistrement...' : 'Confirmer le RDV'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Billing Modal */}
+      <Modal 
+        isOpen={isBillingModalOpen} 
+        onClose={() => setIsBillingModalOpen(false)} 
+        title="Facturation & Règlement"
+      >
+        <form onSubmit={handleSaveBilling} className="space-y-5">
+          {errorMsg && (
+            <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md border border-red-200">
+              {errorMsg}
+            </div>
+          )}
+          
+          {selectedAppointment && (
+            <div className="flex items-center gap-2 text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100">
+              <User className="h-4 w-4 text-primary-500" />
+              <span className="font-medium">
+                Patient : {selectedAppointment.patients?.prenom} {selectedAppointment.patients?.nom}
+              </span>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
+              <Euro className="h-4 w-4" /> Montant de la séance (€)
+            </label>
+            <input
+              type="number"
+              required
+              min="0"
+              step="0.01"
+              value={billingAmount}
+              onChange={(e) => setBillingAmount(e.target.value)}
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
+              <CreditCard className="h-4 w-4" /> Type de paiement
+            </label>
+            <select
+              required
+              value={paymentType}
+              onChange={(e) => setPaymentType(e.target.value)}
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+            >
+              <option value="Patient">Patient (Direct)</option>
+              <option value="Mutuelle">Mutuelle</option>
+              <option value="Tiers-payant">Tiers-payant</option>
+              <option value="Hors nomenclature">Hors nomenclature</option>
+            </select>
+          </div>
+
+          <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
+            <Button type="button" variant="outline" onClick={() => setIsBillingModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={loading} className="bg-mint-600 hover:bg-mint-700 text-white">
+              {loading ? 'Validation...' : 'Confirmer le règlement'}
             </Button>
           </div>
         </form>
