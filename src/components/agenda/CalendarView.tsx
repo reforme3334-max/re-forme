@@ -37,11 +37,13 @@ export function CalendarView() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Billing Modal state
+  // Manage Modal state
   const [isBillingModalOpen, setIsBillingModalOpen] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [billingAmount, setBillingAmount] = useState('50');
   const [paymentType, setPaymentType] = useState('Patient');
+  const [editDate, setEditDate] = useState('');
+  const [editTime, setEditTime] = useState('');
 
   // Setup grid (Lundi à Vendredi, 8h à 20h)
   const startDate = startOfWeek(currentDate, { weekStartsOn: 1 });
@@ -109,8 +111,42 @@ export function CalendarView() {
     }
   };
 
-  const handleSaveBilling = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleUpdateAppointment = async () => {
+    if (!selectedAppointment) return;
+    setLoading(true);
+    const newDateTime = new Date(`${editDate}T${editTime}`);
+    const { error } = await supabase
+      .from('appointments')
+      .update({ date_heure: newDateTime.toISOString() })
+      .eq('id', selectedAppointment.id);
+
+    setLoading(false);
+    if (!error) {
+      setIsBillingModalOpen(false);
+      fetchAppointments();
+    } else {
+      setErrorMsg("Erreur de modification : " + error.message);
+    }
+  };
+
+  const handleCancelAppointment = async () => {
+    if (!selectedAppointment) return;
+    setLoading(true);
+    const { error } = await supabase
+      .from('appointments')
+      .update({ statut: 'Annulé' })
+      .eq('id', selectedAppointment.id);
+
+    setLoading(false);
+    if (!error) {
+      setIsBillingModalOpen(false);
+      fetchAppointments();
+    } else {
+      setErrorMsg("Erreur d'annulation : " + error.message);
+    }
+  };
+
+  const handleSaveBilling = async () => {
     setErrorMsg(null);
 
     if (!selectedAppointment) return;
@@ -235,14 +271,17 @@ export function CalendarView() {
                           const startMin = new Date(app.date_heure).getMinutes();
                           const count = slotAppointments.length;
                           
+                          let statusStyles = 'bg-primary-50 border-primary-200 text-primary-800 hover:bg-primary-100'; // Confirmé
+                          if (app.statut === 'Effectué') {
+                            statusStyles = 'bg-mint-50 border-mint-200 text-mint-800 hover:bg-mint-100';
+                          } else if (app.statut === 'Annulé') {
+                            statusStyles = 'bg-slate-100 border-slate-300 text-slate-500 opacity-80 hover:opacity-100';
+                          }
+                          
                           return (
                             <div 
                               key={app.id} 
-                              className={`absolute rounded-md px-2 py-1.5 text-xs border shadow-sm z-10 overflow-hidden ${
-                                isBilan 
-                                  ? 'bg-mint-50 border-mint-200 text-mint-800' 
-                                  : 'bg-primary-50 border-primary-200 text-primary-800'
-                              }`}
+                              className={`absolute rounded-md px-2 py-1.5 text-xs border shadow-sm z-10 overflow-hidden transition-all cursor-pointer ${statusStyles}`}
                               style={{
                                 top: `${(startMin / 60) * 100}%`,
                                 height: `calc(${((app.duree || 30) / 60) * 100}% - 4px)`,
@@ -253,6 +292,9 @@ export function CalendarView() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedAppointment(app);
+                                const appDate = new Date(app.date_heure);
+                                setEditDate(format(appDate, 'yyyy-MM-dd'));
+                                setEditTime(format(appDate, 'HH:mm'));
                                 setErrorMsg(null);
                                 setIsBillingModalOpen(true);
                               }}
@@ -328,16 +370,29 @@ export function CalendarView() {
         </form>
       </Modal>
 
-      {/* Billing Modal */}
+      {/* Manage Appointment Modal */}
       <Modal 
         isOpen={isBillingModalOpen} 
         onClose={() => setIsBillingModalOpen(false)} 
-        title="Facturation & Règlement"
+        title="Gestion du Rendez-vous"
       >
-        <form onSubmit={handleSaveBilling} className="space-y-5">
+        <div className="space-y-5">
           {errorMsg && (
             <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md border border-red-200">
               {errorMsg}
+            </div>
+          )}
+
+          {selectedAppointment?.statut === 'Effectué' && (
+            <div className="p-3 text-sm text-green-700 bg-green-50 rounded-md border border-green-200 flex items-center gap-2 font-medium">
+              <CheckCircle className="h-4 w-4" />
+              Cette séance a déjà été facturée et réglée.
+            </div>
+          )}
+
+          {selectedAppointment?.statut === 'Annulé' && (
+            <div className="p-3 text-sm text-slate-700 bg-slate-100 rounded-md border border-slate-200 flex items-center gap-2 font-medium">
+              Ce rendez-vous a été annulé.
             </div>
           )}
           
@@ -350,47 +405,95 @@ export function CalendarView() {
             </div>
           )}
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
-              <Euro className="h-4 w-4" /> Montant de la séance (€)
-            </label>
-            <input
-              type="number"
-              required
-              min="0"
-              step="0.01"
-              value={billingAmount}
-              onChange={(e) => setBillingAmount(e.target.value)}
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
-            />
+          {/* Date and Time Modification */}
+          <div className="space-y-3 bg-white p-4 rounded-lg border border-slate-100 shadow-sm">
+            <h4 className="text-sm font-semibold text-slate-800">Date et Heure</h4>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-slate-500">Date</label>
+                <input
+                  type="date"
+                  value={editDate}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-slate-500">Heure</label>
+                <input
+                  type="time"
+                  value={editTime}
+                  onChange={(e) => setEditTime(e.target.value)}
+                  disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
+            </div>
+            {selectedAppointment?.statut === 'Confirmé' && (
+              <Button type="button" variant="secondary" size="sm" onClick={handleUpdateAppointment} disabled={loading} className="w-full mt-2">
+                Mettre à jour l'horaire
+              </Button>
+            )}
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
-              <CreditCard className="h-4 w-4" /> Type de paiement
-            </label>
-            <select
-              required
-              value={paymentType}
-              onChange={(e) => setPaymentType(e.target.value)}
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
-            >
-              <option value="Patient">Patient (Direct)</option>
-              <option value="Mutuelle">Mutuelle</option>
-              <option value="Tiers-payant">Tiers-payant</option>
-              <option value="Hors nomenclature">Hors nomenclature</option>
-            </select>
-          </div>
+          {/* Billing Section */}
+          {selectedAppointment?.statut !== 'Annulé' && (
+            <div className="space-y-3 bg-white p-4 rounded-lg border border-slate-100 shadow-sm">
+              <h4 className="text-sm font-semibold text-slate-800">Facturation</h4>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-slate-500 flex items-center gap-1">
+                  <Euro className="h-3 w-3" /> Montant (€)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={billingAmount}
+                  onChange={(e) => setBillingAmount(e.target.value)}
+                  disabled={selectedAppointment?.statut === 'Effectué'}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
 
-          <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-slate-500 flex items-center gap-1">
+                  <CreditCard className="h-3 w-3" /> Type de paiement
+                </label>
+                <select
+                  value={paymentType}
+                  onChange={(e) => setPaymentType(e.target.value)}
+                  disabled={selectedAppointment?.statut === 'Effectué'}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-slate-50 disabled:text-slate-500"
+                >
+                  <option value="Patient">Patient (Direct)</option>
+                  <option value="Mutuelle">Mutuelle</option>
+                  <option value="Tiers-payant">Tiers-payant</option>
+                  <option value="Hors nomenclature">Hors nomenclature</option>
+                </select>
+              </div>
+              {selectedAppointment?.statut === 'Confirmé' && (
+                <Button type="button" onClick={handleSaveBilling} disabled={loading} className="w-full mt-2 bg-mint-600 hover:bg-mint-700 text-white">
+                  {loading ? 'Validation...' : 'Confirmer le règlement'}
+                </Button>
+              )}
+            </div>
+          )}
+
+          {/* Footer Actions */}
+          <div className="pt-4 flex justify-between gap-3 border-t border-slate-100">
+            <div>
+              {selectedAppointment?.statut === 'Confirmé' && (
+                <Button type="button" variant="destructive" onClick={handleCancelAppointment} disabled={loading}>
+                  Annuler le RDV
+                </Button>
+              )}
+            </div>
             <Button type="button" variant="outline" onClick={() => setIsBillingModalOpen(false)}>
-              Annuler
-            </Button>
-            <Button type="submit" disabled={loading} className="bg-mint-600 hover:bg-mint-700 text-white">
-              {loading ? 'Validation...' : 'Confirmer le règlement'}
+              Fermer
             </Button>
           </div>
-        </form>
+        </div>
       </Modal>
     </div>
   );
