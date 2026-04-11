@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, CalendarDays, Users, FileText, Settings, X } from 'lucide-react';
+import { LayoutDashboard, CalendarDays, Users, FileText, Settings, X, User, Activity } from 'lucide-react';
 import { Button } from '../ui/button';
+import { supabase } from '../../lib/supabaseClient';
 
 interface SidebarProps {
   onClose: () => void;
@@ -8,21 +9,47 @@ interface SidebarProps {
 
 export function Sidebar({ onClose }: SidebarProps) {
   const [currentHash, setCurrentHash] = useState(window.location.hash || '#dashboard');
+  const [userProfile, setUserProfile] = useState<any>(null);
 
   useEffect(() => {
     const handleHashChange = () => {
       setCurrentHash(window.location.hash || '#dashboard');
     };
     window.addEventListener('hashchange', handleHashChange);
+    
+    fetchUserProfile();
+    
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
+  const fetchUserProfile = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      const { data } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .single();
+      if (data) {
+        setUserProfile(data);
+      }
+    }
+  };
+
+  const hasPermission = (permission: string) => {
+    if (!userProfile) return false;
+    if (userProfile.role === 'admin') return true;
+    return userProfile.permissions?.includes(permission);
+  };
+
   const navItems = [
-    { icon: LayoutDashboard, label: 'Dashboard', href: '#dashboard' },
-    { icon: CalendarDays, label: 'Agenda', href: '#agenda' },
-    { icon: Users, label: 'Patients', href: '#patients' },
-    { icon: FileText, label: 'Facturation', href: '#billing' },
-    { icon: Settings, label: 'Paramètres', href: '#settings' },
+    { icon: LayoutDashboard, label: 'Dashboard', href: '#dashboard', show: userProfile?.role === 'admin' },
+    { icon: CalendarDays, label: 'Agenda', href: '#agenda', show: hasPermission('agenda') },
+    { icon: Users, label: 'Patients', href: '#patients', show: hasPermission('patients') },
+    { icon: FileText, label: 'Facturation', href: '#billing', show: hasPermission('finance_recettes') },
+    { icon: Activity, label: 'Finance', href: '#finance', show: hasPermission('finance_recettes') || hasPermission('finance_depenses_view') || hasPermission('finance_depenses_edit') },
+    { icon: User, label: 'Espace Patient (Démo)', href: '#espace-patient', show: true },
+    { icon: Settings, label: 'Paramètres', href: '#settings', show: hasPermission('settings') },
   ];
 
   return (
@@ -38,7 +65,7 @@ export function Sidebar({ onClose }: SidebarProps) {
 
       <div className="flex-1 overflow-y-auto py-4">
         <nav className="space-y-1 px-3">
-          {navItems.map((item) => {
+          {navItems.filter(item => item.show).map((item) => {
             const Icon = item.icon;
             const isActive = currentHash.startsWith(item.href) || 
                              (currentHash === '#patient-detail' && item.href === '#patients');
@@ -63,11 +90,13 @@ export function Sidebar({ onClose }: SidebarProps) {
       <div className="border-t border-slate-200 p-4">
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold">
-            DR
+            {userProfile?.role === 'admin' ? 'AD' : userProfile?.role === 'secretaire' ? 'SE' : 'TH'}
           </div>
           <div>
-            <p className="text-sm font-medium text-slate-900">Dr. Dupont</p>
-            <p className="text-xs text-slate-500">Kinésithérapeute</p>
+            <p className="text-sm font-medium text-slate-900">
+              {userProfile?.role === 'admin' ? 'Administrateur' : userProfile?.role === 'secretaire' ? 'Secrétariat' : 'Thérapeute'}
+            </p>
+            <p className="text-xs text-slate-500 capitalize">{userProfile?.role || 'Chargement...'}</p>
           </div>
         </div>
       </div>

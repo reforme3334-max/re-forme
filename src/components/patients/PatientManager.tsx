@@ -10,15 +10,31 @@ interface Patient {
   prenom: string;
   telephone: string;
   email: string;
+  date_naissance?: string;
+  cin?: string;
+  adresse?: string;
+  pathologie?: string;
+  nombre_seances?: number;
+  atcd?: string;
   created_at: string;
 }
 
-export function PatientManager() {
+interface PatientManagerProps {
+  onSelectPatient?: (id: string) => void;
+}
+
+export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   // Form states
   const [nom, setNom] = useState('');
   const [prenom, setPrenom] = useState('');
   const [tel, setTel] = useState('');
   const [email, setEmail] = useState('');
+  const [dateNaissance, setDateNaissance] = useState('');
+  const [cin, setCin] = useState('');
+  const [adresse, setAdresse] = useState('');
+  const [pathologie, setPathologie] = useState('');
+  const [nombreSeances, setNombreSeances] = useState('');
+  const [atcd, setAtcd] = useState('');
   
   // UI states
   const [loading, setLoading] = useState(false);
@@ -60,7 +76,18 @@ export function PatientManager() {
 
     const { error: insertError } = await supabase
       .from('patients')
-      .insert([{ nom, prenom, telephone: tel, email }]);
+      .insert([{ 
+        nom, 
+        prenom, 
+        telephone: tel, 
+        email,
+        date_naissance: dateNaissance || null,
+        cin,
+        adresse,
+        pathologie,
+        nombre_seances: nombreSeances ? parseInt(nombreSeances) : null,
+        atcd
+      }]);
 
     setLoading(false);
 
@@ -73,6 +100,12 @@ export function PatientManager() {
       setPrenom('');
       setTel('');
       setEmail('');
+      setDateNaissance('');
+      setCin('');
+      setAdresse('');
+      setPathologie('');
+      setNombreSeances('');
+      setAtcd('');
       // Refresh list
       fetchPatients();
       
@@ -134,10 +167,33 @@ export function PatientManager() {
                 />
               </div>
               <div className="space-y-1.5">
-                <label htmlFor="tel" className="block text-sm font-medium text-slate-700">Téléphone</label>
+                <label htmlFor="dateNaissance" className="block text-sm font-medium text-slate-700">Date de naissance *</label>
+                <input
+                  id="dateNaissance"
+                  type="date"
+                  required
+                  value={dateNaissance}
+                  onChange={(e) => setDateNaissance(e.target.value)}
+                  className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="cin" className="block text-sm font-medium text-slate-700">CIN (Facultatif)</label>
+                <input
+                  id="cin"
+                  type="text"
+                  value={cin}
+                  onChange={(e) => setCin(e.target.value)}
+                  className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all"
+                  placeholder="Ex: AB123456"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="tel" className="block text-sm font-medium text-slate-700">Téléphone *</label>
                 <input
                   id="tel"
                   type="tel"
+                  required
                   value={tel}
                   onChange={(e) => setTel(e.target.value)}
                   className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all"
@@ -145,14 +201,52 @@ export function PatientManager() {
                 />
               </div>
               <div className="space-y-1.5">
-                <label htmlFor="email" className="block text-sm font-medium text-slate-700">Email</label>
+                <label htmlFor="adresse" className="block text-sm font-medium text-slate-700">Adresse *</label>
                 <input
-                  id="email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  id="adresse"
+                  type="text"
+                  required
+                  value={adresse}
+                  onChange={(e) => setAdresse(e.target.value)}
                   className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all"
-                  placeholder="Ex: thomas.dubois@email.com"
+                  placeholder="Ex: 123 Rue de la Santé"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="pathologie" className="block text-sm font-medium text-slate-700">Pathologie *</label>
+                <input
+                  id="pathologie"
+                  type="text"
+                  required
+                  value={pathologie}
+                  onChange={(e) => setPathologie(e.target.value)}
+                  className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all"
+                  placeholder="Ex: Lombalgie chronique"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="nombreSeances" className="block text-sm font-medium text-slate-700">Nombre de séances *</label>
+                <input
+                  id="nombreSeances"
+                  type="number"
+                  min="1"
+                  required
+                  value={nombreSeances}
+                  onChange={(e) => setNombreSeances(e.target.value)}
+                  className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all"
+                  placeholder="Ex: 10"
+                />
+              </div>
+              <div className="space-y-1.5 md:col-span-2">
+                <label htmlFor="atcd" className="block text-sm font-medium text-slate-700">ATCD personnels médicaux *</label>
+                <textarea
+                  id="atcd"
+                  required
+                  rows={3}
+                  value={atcd}
+                  onChange={(e) => setAtcd(e.target.value)}
+                  className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all resize-none"
+                  placeholder="Antécédents médicaux, chirurgicaux, allergies..."
                 />
               </div>
             </div>
@@ -191,19 +285,24 @@ export function PatientManager() {
                 <tr>
                   <th className="px-6 py-4 font-medium">Patient</th>
                   <th className="px-6 py-4 font-medium">Contact</th>
+                  <th className="px-6 py-4 font-medium">Détails Médicaux</th>
                   <th className="px-6 py-4 font-medium">Date d'ajout</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {patients.length === 0 ? (
                   <tr>
-                    <td colSpan={3} className="px-6 py-8 text-center text-slate-500">
+                    <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
                       {fetching ? 'Chargement des patients...' : 'Aucun patient enregistré pour le moment.'}
                     </td>
                   </tr>
                 ) : (
                   patients.map((patient) => (
-                    <tr key={patient.id} className="bg-white hover:bg-slate-50 transition-colors">
+                    <tr 
+                      key={patient.id} 
+                      className={`bg-white hover:bg-slate-50 transition-colors ${onSelectPatient ? 'cursor-pointer' : ''}`}
+                      onClick={() => onSelectPatient && onSelectPatient(patient.id)}
+                    >
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
                           <div className="h-9 w-9 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold text-sm">
@@ -211,6 +310,7 @@ export function PatientManager() {
                           </div>
                           <div>
                             <div className="font-medium text-slate-900">{patient.nom} {patient.prenom}</div>
+                            {patient.cin && <div className="text-xs text-slate-500">CIN: {patient.cin}</div>}
                           </div>
                         </div>
                       </td>
@@ -221,13 +321,26 @@ export function PatientManager() {
                               <Phone className="h-3 w-3" /> {patient.telephone}
                             </div>
                           )}
-                          {patient.email && (
-                            <div className="flex items-center gap-2 text-slate-600">
-                              <Mail className="h-3 w-3" /> {patient.email}
+                          {patient.adresse && (
+                            <div className="text-xs text-slate-500 truncate max-w-[150px]" title={patient.adresse}>
+                              {patient.adresse}
                             </div>
                           )}
-                          {!patient.telephone && !patient.email && (
-                            <span className="text-slate-400 italic">Non renseigné</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="space-y-1">
+                          {patient.pathologie ? (
+                            <div className="text-sm font-medium text-slate-700 truncate max-w-[150px]" title={patient.pathologie}>
+                              {patient.pathologie}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 italic text-xs">Non renseigné</span>
+                          )}
+                          {patient.nombre_seances && (
+                            <div className="text-xs text-slate-500">
+                              {patient.nombre_seances} séance(s)
+                            </div>
                           )}
                         </div>
                       </td>

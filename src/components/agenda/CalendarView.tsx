@@ -430,7 +430,7 @@ export function CalendarView() {
                 />
               </div>
             </div>
-            {selectedAppointment?.statut === 'Confirmé' && (
+            {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (
               <Button type="button" variant="secondary" size="sm" onClick={handleUpdateAppointment} disabled={loading} className="w-full mt-2">
                 Mettre à jour l'horaire
               </Button>
@@ -472,7 +472,7 @@ export function CalendarView() {
                   <option value="Hors nomenclature">Hors nomenclature</option>
                 </select>
               </div>
-              {selectedAppointment?.statut === 'Confirmé' && (
+              {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (
                 <Button type="button" onClick={handleSaveBilling} disabled={loading} className="w-full mt-2 bg-mint-600 hover:bg-mint-700 text-white">
                   {loading ? 'Validation...' : 'Confirmer le règlement'}
                 </Button>
@@ -483,7 +483,7 @@ export function CalendarView() {
           {/* Footer Actions */}
           <div className="pt-4 flex justify-between gap-3 border-t border-slate-100">
             <div>
-              {selectedAppointment?.statut === 'Confirmé' && (
+              {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (
                 <Button type="button" variant="destructive" onClick={handleCancelAppointment} disabled={loading}>
                   Annuler le RDV
                 </Button>

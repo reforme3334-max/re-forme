@@ -8,7 +8,7 @@ export function Patients({ onSelectPatient }: { onSelectPatient: (id: string) =>
         <p className="text-slate-500">Ajoutez de nouveaux patients et consultez la base de données du cabinet.</p>
       </div>
       
-      <PatientManager />
+      <PatientManager onSelectPatient={onSelectPatient} />
     </div>
   );
 }
