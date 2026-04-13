@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail } from 'lucide-react';
+import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail, Search, Filter } from 'lucide-react';
 
 interface Patient {
   id: string;
@@ -44,6 +44,13 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   
   // Data state
   const [patients, setPatients] = useState<Patient[]>([]);
+
+  // Search states
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchDateNaissance, setSearchDateNaissance] = useState('');
+  const [searchTelephone, setSearchTelephone] = useState('');
+  const [searchPathologie, setSearchPathologie] = useState('');
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
 
   // Fetch patients on component mount
   useEffect(() => {
@@ -113,6 +120,16 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
       setTimeout(() => setSuccess(null), 3000);
     }
   };
+
+  const filteredPatients = patients.filter(p => {
+    const matchQuery = (p.nom + ' ' + p.prenom).toLowerCase().includes(searchQuery.toLowerCase()) || 
+                       (p.prenom + ' ' + p.nom).toLowerCase().includes(searchQuery.toLowerCase());
+    const matchDate = searchDateNaissance ? p.date_naissance === searchDateNaissance : true;
+    const matchTel = searchTelephone ? p.telephone?.includes(searchTelephone) : true;
+    const matchPatho = searchPathologie ? p.pathologie?.toLowerCase().includes(searchPathologie.toLowerCase()) : true;
+
+    return matchQuery && matchDate && matchTel && matchPatho;
+  });
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
@@ -262,23 +279,82 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
       {/* Liste des patients */}
       <Card className="shadow-sm">
-        <CardHeader className="flex flex-row items-center justify-between border-b border-slate-100 pb-4">
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-4 gap-4">
           <CardTitle className="flex items-center gap-2 text-slate-800">
             <Users className="h-5 w-5 text-primary-500" />
             Base de données Patients
           </CardTitle>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={fetchPatients} 
-            disabled={fetching}
-            className="gap-2"
-          >
-            <RefreshCw className={`h-4 w-4 ${fetching ? 'animate-spin' : ''}`} />
-            Actualiser
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => setShowAdvancedSearch(!showAdvancedSearch)}
+              className={`gap-2 ${showAdvancedSearch ? 'bg-slate-100' : ''}`}
+            >
+              <Filter className="h-4 w-4" />
+              Filtres
+            </Button>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={fetchPatients} 
+              disabled={fetching}
+              className="gap-2"
+            >
+              <RefreshCw className={`h-4 w-4 ${fetching ? 'animate-spin' : ''}`} />
+              Actualiser
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
+          <div className="p-4 border-b border-slate-100 bg-slate-50/50 space-y-4">
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Search className="h-4 w-4 text-slate-400" />
+              </div>
+              <input
+                type="text"
+                placeholder="Rechercher par nom ou prénom..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="block w-full rounded-md border border-slate-300 pl-10 pr-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+              />
+            </div>
+            
+            {showAdvancedSearch && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-600">Date de naissance</label>
+                  <input
+                    type="date"
+                    value={searchDateNaissance}
+                    onChange={(e) => setSearchDateNaissance(e.target.value)}
+                    className="block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-600">Téléphone</label>
+                  <input
+                    type="tel"
+                    placeholder="Ex: 06..."
+                    value={searchTelephone}
+                    onChange={(e) => setSearchTelephone(e.target.value)}
+                    className="block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-600">Pathologie</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Lombalgie..."
+                    value={searchPathologie}
+                    onChange={(e) => setSearchPathologie(e.target.value)}
+                    className="block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-200">
@@ -290,14 +366,14 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {patients.length === 0 ? (
+                {filteredPatients.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
-                      {fetching ? 'Chargement des patients...' : 'Aucun patient enregistré pour le moment.'}
+                      {fetching ? 'Chargement des patients...' : 'Aucun patient trouvé.'}
                     </td>
                   </tr>
                 ) : (
-                  patients.map((patient) => (
+                  filteredPatients.map((patient) => (
                     <tr 
                       key={patient.id} 
                       className={`bg-white hover:bg-slate-50 transition-colors ${onSelectPatient ? 'cursor-pointer' : ''}`}
