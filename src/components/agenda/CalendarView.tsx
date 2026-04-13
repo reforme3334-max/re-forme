@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { format, addDays, startOfWeek, isSameDay, setHours, setMinutes } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Euro, CheckCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Euro, CheckCircle, Search } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -34,6 +34,8 @@ export function CalendarView() {
   
   // Form state
   const [selectedPatient, setSelectedPatient] = useState('');
+  const [patientSearchQuery, setPatientSearchQuery] = useState('');
+  const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -45,9 +47,9 @@ export function CalendarView() {
   const [editDate, setEditDate] = useState('');
   const [editTime, setEditTime] = useState('');
 
-  // Setup grid (Lundi à Vendredi, 8h à 20h)
+  // Setup grid (Lundi à Samedi, 8h à 20h)
   const startDate = startOfWeek(currentDate, { weekStartsOn: 1 });
-  const weekDays = Array.from({ length: 5 }).map((_, i) => addDays(startDate, i));
+  const weekDays = Array.from({ length: 6 }).map((_, i) => addDays(startDate, i));
   const hours = Array.from({ length: 13 }).map((_, i) => i + 8);
 
   useEffect(() => {
@@ -81,6 +83,9 @@ export function CalendarView() {
     const slotDate = setMinutes(setHours(day, hour), 0);
     setSelectedDate(slotDate);
     setErrorMsg(null);
+    setSelectedPatient('');
+    setPatientSearchQuery('');
+    setIsPatientDropdownOpen(false);
     setIsModalOpen(true);
   };
 
@@ -215,11 +220,13 @@ export function CalendarView() {
         <div className="overflow-x-auto flex-1">
           <div className="min-w-[800px] h-full flex flex-col">
             {/* Days Header */}
-            <div className="grid grid-cols-6 border-b border-slate-200 bg-slate-50/80">
-              <div className="p-3 border-r border-slate-200 text-center text-xs font-medium text-slate-500">
+            <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50/80">
+              <div className="p-3 border-r border-slate-200 text-center text-xs font-medium text-slate-500 flex items-center justify-center">
                 Heure
               </div>
-              {weekDays.map((day, i) => (
+              {weekDays.map((day, i) => {
+                const dayAppointmentsCount = appointments.filter(app => isSameDay(new Date(app.date_heure), day) && app.statut !== 'Annulé').length;
+                return (
                 <div key={i} className="p-3 border-r border-slate-200 text-center">
                   <div className="text-xs font-medium text-slate-500 uppercase">
                     {format(day, 'EEEE', { locale: fr })}
@@ -227,14 +234,17 @@ export function CalendarView() {
                   <div className={`text-lg font-semibold mt-0.5 ${isSameDay(day, new Date()) ? 'text-primary-600' : 'text-slate-900'}`}>
                     {format(day, 'd')}
                   </div>
+                  <div className="text-xs text-slate-500 mt-1 font-medium bg-slate-100 rounded-full px-2 py-0.5 inline-block">
+                    {dayAppointmentsCount} patient{dayAppointmentsCount !== 1 ? 's' : ''}
+                  </div>
                 </div>
-              ))}
+              )})}
             </div>
 
             {/* Time Slots */}
             <div className="flex-1 overflow-y-auto relative bg-white">
               {hours.map((hour) => (
-                <div key={hour} className="grid grid-cols-6 border-b border-slate-100 min-h-[80px]">
+                <div key={hour} className="grid grid-cols-7 border-b border-slate-100 min-h-[80px]">
                   <div className="p-2 border-r border-slate-200 text-right text-xs font-medium text-slate-400 sticky left-0 bg-slate-50/50">
                     {hour}:00
                   </div>
@@ -325,8 +335,9 @@ export function CalendarView() {
         isOpen={isModalOpen} 
         onClose={() => setIsModalOpen(false)} 
         title="Nouveau Rendez-vous"
+        maxWidth="sm"
       >
-        <form onSubmit={handleSaveAppointment} className="space-y-5">
+        <form onSubmit={handleSaveAppointment} className="space-y-4">
           {errorMsg && (
             <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md border border-red-200">
               {errorMsg}
@@ -342,21 +353,50 @@ export function CalendarView() {
             </div>
           )}
 
-          <div className="space-y-2">
+          <div className="space-y-2 relative">
             <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
               <User className="h-4 w-4" /> Patient
             </label>
-            <select
-              required
-              value={selectedPatient}
-              onChange={(e) => setSelectedPatient(e.target.value)}
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
-            >
-              <option value="">Sélectionner un patient...</option>
-              {patients.map(p => (
-                <option key={p.id} value={p.id}>{p.nom} {p.prenom}</option>
-              ))}
-            </select>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Search className="h-4 w-4 text-slate-400" />
+              </div>
+              <input
+                type="text"
+                required={!selectedPatient}
+                value={patientSearchQuery}
+                onChange={(e) => {
+                  setPatientSearchQuery(e.target.value);
+                  setSelectedPatient('');
+                  setIsPatientDropdownOpen(true);
+                }}
+                onFocus={() => setIsPatientDropdownOpen(true)}
+                placeholder="Rechercher un patient..."
+                className="w-full rounded-md border border-slate-300 pl-9 pr-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+              />
+            </div>
+            
+            {isPatientDropdownOpen && patientSearchQuery && (
+              <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                {patients.filter(p => `${p.nom} ${p.prenom}`.toLowerCase().includes(patientSearchQuery.toLowerCase())).length > 0 ? (
+                  patients.filter(p => `${p.nom} ${p.prenom}`.toLowerCase().includes(patientSearchQuery.toLowerCase())).map(p => (
+                    <div
+                      key={p.id}
+                      className="px-4 py-2 text-sm hover:bg-slate-50 cursor-pointer text-slate-700"
+                      onClick={() => {
+                        setSelectedPatient(p.id);
+                        setPatientSearchQuery(`${p.nom} ${p.prenom}`);
+                        setIsPatientDropdownOpen(false);
+                      }}
+                    >
+                      {p.nom} {p.prenom}
+                    </div>
+                  ))
+                ) : (
+                  <div className="px-4 py-2 text-sm text-slate-500">Aucun patient trouvé.</div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
@@ -375,8 +415,9 @@ export function CalendarView() {
         isOpen={isBillingModalOpen} 
         onClose={() => setIsBillingModalOpen(false)} 
         title="Gestion du Rendez-vous"
+        maxWidth="sm"
       >
-        <div className="space-y-5">
+        <div className="space-y-4">
           {errorMsg && (
             <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md border border-red-200">
               {errorMsg}

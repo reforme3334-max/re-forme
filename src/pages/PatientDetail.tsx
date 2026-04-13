@@ -27,6 +27,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessMessage, setAccessMessage] = useState({ type: '', text: '' });
 
+  // Note Modal State
+  const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [noteContent, setNoteContent] = useState('');
+  const [selectedAppointmentId, setSelectedAppointmentId] = useState('');
+  const [noteLoading, setNoteLoading] = useState(false);
+  const [noteMessage, setNoteMessage] = useState({ type: '', text: '' });
+
   useEffect(() => {
     if (patientId) {
       fetchPatientDetails();
@@ -127,6 +134,44 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       setAccessMessage({ type: 'error', text: err.message || 'Erreur lors de la génération de l\'accès.' });
     } finally {
       setAccessLoading(false);
+    }
+  };
+
+  const handleAddNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAppointmentId || !noteContent.trim()) {
+      setNoteMessage({ type: 'error', text: 'Veuillez sélectionner une séance et saisir une note.' });
+      return;
+    }
+
+    setNoteLoading(true);
+    setNoteMessage({ type: '', text: '' });
+
+    try {
+      const { error } = await supabase
+        .from('appointments')
+        .update({ notes_seance: noteContent })
+        .eq('id', selectedAppointmentId);
+
+      if (error) throw error;
+
+      setNoteMessage({ type: 'success', text: 'Note ajoutée avec succès !' });
+      
+      // Update local state
+      setAppointments(appointments.map(app => 
+        app.id === selectedAppointmentId ? { ...app, notes_seance: noteContent } : app
+      ));
+      
+      setTimeout(() => {
+        setIsNoteModalOpen(false);
+        setNoteContent('');
+        setSelectedAppointmentId('');
+        setNoteMessage({ type: '', text: '' });
+      }, 1500);
+    } catch (err: any) {
+      setNoteMessage({ type: 'error', text: err.message || 'Erreur lors de l\'ajout de la note.' });
+    } finally {
+      setNoteLoading(false);
     }
   };
 
@@ -365,24 +410,23 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                   <FileText className="h-5 w-5 text-primary-500" />
                   Notes de séance
                 </CardTitle>
-                <Button variant="outline" size="sm">Ajouter une note</Button>
+                <Button variant="outline" size="sm" onClick={() => setIsNoteModalOpen(true)}>Ajouter une note</Button>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  <div className="border-l-2 border-primary-200 pl-4 pb-4">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-semibold text-slate-900">Séance #8</span>
-                      <span className="text-xs text-slate-500">03 Avril 2026</span>
-                    </div>
-                    <p className="text-sm text-slate-600">Bonne progression. Flexion du genou améliorée à 110°. Moins de douleur signalée lors de la marche. Poursuite du renforcement musculaire.</p>
-                  </div>
-                  <div className="border-l-2 border-slate-200 pl-4 pb-4">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-semibold text-slate-900">Séance #7</span>
-                      <span className="text-xs text-slate-500">30 Mars 2026</span>
-                    </div>
-                    <p className="text-sm text-slate-600">Travail sur la proprioception. Légère inflammation en fin de séance, application de glace.</p>
-                  </div>
+                  {appointments.filter(app => app.notes_seance).length === 0 ? (
+                    <p className="text-sm text-slate-500 text-center py-4">Aucune note de séance enregistrée.</p>
+                  ) : (
+                    appointments.filter(app => app.notes_seance).map((app, index) => (
+                      <div key={app.id} className={`border-l-2 ${index === 0 ? 'border-primary-200' : 'border-slate-200'} pl-4 pb-4`}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-semibold text-slate-900">Séance du {new Date(app.date_heure).toLocaleDateString('fr-FR')}</span>
+                          <span className="text-xs text-slate-500">{new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                        <p className="text-sm text-slate-600">{app.notes_seance}</p>
+                      </div>
+                    ))
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -650,6 +694,58 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             </Button>
             <Button type="submit" disabled={accessLoading || !patient.telephone}>
               {accessLoading ? 'Génération...' : 'Générer l\'accès'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Note Modal */}
+      <Modal
+        isOpen={isNoteModalOpen}
+        onClose={() => setIsNoteModalOpen(false)}
+        title="Ajouter une note de séance"
+      >
+        <form onSubmit={handleAddNote} className="space-y-4">
+          {noteMessage.text && (
+            <div className={`p-3 rounded-lg text-sm ${noteMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+              {noteMessage.text}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Sélectionner la séance</label>
+            <select
+              required
+              value={selectedAppointmentId}
+              onChange={(e) => setSelectedAppointmentId(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            >
+              <option value="">-- Choisir une séance --</option>
+              {appointments.map(app => (
+                <option key={app.id} value={app.id}>
+                  {new Date(app.date_heure).toLocaleDateString('fr-FR')} à {new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Note clinique</label>
+            <textarea
+              required
+              value={noteContent}
+              onChange={(e) => setNoteContent(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 min-h-[100px]"
+              placeholder="Saisissez vos observations, évolution, etc."
+            />
+          </div>
+
+          <div className="pt-4 flex justify-end gap-3">
+            <Button type="button" variant="outline" onClick={() => setIsNoteModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={noteLoading}>
+              {noteLoading ? 'Enregistrement...' : 'Enregistrer la note'}
             </Button>
           </div>
         </form>
