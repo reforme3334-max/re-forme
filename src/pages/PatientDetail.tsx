@@ -34,6 +34,19 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [noteLoading, setNoteLoading] = useState(false);
   const [noteMessage, setNoteMessage] = useState({ type: '', text: '' });
 
+  // Edit Patient Modal State
+  const [isEditPatientModalOpen, setIsEditPatientModalOpen] = useState(false);
+  const [editPatientData, setEditPatientData] = useState<any>({});
+  const [editPatientLoading, setEditPatientLoading] = useState(false);
+  const [editPatientMessage, setEditPatientMessage] = useState({ type: '', text: '' });
+
+  // New Appointment Modal State
+  const [isNewAppointmentModalOpen, setIsNewAppointmentModalOpen] = useState(false);
+  const [newAppointmentDate, setNewAppointmentDate] = useState('');
+  const [newAppointmentTime, setNewAppointmentTime] = useState('');
+  const [newAppointmentLoading, setNewAppointmentLoading] = useState(false);
+  const [newAppointmentMessage, setNewAppointmentMessage] = useState({ type: '', text: '' });
+
   useEffect(() => {
     if (patientId) {
       fetchPatientDetails();
@@ -175,6 +188,59 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     }
   };
 
+  const handleEditPatient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEditPatientLoading(true);
+    setEditPatientMessage({ type: '', text: '' });
+
+    const { error } = await supabase
+      .from('patients')
+      .update(editPatientData)
+      .eq('id', patientId);
+
+    setEditPatientLoading(false);
+    if (error) {
+      setEditPatientMessage({ type: 'error', text: error.message });
+    } else {
+      setEditPatientMessage({ type: 'success', text: 'Patient modifié avec succès' });
+      setPatient({ ...patient, ...editPatientData });
+      setTimeout(() => {
+        setIsEditPatientModalOpen(false);
+        setEditPatientMessage({ type: '', text: '' });
+      }, 1500);
+    }
+  };
+
+  const handleNewAppointment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNewAppointmentLoading(true);
+    setNewAppointmentMessage({ type: '', text: '' });
+
+    const dateHeure = new Date(`${newAppointmentDate}T${newAppointmentTime}`).toISOString();
+
+    const { error } = await supabase
+      .from('appointments')
+      .insert([{
+        patient_id: patientId,
+        date_heure: dateHeure,
+        statut: 'Prévu'
+      }]);
+
+    setNewAppointmentLoading(false);
+    if (error) {
+      setNewAppointmentMessage({ type: 'error', text: error.message });
+    } else {
+      setNewAppointmentMessage({ type: 'success', text: 'Rendez-vous ajouté avec succès' });
+      fetchPatientDetails();
+      setTimeout(() => {
+        setIsNewAppointmentModalOpen(false);
+        setNewAppointmentDate('');
+        setNewAppointmentTime('');
+        setNewAppointmentMessage({ type: '', text: '' });
+      }, 1500);
+    }
+  };
+
   const generateInvoiceExcel = () => {
     const totalPaid = billings.reduce((sum, b) => sum + Number(b.montant), 0);
     const sessionsCount = billings.length;
@@ -298,8 +364,11 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => window.location.hash = 'patients'}>
             <ArrowLeft className="h-4 w-4 mr-2" /> Retour
           </Button>
-          <Button variant="outline" className="flex-1 md:flex-none">Modifier</Button>
-          <Button className="flex-1 md:flex-none gap-2"><Plus className="h-4 w-4" /> Nouveau RDV</Button>
+          <Button variant="outline" className="flex-1 md:flex-none" onClick={() => {
+            setEditPatientData(patient);
+            setIsEditPatientModalOpen(true);
+          }}>Modifier</Button>
+          <Button className="flex-1 md:flex-none gap-2" onClick={() => setIsNewAppointmentModalOpen(true)}><Plus className="h-4 w-4" /> Nouveau RDV</Button>
         </div>
       </div>
 
@@ -746,6 +815,146 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             </Button>
             <Button type="submit" disabled={noteLoading}>
               {noteLoading ? 'Enregistrement...' : 'Enregistrer la note'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Edit Patient Modal */}
+      <Modal
+        isOpen={isEditPatientModalOpen}
+        onClose={() => setIsEditPatientModalOpen(false)}
+        title="Modifier le patient"
+        maxWidth="lg"
+      >
+        <form onSubmit={handleEditPatient} className="space-y-4">
+          {editPatientMessage.text && (
+            <div className={`p-3 rounded-lg text-sm ${editPatientMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+              {editPatientMessage.text}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Nom</label>
+              <input
+                type="text"
+                required
+                value={editPatientData.nom || ''}
+                onChange={(e) => setEditPatientData({ ...editPatientData, nom: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Prénom</label>
+              <input
+                type="text"
+                required
+                value={editPatientData.prenom || ''}
+                onChange={(e) => setEditPatientData({ ...editPatientData, prenom: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Téléphone</label>
+              <input
+                type="tel"
+                required
+                value={editPatientData.telephone || ''}
+                onChange={(e) => setEditPatientData({ ...editPatientData, telephone: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Email</label>
+              <input
+                type="email"
+                value={editPatientData.email || ''}
+                onChange={(e) => setEditPatientData({ ...editPatientData, email: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Date de naissance</label>
+              <input
+                type="date"
+                value={editPatientData.date_naissance || ''}
+                onChange={(e) => setEditPatientData({ ...editPatientData, date_naissance: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Pathologie</label>
+              <input
+                type="text"
+                value={editPatientData.pathologie || ''}
+                onChange={(e) => setEditPatientData({ ...editPatientData, pathologie: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Antécédents & Notes</label>
+            <textarea
+              value={editPatientData.atcd || ''}
+              onChange={(e) => setEditPatientData({ ...editPatientData, atcd: e.target.value })}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 min-h-[80px]"
+            />
+          </div>
+
+          <div className="pt-4 flex justify-end gap-3">
+            <Button type="button" variant="outline" onClick={() => setIsEditPatientModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={editPatientLoading}>
+              {editPatientLoading ? 'Enregistrement...' : 'Enregistrer'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* New Appointment Modal */}
+      <Modal
+        isOpen={isNewAppointmentModalOpen}
+        onClose={() => setIsNewAppointmentModalOpen(false)}
+        title="Nouveau Rendez-vous"
+        maxWidth="sm"
+      >
+        <form onSubmit={handleNewAppointment} className="space-y-4">
+          {newAppointmentMessage.text && (
+            <div className={`p-3 rounded-lg text-sm ${newAppointmentMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+              {newAppointmentMessage.text}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Date</label>
+            <input
+              type="date"
+              required
+              value={newAppointmentDate}
+              onChange={(e) => setNewAppointmentDate(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Heure</label>
+            <input
+              type="time"
+              required
+              value={newAppointmentTime}
+              onChange={(e) => setNewAppointmentTime(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </div>
+
+          <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
+            <Button type="button" variant="outline" onClick={() => setIsNewAppointmentModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={newAppointmentLoading}>
+              {newAppointmentLoading ? 'Enregistrement...' : 'Confirmer le RDV'}
             </Button>
           </div>
         </form>

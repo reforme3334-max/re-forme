@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { format, addDays, startOfWeek, isSameDay, setHours, setMinutes } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Euro, CheckCircle, Search } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Euro, CheckCircle, Search, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -185,6 +185,27 @@ export function CalendarView() {
     }
   };
 
+  const handleSaveUnpaid = async () => {
+    setErrorMsg(null);
+    if (!selectedAppointment) return;
+
+    setLoading(true);
+    
+    const { error } = await supabase
+      .from('appointments')
+      .update({ statut: 'Impayé' })
+      .eq('id', selectedAppointment.id);
+
+    setLoading(false);
+    if (!error) {
+      setIsBillingModalOpen(false);
+      setSelectedAppointment(null);
+      fetchAppointments();
+    } else {
+      setErrorMsg("Erreur d'enregistrement : " + error.message);
+    }
+  };
+
   const getAppointmentsForSlot = (day: Date, hour: number) => {
     return appointments.filter(app => {
       const appDate = new Date(app.date_heure);
@@ -312,6 +333,7 @@ export function CalendarView() {
                               <div className="font-semibold truncate flex items-center justify-between">
                                 <span>{app.patients?.prenom} {app.patients?.nom}</span>
                                 {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-green-600" />}
+                                {app.statut === 'Impayé' && <AlertCircle className="h-3 w-3 text-rose-600" />}
                               </div>
                               <div className="flex items-center gap-1 mt-0.5 opacity-80">
                                 <Clock className="h-3 w-3" />
@@ -431,6 +453,13 @@ export function CalendarView() {
             </div>
           )}
 
+          {selectedAppointment?.statut === 'Impayé' && (
+            <div className="p-3 text-sm text-rose-700 bg-rose-50 rounded-md border border-rose-200 flex items-center gap-2 font-medium">
+              <AlertCircle className="h-4 w-4" />
+              Cette séance est marquée comme non payée.
+            </div>
+          )}
+
           {selectedAppointment?.statut === 'Annulé' && (
             <div className="p-3 text-sm text-slate-700 bg-slate-100 rounded-md border border-slate-200 flex items-center gap-2 font-medium">
               Ce rendez-vous a été annulé.
@@ -514,9 +543,16 @@ export function CalendarView() {
                 </select>
               </div>
               {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (
-                <Button type="button" onClick={handleSaveBilling} disabled={loading} className="w-full mt-2 bg-mint-600 hover:bg-mint-700 text-white">
-                  {loading ? 'Validation...' : 'Confirmer le règlement'}
-                </Button>
+                <div className="flex gap-2 mt-2">
+                  {selectedAppointment?.statut !== 'Impayé' && (
+                    <Button type="button" onClick={handleSaveUnpaid} disabled={loading} variant="outline" className="w-1/2 text-rose-600 border-rose-200 hover:bg-rose-50">
+                      {loading ? '...' : 'Marquer non payé'}
+                    </Button>
+                  )}
+                  <Button type="button" onClick={handleSaveBilling} disabled={loading} className={`${selectedAppointment?.statut === 'Impayé' ? 'w-full' : 'w-1/2'} bg-mint-600 hover:bg-mint-700 text-white`}>
+                    {loading ? 'Validation...' : 'Confirmer le règlement'}
+                  </Button>
+                </div>
               )}
             </div>
           )}

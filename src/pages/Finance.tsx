@@ -46,8 +46,8 @@ export function Finance() {
     // Fetch billings (Recettes)
     const { data: billingData } = await supabase
       .from('billings')
-      .select('*, patients(nom, prenom)')
-      .order('created_at', { ascending: false });
+      .select('*, patients(nom, prenom), appointments(date_heure)')
+      .order('id', { ascending: false });
       
     if (billingData) {
       setBillings(billingData);
@@ -85,11 +85,17 @@ export function Finance() {
   const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
   const recettesDuMois = billings
-    .filter(b => new Date(b.created_at || new Date()) >= startOfMonth)
+    .filter(b => {
+      const date = b.appointments?.date_heure ? new Date(b.appointments.date_heure) : new Date(b.created_at || new Date());
+      return date >= startOfMonth;
+    })
     .reduce((sum, b) => sum + Number(b.montant), 0);
 
   const recettesDuJour = billings
-    .filter(b => new Date(b.created_at || new Date()) >= startOfDay)
+    .filter(b => {
+      const date = b.appointments?.date_heure ? new Date(b.appointments.date_heure) : new Date(b.created_at || new Date());
+      return date >= startOfDay;
+    })
     .reduce((sum, b) => sum + Number(b.montant), 0);
 
   const depensesDuMois = expenses
@@ -104,14 +110,17 @@ export function Finance() {
   const caNetJour = recettesDuJour - depensesDuJour;
 
   const exportToExcel = () => {
-    const data = billings.map(bill => ({
-      'Date': new Date(bill.created_at || new Date()).toLocaleDateString('fr-FR'),
-      'Référence': `FAC-${new Date(bill.created_at || new Date()).getFullYear()}-${bill.id.substring(0, 4).toUpperCase()}`,
-      'Patient': bill.patients ? `${bill.patients.prenom} ${bill.patients.nom}` : 'Client divers',
-      'Nature des actes': 'Séance de kinésithérapie',
-      'Mode de paiement': bill.type_paiement,
-      'Montant': bill.montant
-    }));
+    const data = billings.map(bill => {
+      const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.created_at || new Date());
+      return {
+        'Date': date.toLocaleDateString('fr-FR'),
+        'Référence': `FAC-${date.getFullYear()}-${bill.id.substring(0, 4).toUpperCase()}`,
+        'Patient': bill.patients ? `${bill.patients.prenom} ${bill.patients.nom}` : 'Client divers',
+        'Nature des actes': 'Séance de kinésithérapie',
+        'Mode de paiement': bill.type_paiement,
+        'Montant': bill.montant
+      };
+    });
 
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
@@ -282,10 +291,12 @@ export function Finance() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {billings.length > 0 ? billings.map((bill) => (
+                  {billings.length > 0 ? billings.map((bill) => {
+                    const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.created_at || new Date());
+                    return (
                     <tr key={bill.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 text-slate-600">
-                        {new Date(bill.created_at || new Date()).toLocaleDateString('fr-FR')}
+                        {date.toLocaleDateString('fr-FR')}
                       </td>
                       <td className="px-6 py-4 font-medium text-slate-900">
                         {bill.patients ? `${bill.patients.prenom} ${bill.patients.nom}` : 'Client divers'}
@@ -308,7 +319,7 @@ export function Finance() {
                         {bill.montant} DH
                       </td>
                     </tr>
-                  )) : (
+                  )}) : (
                     <tr>
                       <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
                         Aucune recette enregistrée.
