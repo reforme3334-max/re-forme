@@ -16,9 +16,17 @@ export function LoginPage() {
     setError('');
 
     try {
+      // Determine if input is email or phone
+      let loginEmail = email;
+      if (!email.includes('@')) {
+        // Assume it's a phone number
+        const cleanPhone = email.replace(/\s+/g, '');
+        loginEmail = `${cleanPhone}@patient.reforme.center`;
+      }
+
       // 1. Authentification via Supabase
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email,
+        email: loginEmail,
         password,
       });
 
@@ -27,7 +35,7 @@ export function LoginPage() {
           throw new Error("Veuillez confirmer votre adresse email. (Astuce: Vous pouvez désactiver la confirmation d'email dans les paramètres Supabase).");
         }
         if (authError.message.includes('Invalid login credentials')) {
-          throw new Error("Identifiants incorrects. Veuillez vérifier l'email et le mot de passe.");
+          throw new Error("Identifiants incorrects. Veuillez vérifier l'email/téléphone et le mot de passe.");
         }
         throw authError;
       }
@@ -90,18 +98,18 @@ export function LoginPage() {
 
               <div className="space-y-4">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-semibold text-slate-700">Adresse email</label>
+                  <label className="text-sm font-semibold text-slate-700">Email ou Numéro de téléphone</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                       <Mail className="h-5 w-5 text-slate-400" />
                     </div>
                     <input
-                      type="email"
+                      type="text"
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       className="block w-full pl-10 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-mint-500/20 focus:border-mint-500 transition-all bg-slate-50 focus:bg-white"
-                      placeholder="votre@email.com"
+                      placeholder="Email ou 06XXXXXXXX"
                     />
                   </div>
                 </div>

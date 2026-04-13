@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
+import { Modal } from '../components/ui/modal';
 import { supabase } from '../lib/supabaseClient';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -19,6 +20,12 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [billings, setBillings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [forfait, setForfait] = useState(0);
+
+  // Access Modal State
+  const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
+  const [accessPassword, setAccessPassword] = useState('');
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [accessMessage, setAccessMessage] = useState({ type: '', text: '' });
 
   useEffect(() => {
     if (patientId) {
@@ -78,6 +85,49 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     const newForfait = forfait + 10;
     setForfait(newForfait);
     await supabase.from('patients').update({ forfait_seances: newForfait }).eq('id', patientId);
+  };
+
+  const handleGenerateAccess = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!patient.telephone) {
+      setAccessMessage({ type: 'error', text: 'Le patient doit avoir un numéro de téléphone renseigné.' });
+      return;
+    }
+
+    setAccessLoading(true);
+    setAccessMessage({ type: '', text: '' });
+
+    try {
+      // Clean phone number (remove spaces, etc.)
+      const cleanPhone = patient.telephone.replace(/\s+/g, '');
+      const dummyEmail = `${cleanPhone}@patient.reforme.center`;
+
+      // 1. Create auth user
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: dummyEmail,
+        password: accessPassword,
+      });
+
+      if (authError) throw authError;
+
+      if (authData.user) {
+        // 2. Create profile with 'patient' role
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .upsert([
+            { id: authData.user.id, role: 'patient' }
+          ]);
+
+        if (profileError) throw profileError;
+
+        setAccessMessage({ type: 'success', text: 'Accès généré avec succès ! Le patient peut se connecter avec son numéro de téléphone et ce mot de passe.' });
+        setAccessPassword('');
+      }
+    } catch (err: any) {
+      setAccessMessage({ type: 'error', text: err.message || 'Erreur lors de la génération de l\'accès.' });
+    } finally {
+      setAccessLoading(false);
+    }
   };
 
   const generateInvoiceExcel = () => {
@@ -196,7 +246,10 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             </div>
           </div>
         </div>
-        <div className="flex gap-3 w-full md:w-auto">
+        <div className="flex gap-3 w-full md:w-auto flex-wrap">
+          <Button variant="outline" className="flex-1 md:flex-none" onClick={() => setIsAccessModalOpen(true)}>
+            <Key className="h-4 w-4 mr-2" /> Accès
+          </Button>
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => window.location.hash = 'patients'}>
             <ArrowLeft className="h-4 w-4 mr-2" /> Retour
           </Button>
@@ -558,6 +611,49 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           </Card>
         </div>
       )}
+
+      {/* Access Modal */}
+      <Modal
+        isOpen={isAccessModalOpen}
+        onClose={() => setIsAccessModalOpen(false)}
+        title="Générer un accès en ligne"
+      >
+        <form onSubmit={handleGenerateAccess} className="space-y-4">
+          <p className="text-sm text-slate-600">
+            Générez un accès pour que le patient puisse se connecter à son espace personnel.
+            L'identifiant sera son numéro de téléphone : <strong>{patient.telephone || 'Non renseigné'}</strong>
+          </p>
+
+          {accessMessage.text && (
+            <div className={`p-3 rounded-lg text-sm ${accessMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+              {accessMessage.text}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Mot de passe provisoire</label>
+            <input
+              type="text"
+              required
+              value={accessPassword}
+              onChange={(e) => setAccessPassword(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              placeholder="Ex: Patient2024!"
+              minLength={6}
+            />
+            <p className="text-xs text-slate-500">Le mot de passe doit contenir au moins 6 caractères.</p>
+          </div>
+
+          <div className="pt-4 flex justify-end gap-3">
+            <Button type="button" variant="outline" onClick={() => setIsAccessModalOpen(false)}>
+              Fermer
+            </Button>
+            <Button type="submit" disabled={accessLoading || !patient.telephone}>
+              {accessLoading ? 'Génération...' : 'Générer l\'accès'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

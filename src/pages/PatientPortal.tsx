@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User } from 'lucide-react';
+import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ReviewSection } from '../components/reviews/ReviewSection';
+import { Modal } from '../components/ui/modal';
 
 export function PatientPortal() {
   const [patient, setPatient] = useState<any>(null);
@@ -11,6 +12,13 @@ export function PatientPortal() {
   const [billings, setBillings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // Password Change State
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState({ type: '', text: '' });
 
   useEffect(() => {
     fetchPatientData();
@@ -26,18 +34,29 @@ export function PatientPortal() {
         return;
       }
 
-      // Find patient by email (assuming patient email matches auth email)
-      const { data: patientData, error: fetchError } = await supabase
-        .from('patients')
-        .select('*')
-        .eq('email', session.user.email)
-        .single();
+      const userEmail = session.user.email || '';
+      let query = supabase.from('patients').select('*');
 
-      if (fetchError || !patientData) {
-        setError('Aucun dossier patient trouvé pour cet email.');
+      if (userEmail.endsWith('@patient.reforme.center')) {
+        // It's a phone number login
+        const phone = userEmail.replace('@patient.reforme.center', '');
+        // We need to match the phone number, ignoring spaces.
+        // For simplicity, we'll fetch all and filter in JS if needed, or just try exact match first
+        // Since we don't have a clean_phone column, we'll try exact match or ilike
+        query = query.ilike('telephone', `%${phone}%`);
+      } else {
+        query = query.eq('email', userEmail);
+      }
+
+      const { data: patientDataList, error: fetchError } = await query;
+
+      if (fetchError || !patientDataList || patientDataList.length === 0) {
+        setError('Aucun dossier patient trouvé pour cet identifiant.');
         setLoading(false);
         return;
       }
+
+      const patientData = patientDataList[0];
 
       setPatient(patientData);
       
@@ -69,6 +88,38 @@ export function PatientPortal() {
   const handleLogout = async () => {
     await supabase.auth.signOut();
     window.location.hash = 'login';
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage({ type: 'error', text: 'Les mots de passe ne correspondent pas.' });
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPasswordMessage({ type: 'error', text: 'Le mot de passe doit contenir au moins 6 caractères.' });
+      return;
+    }
+
+    setPasswordLoading(true);
+    setPasswordMessage({ type: '', text: '' });
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword
+      });
+
+      if (error) throw error;
+
+      setPasswordMessage({ type: 'success', text: 'Mot de passe mis à jour avec succès !' });
+      setNewPassword('');
+      setConfirmPassword('');
+      setTimeout(() => setIsPasswordModalOpen(false), 2000);
+    } catch (err: any) {
+      setPasswordMessage({ type: 'error', text: err.message || 'Erreur lors de la mise à jour.' });
+    } finally {
+      setPasswordLoading(false);
+    }
   };
 
   if (loading) {
@@ -119,13 +170,22 @@ export function PatientPortal() {
           </h1>
           <p className="text-sm text-slate-500 font-medium mt-0.5">Bonjour, {patient.prenom}</p>
         </div>
-        <button 
-          onClick={handleLogout} 
-          className="p-2.5 text-slate-400 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-full transition-colors"
-          aria-label="Se déconnecter"
-        >
-          <LogOut className="h-5 w-5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => setIsPasswordModalOpen(true)} 
+            className="p-2.5 text-slate-400 hover:text-mint-600 bg-slate-50 hover:bg-mint-50 rounded-full transition-colors"
+            title="Changer le mot de passe"
+          >
+            <Key className="h-5 w-5" />
+          </button>
+          <button 
+            onClick={handleLogout} 
+            className="p-2.5 text-slate-400 hover:text-red-600 bg-slate-50 hover:bg-red-50 rounded-full transition-colors"
+            title="Se déconnecter"
+          >
+            <LogOut className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       <div className="max-w-md mx-auto p-4 space-y-6 mt-2">
@@ -251,6 +311,54 @@ export function PatientPortal() {
         </div>
 
       </div>
+
+      {/* Password Change Modal */}
+      <Modal
+        isOpen={isPasswordModalOpen}
+        onClose={() => setIsPasswordModalOpen(false)}
+        title="Changer mon mot de passe"
+      >
+        <form onSubmit={handleChangePassword} className="space-y-4">
+          {passwordMessage.text && (
+            <div className={`p-3 rounded-lg text-sm ${passwordMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+              {passwordMessage.text}
+            </div>
+          )}
+          
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Nouveau mot de passe</label>
+            <input
+              type="password"
+              required
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-mint-500 focus:border-mint-500"
+              minLength={6}
+            />
+          </div>
+          
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Confirmer le mot de passe</label>
+            <input
+              type="password"
+              required
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-mint-500 focus:border-mint-500"
+              minLength={6}
+            />
+          </div>
+          
+          <div className="pt-4 flex justify-end gap-3">
+            <Button type="button" variant="outline" onClick={() => setIsPasswordModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={passwordLoading} className="bg-mint-600 hover:bg-mint-700 text-white">
+              {passwordLoading ? 'Mise à jour...' : 'Enregistrer'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
