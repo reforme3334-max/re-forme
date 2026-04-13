@@ -13,6 +13,18 @@ interface PatientDetailProps {
   patientId?: string;
 }
 
+const MOTIFS_SEANCE = [
+  'Bilan Initial',
+  'Séance de Suivi',
+  'Rééducation Post-Op',
+  'Tecar thérapie',
+  'Onde de choc',
+  'Consultation nutritionnelle',
+  'Massage thérapeutique',
+  'Drainage lymphatique',
+  'Autre'
+];
+
 export function PatientDetail({ patientId }: PatientDetailProps) {
   const [activeTab, setActiveTab] = useState('dossier');
   const [patient, setPatient] = useState<any>(null);
@@ -44,6 +56,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [isNewAppointmentModalOpen, setIsNewAppointmentModalOpen] = useState(false);
   const [newAppointmentDate, setNewAppointmentDate] = useState('');
   const [newAppointmentTime, setNewAppointmentTime] = useState('');
+  const [newAppointmentMotif, setNewAppointmentMotif] = useState('Séance de Suivi');
   const [newAppointmentLoading, setNewAppointmentLoading] = useState(false);
   const [newAppointmentMessage, setNewAppointmentMessage] = useState({ type: '', text: '' });
 
@@ -223,7 +236,8 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       .insert([{
         patient_id: patientId,
         date_heure: dateHeure,
-        statut: 'Prévu'
+        statut: 'Prévu',
+        notes_seance: newAppointmentMotif
       }]);
 
     setNewAppointmentLoading(false);
@@ -786,7 +800,11 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             <select
               required
               value={selectedAppointmentId}
-              onChange={(e) => setSelectedAppointmentId(e.target.value)}
+              onChange={(e) => {
+                setSelectedAppointmentId(e.target.value);
+                const app = appointments.find(a => a.id === e.target.value);
+                setNoteContent(app?.notes_seance || '');
+              }}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             >
               <option value="">-- Choisir une séance --</option>
@@ -947,6 +965,17 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
               onChange={(e) => setNewAppointmentTime(e.target.value)}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Motif de la séance</label>
+            <select
+              value={newAppointmentMotif}
+              onChange={(e) => setNewAppointmentMotif(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            >
+              {MOTIFS_SEANCE.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
           </div>
 
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">

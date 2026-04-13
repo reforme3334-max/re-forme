@@ -23,6 +23,18 @@ interface Appointment {
   patients?: { nom: string; prenom: string };
 }
 
+const MOTIFS_SEANCE = [
+  'Bilan Initial',
+  'Séance de Suivi',
+  'Rééducation Post-Op',
+  'Tecar thérapie',
+  'Onde de choc',
+  'Consultation nutritionnelle',
+  'Massage thérapeutique',
+  'Drainage lymphatique',
+  'Autre'
+];
+
 export function CalendarView() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [appointments, setAppointments] = useState<Appointment[]>([]);
@@ -31,6 +43,8 @@ export function CalendarView() {
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [newAppointmentTime, setNewAppointmentTime] = useState('');
+  const [newAppointmentMotif, setNewAppointmentMotif] = useState('Séance de Suivi');
   
   // Form state
   const [selectedPatient, setSelectedPatient] = useState('');
@@ -46,6 +60,7 @@ export function CalendarView() {
   const [paymentType, setPaymentType] = useState('Patient');
   const [editDate, setEditDate] = useState('');
   const [editTime, setEditTime] = useState('');
+  const [editMotif, setEditMotif] = useState('');
 
   // Setup grid (Lundi à Samedi, 8h à 20h)
   const startDate = startOfWeek(currentDate, { weekStartsOn: 1 });
@@ -82,6 +97,7 @@ export function CalendarView() {
   const handleSlotClick = (day: Date, hour: number) => {
     const slotDate = setMinutes(setHours(day, hour), 0);
     setSelectedDate(slotDate);
+    setNewAppointmentTime(`${hour.toString().padStart(2, '0')}:00`);
     setErrorMsg(null);
     setSelectedPatient('');
     setPatientSearchQuery('');
@@ -99,11 +115,18 @@ export function CalendarView() {
     }
 
     setLoading(true);
+    
+    // Combine selectedDate and newAppointmentTime
+    const [hours, minutes] = newAppointmentTime.split(':').map(Number);
+    const finalDate = new Date(selectedDate);
+    finalDate.setHours(hours, minutes, 0, 0);
+
     const { error } = await supabase
       .from('appointments')
       .insert([{
         patient_id: selectedPatient,
-        date_heure: selectedDate.toISOString()
+        date_heure: finalDate.toISOString(),
+        notes_seance: newAppointmentMotif
       }]);
 
     setLoading(false);
@@ -122,7 +145,10 @@ export function CalendarView() {
     const newDateTime = new Date(`${editDate}T${editTime}`);
     const { error } = await supabase
       .from('appointments')
-      .update({ date_heure: newDateTime.toISOString() })
+      .update({ 
+        date_heure: newDateTime.toISOString(),
+        notes_seance: editMotif
+      })
       .eq('id', selectedAppointment.id);
 
     setLoading(false);
@@ -326,6 +352,7 @@ export function CalendarView() {
                                 const appDate = new Date(app.date_heure);
                                 setEditDate(format(appDate, 'yyyy-MM-dd'));
                                 setEditTime(format(appDate, 'HH:mm'));
+                                setEditMotif(app.notes_seance || 'Séance de Suivi');
                                 setErrorMsg(null);
                                 setIsBillingModalOpen(true);
                               }}
@@ -367,13 +394,36 @@ export function CalendarView() {
           )}
           
           {selectedDate && (
-            <div className="flex items-center gap-2 text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100">
-              <CalendarIcon className="h-4 w-4 text-primary-500" />
-              <span className="font-medium">
-                {format(selectedDate, 'EEEE d MMMM yyyy à HH:mm', { locale: fr })}
-              </span>
+            <div className="flex flex-col gap-3 bg-slate-50 p-3 rounded-lg border border-slate-100">
+              <div className="flex items-center gap-2 text-sm text-slate-600">
+                <CalendarIcon className="h-4 w-4 text-primary-500" />
+                <span className="font-medium">
+                  {format(selectedDate, 'EEEE d MMMM yyyy', { locale: fr })}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Clock className="h-4 w-4 text-primary-500" />
+                <input
+                  type="time"
+                  required
+                  value={newAppointmentTime}
+                  onChange={(e) => setNewAppointmentTime(e.target.value)}
+                  className="rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                />
+              </div>
             </div>
           )}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Motif de la séance</label>
+            <select
+              value={newAppointmentMotif}
+              onChange={(e) => setNewAppointmentMotif(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            >
+              {MOTIFS_SEANCE.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
 
           <div className="space-y-2 relative">
             <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
@@ -499,10 +549,21 @@ export function CalendarView() {
                   className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-slate-50 disabled:text-slate-500"
                 />
               </div>
+              <div className="space-y-1 col-span-2">
+                <label className="text-xs font-medium text-slate-500">Motif</label>
+                <select
+                  value={editMotif}
+                  onChange={(e) => setEditMotif(e.target.value)}
+                  disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-slate-50 disabled:text-slate-500"
+                >
+                  {MOTIFS_SEANCE.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
             </div>
             {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (
               <Button type="button" variant="secondary" size="sm" onClick={handleUpdateAppointment} disabled={loading} className="w-full mt-2">
-                Mettre à jour l'horaire
+                Mettre à jour les informations
               </Button>
             )}
           </div>
