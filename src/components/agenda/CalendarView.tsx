@@ -39,6 +39,7 @@ export function CalendarView() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [motifs, setMotifs] = useState<string[]>(MOTIFS_SEANCE);
   
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -70,7 +71,15 @@ export function CalendarView() {
   useEffect(() => {
     fetchAppointments();
     fetchPatients();
+    fetchMotifs();
   }, [currentDate]);
+
+  const fetchMotifs = async () => {
+    const { data, error } = await supabase.from('seance_motifs').select('nom');
+    if (!error && data && data.length > 0) {
+      setMotifs(data.map(m => m.nom));
+    }
+  };
 
   const fetchAppointments = async () => {
     // Dans une vraie app, on filtrerait par date de début et fin de semaine
@@ -421,7 +430,7 @@ export function CalendarView() {
               onChange={(e) => setNewAppointmentMotif(e.target.value)}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             >
-              {MOTIFS_SEANCE.map(m => <option key={m} value={m}>{m}</option>)}
+              {motifs.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
 
@@ -557,7 +566,7 @@ export function CalendarView() {
                   disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
                   className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-slate-50 disabled:text-slate-500"
                 >
-                  {MOTIFS_SEANCE.map(m => <option key={m} value={m}>{m}</option>)}
+                  {motifs.map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
               </div>
             </div>

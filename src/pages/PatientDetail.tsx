@@ -30,6 +30,8 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [patient, setPatient] = useState<any>(null);
   const [appointments, setAppointments] = useState<any[]>([]);
   const [billings, setBillings] = useState<any[]>([]);
+  const [treatments, setTreatments] = useState<any[]>([]);
+  const [motifs, setMotifs] = useState<string[]>(MOTIFS_SEANCE);
   const [loading, setLoading] = useState(true);
   const [forfait, setForfait] = useState(0);
 
@@ -59,6 +61,18 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [newAppointmentMotif, setNewAppointmentMotif] = useState('Séance de Suivi');
   const [newAppointmentLoading, setNewAppointmentLoading] = useState(false);
   const [newAppointmentMessage, setNewAppointmentMessage] = useState({ type: '', text: '' });
+
+  // New Treatment Modal State
+  const [isNewTreatmentModalOpen, setIsNewTreatmentModalOpen] = useState(false);
+  const [newTreatmentData, setNewTreatmentData] = useState({
+    motif: '',
+    nombre_seances_prescrites: 10,
+    date_debut: new Date().toISOString().split('T')[0],
+    medecin_prescripteur: '',
+    statut: 'En cours'
+  });
+  const [newTreatmentLoading, setNewTreatmentLoading] = useState(false);
+  const [newTreatmentMessage, setNewTreatmentMessage] = useState({ type: '', text: '' });
 
   useEffect(() => {
     if (patientId) {
@@ -101,6 +115,23 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       
     if (billingData) {
       setBillings(billingData);
+    }
+
+    // Fetch treatments
+    const { data: treatmentData } = await supabase
+      .from('treatments')
+      .select('*')
+      .eq('patient_id', patientId)
+      .order('created_at', { ascending: false });
+
+    if (treatmentData) {
+      setTreatments(treatmentData);
+    }
+
+    // Fetch motifs
+    const { data: motifData } = await supabase.from('seance_motifs').select('nom');
+    if (motifData && motifData.length > 0) {
+      setMotifs(motifData.map(m => m.nom));
     }
 
     setLoading(false);
@@ -220,6 +251,38 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       setTimeout(() => {
         setIsEditPatientModalOpen(false);
         setEditPatientMessage({ type: '', text: '' });
+      }, 1500);
+    }
+  };
+
+  const handleNewTreatment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNewTreatmentLoading(true);
+    setNewTreatmentMessage({ type: '', text: '' });
+
+    const { error } = await supabase
+      .from('treatments')
+      .insert([{
+        patient_id: patientId,
+        ...newTreatmentData
+      }]);
+
+    setNewTreatmentLoading(false);
+    if (error) {
+      setNewTreatmentMessage({ type: 'error', text: error.message });
+    } else {
+      setNewTreatmentMessage({ type: 'success', text: 'Traitement ajouté avec succès' });
+      fetchPatientDetails();
+      setTimeout(() => {
+        setIsNewTreatmentModalOpen(false);
+        setNewTreatmentData({
+          motif: '',
+          nombre_seances_prescrites: 10,
+          date_debut: new Date().toISOString().split('T')[0],
+          medecin_prescripteur: '',
+          statut: 'En cours'
+        });
+        setNewTreatmentMessage({ type: '', text: '' });
       }, 1500);
     }
   };
@@ -548,68 +611,62 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
 
       {activeTab === 'traitements' && (
         <div className="space-y-6">
+          <div className="flex justify-end">
+            <Button onClick={() => setIsNewTreatmentModalOpen(true)} className="gap-2">
+              <Plus className="h-4 w-4" />
+              Nouveau Traitement
+            </Button>
+          </div>
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5 text-primary-500" />
-                Historique des Traitements Passés
+                Historique des Traitements
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-6">
-                {/* Example Treatment 1 */}
-                <div className="border border-slate-200 rounded-lg p-5 bg-white shadow-sm">
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <h3 className="font-semibold text-slate-900 text-lg">Entorse cheville droite</h3>
-                      <p className="text-sm text-slate-500 mt-1">Du 12 Janvier 2024 au 28 Février 2024</p>
-                    </div>
-                    <Badge variant="secondary" className="bg-slate-100 text-slate-700">Terminé</Badge>
+                {treatments.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500 bg-slate-50 rounded-lg border border-dashed border-slate-300">
+                    <FileText className="h-12 w-12 mx-auto mb-3 opacity-20" />
+                    <p>Aucun traitement enregistré pour ce patient.</p>
                   </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-slate-100">
-                    <div>
-                      <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Séances</p>
-                      <p className="text-slate-900 font-medium">12 séances effectuées</p>
+                ) : (
+                  treatments.map((treatment) => (
+                    <div key={treatment.id} className="border border-slate-200 rounded-lg p-5 bg-white shadow-sm">
+                      <div className="flex justify-between items-start mb-4">
+                        <div>
+                          <h3 className="font-semibold text-slate-900 text-lg">{treatment.motif}</h3>
+                          <p className="text-sm text-slate-500 mt-1">
+                            {treatment.date_debut ? `Depuis le ${new Date(treatment.date_debut).toLocaleDateString('fr-FR')}` : 'Date non renseignée'}
+                          </p>
+                        </div>
+                        <Badge variant="secondary" className={
+                          treatment.statut === 'Terminé' ? "bg-green-100 text-green-700" : 
+                          treatment.statut === 'En cours' ? "bg-blue-100 text-blue-700" : 
+                          "bg-slate-100 text-slate-700"
+                        }>
+                          {treatment.statut || 'En cours'}
+                        </Badge>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-slate-100">
+                        <div>
+                          <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Séances</p>
+                          <p className="text-slate-900 font-medium">{treatment.nombre_seances_prescrites} séances prescrites</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Bilan Financier</p>
+                          <p className="text-slate-900 font-medium">Total facturé : {treatment.total_facture || 0} €</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Médecin Prescripteur</p>
+                          <p className="text-slate-900 font-medium">{treatment.medecin_prescripteur || 'Non renseigné'}</p>
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Bilan Financier</p>
-                      <p className="text-slate-900 font-medium">Total facturé : 600 €</p>
-                      <p className="text-xs text-slate-500 mt-0.5">Reste à charge : 0 €</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Médecin Prescripteur</p>
-                      <p className="text-slate-900 font-medium">Dr. Jean Dupont</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Example Treatment 2 */}
-                <div className="border border-slate-200 rounded-lg p-5 bg-white shadow-sm">
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <h3 className="font-semibold text-slate-900 text-lg">Tendinite épaule gauche</h3>
-                      <p className="text-sm text-slate-500 mt-1">Du 05 Septembre 2023 au 15 Octobre 2023</p>
-                    </div>
-                    <Badge variant="secondary" className="bg-slate-100 text-slate-700">Terminé</Badge>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-slate-100">
-                    <div>
-                      <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Séances</p>
-                      <p className="text-slate-900 font-medium">10 séances effectuées</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Bilan Financier</p>
-                      <p className="text-slate-900 font-medium">Total facturé : 500 €</p>
-                      <p className="text-xs text-slate-500 mt-0.5 text-orange-600 font-medium">Reste à charge : 50 €</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Médecin Prescripteur</p>
-                      <p className="text-slate-900 font-medium">Dr. Marie Curie</p>
-                    </div>
-                  </div>
-                </div>
+                  ))
+                )}
               </div>
             </CardContent>
           </Card>
@@ -974,7 +1031,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
               onChange={(e) => setNewAppointmentMotif(e.target.value)}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             >
-              {MOTIFS_SEANCE.map(m => <option key={m} value={m}>{m}</option>)}
+              {motifs.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
 
@@ -984,6 +1041,80 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             </Button>
             <Button type="submit" disabled={newAppointmentLoading}>
               {newAppointmentLoading ? 'Enregistrement...' : 'Confirmer le RDV'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* New Treatment Modal */}
+      <Modal
+        isOpen={isNewTreatmentModalOpen}
+        onClose={() => setIsNewTreatmentModalOpen(false)}
+        title="Nouveau Traitement"
+      >
+        <form onSubmit={handleNewTreatment} className="space-y-4">
+          {newTreatmentMessage.text && (
+            <div className={`p-3 rounded-md text-sm flex items-center gap-2 ${
+              newTreatmentMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
+            }`}>
+              {newTreatmentMessage.type === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+              {newTreatmentMessage.text}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Motif du traitement / Pathologie</label>
+            <input
+              type="text"
+              required
+              placeholder="Ex: Entorse cheville droite"
+              value={newTreatmentData.motif}
+              onChange={(e) => setNewTreatmentData({ ...newTreatmentData, motif: e.target.value })}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Séances prescrites</label>
+              <input
+                type="number"
+                min="1"
+                required
+                value={newTreatmentData.nombre_seances_prescrites}
+                onChange={(e) => setNewTreatmentData({ ...newTreatmentData, nombre_seances_prescrites: parseInt(e.target.value) })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Date de début</label>
+              <input
+                type="date"
+                required
+                value={newTreatmentData.date_debut}
+                onChange={(e) => setNewTreatmentData({ ...newTreatmentData, date_debut: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Médecin Prescripteur</label>
+            <input
+              type="text"
+              placeholder="Ex: Dr. Jean Dupont"
+              value={newTreatmentData.medecin_prescripteur}
+              onChange={(e) => setNewTreatmentData({ ...newTreatmentData, medecin_prescripteur: e.target.value })}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </div>
+
+          <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
+            <Button type="button" variant="outline" onClick={() => setIsNewTreatmentModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={newTreatmentLoading}>
+              {newTreatmentLoading ? 'Enregistrement...' : 'Enregistrer le traitement'}
             </Button>
           </div>
         </form>
