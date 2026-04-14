@@ -25,15 +25,21 @@ interface Appointment {
 }
 
 const MOTIFS_SEANCE = [
-  'Bilan Initial',
-  'Séance de Suivi',
-  'Rééducation Post-Op',
-  'Tecar thérapie',
+  'Kinésithérapie classique',
+  'Kiné-respiratoire',
+  'Réathlétisation',
+  'Cupping thérapie',
   'Onde de choc',
+  'Tecar thérapie',
+  'Récupération',
+  'Rééducation vestibulaire',
+  'Séance de bilan',
   'Consultation nutritionnelle',
-  'Massage thérapeutique',
-  'Drainage lymphatique',
-  'Autre'
+  'Séance de contrôle',
+  'Thérapie manuelle',
+  'Séance à domicile',
+  'Clinique Taghzout',
+  'Clinique Chiekhe Essaadi Agadir'
 ];
 
 export function CalendarView() {
@@ -47,6 +53,7 @@ export function CalendarView() {
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [newAppointmentTime, setNewAppointmentTime] = useState('');
   const [newAppointmentMotif, setNewAppointmentMotif] = useState('Séance de Suivi');
+  const [showNewMotifDropdown, setShowNewMotifDropdown] = useState(false);
   
   // Form state
   const [selectedPatient, setSelectedPatient] = useState('');
@@ -63,6 +70,7 @@ export function CalendarView() {
   const [editDate, setEditDate] = useState('');
   const [editTime, setEditTime] = useState('');
   const [editMotif, setEditMotif] = useState('');
+  const [showEditMotifDropdown, setShowEditMotifDropdown] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -86,8 +94,22 @@ export function CalendarView() {
 
   const fetchMotifs = async () => {
     const { data, error } = await supabase.from('seance_motifs').select('nom');
-    if (!error && data && data.length > 0) {
-      setMotifs(data.map(m => m.nom));
+    if (!error && data) {
+      const dbMotifs = data.map(m => m.nom);
+      const allMotifs = Array.from(new Set([...MOTIFS_SEANCE, ...dbMotifs]));
+      setMotifs(allMotifs);
+    } else {
+      setMotifs(MOTIFS_SEANCE);
+    }
+  };
+
+  const ensureMotifExists = async (motif: string) => {
+    if (!motif) return;
+    if (!motifs.includes(motif)) {
+      const { error } = await supabase.from('seance_motifs').insert([{ nom: motif }]);
+      if (!error) {
+        setMotifs(prev => [...prev, motif]);
+      }
     }
   };
 
@@ -135,6 +157,8 @@ export function CalendarView() {
 
     setLoading(true);
     
+    await ensureMotifExists(newAppointmentMotif);
+
     // Combine selectedDate and newAppointmentTime
     const [hours, minutes] = newAppointmentTime.split(':').map(Number);
     const finalDate = new Date(selectedDate);
@@ -161,6 +185,9 @@ export function CalendarView() {
   const handleUpdateAppointment = async () => {
     if (!selectedAppointment) return;
     setLoading(true);
+    
+    await ensureMotifExists(editMotif);
+    
     const newDateTime = new Date(`${editDate}T${editTime}`);
     const { error } = await supabase
       .from('appointments')
@@ -398,7 +425,7 @@ export function CalendarView() {
                         {/* Appointments */}
                         <AnimatePresence>
                           {slotAppointments.map((app, index) => {
-                            const isBilan = app.notes_seance === 'Bilan Initial';
+                            const isBilan = app.notes_seance === 'Séance de bilan' || app.notes_seance === 'Bilan Initial';
                             const startMin = new Date(app.date_heure).getMinutes();
                             const count = slotAppointments.length;
                             
@@ -524,15 +551,37 @@ export function CalendarView() {
             </div>
           )}
 
-          <div className="space-y-2">
+          <div className="space-y-2 relative">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Motif de la séance</label>
-            <select
+            <input
+              type="text"
               value={newAppointmentMotif}
-              onChange={(e) => setNewAppointmentMotif(e.target.value)}
-              className="w-full p-3 border border-slate-200 rounded-xl font-medium text-slate-900 focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all appearance-none bg-slate-50/50"
-            >
-              {motifs.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
+              onChange={(e) => {
+                setNewAppointmentMotif(e.target.value);
+                setShowNewMotifDropdown(true);
+              }}
+              onFocus={() => setShowNewMotifDropdown(true)}
+              onBlur={() => setTimeout(() => setShowNewMotifDropdown(false), 200)}
+              placeholder="Sélectionner ou écrire un motif..."
+              className="w-full p-3 border border-slate-200 rounded-xl font-medium text-slate-900 focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50"
+            />
+            {showNewMotifDropdown && (
+              <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                {motifs.filter(m => m.toLowerCase().includes(newAppointmentMotif.toLowerCase())).map(m => (
+                  <div 
+                    key={m} 
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setNewAppointmentMotif(m);
+                      setShowNewMotifDropdown(false);
+                    }}
+                    className="p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 border-b border-slate-50 last:border-0"
+                  >
+                    {m}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="space-y-2 relative">
@@ -695,16 +744,38 @@ export function CalendarView() {
                   className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400"
                 />
               </div>
-              <div className="space-y-1.5 col-span-2">
+              <div className="space-y-1.5 col-span-2 relative">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Motif</label>
-                <select
+                <input
+                  type="text"
                   value={editMotif}
-                  onChange={(e) => setEditMotif(e.target.value)}
+                  onChange={(e) => {
+                    setEditMotif(e.target.value);
+                    setShowEditMotifDropdown(true);
+                  }}
+                  onFocus={() => setShowEditMotifDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowEditMotifDropdown(false), 200)}
                   disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
-                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400 appearance-none bg-slate-50/30"
-                >
-                  {motifs.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
+                  placeholder="Sélectionner ou écrire un motif..."
+                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400 bg-slate-50/30"
+                />
+                {showEditMotifDropdown && !(selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé') && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                    {motifs.filter(m => m.toLowerCase().includes(editMotif.toLowerCase())).map(m => (
+                      <div 
+                        key={m} 
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setEditMotif(m);
+                          setShowEditMotifDropdown(false);
+                        }}
+                        className="p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 border-b border-slate-50 last:border-0"
+                      >
+                        {m}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (

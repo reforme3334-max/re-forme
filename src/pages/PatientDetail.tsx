@@ -14,15 +14,21 @@ interface PatientDetailProps {
 }
 
 const MOTIFS_SEANCE = [
-  'Bilan Initial',
-  'Séance de Suivi',
-  'Rééducation Post-Op',
-  'Tecar thérapie',
+  'Kinésithérapie classique',
+  'Kiné-respiratoire',
+  'Réathlétisation',
+  'Cupping thérapie',
   'Onde de choc',
+  'Tecar thérapie',
+  'Récupération',
+  'Rééducation vestibulaire',
+  'Séance de bilan',
   'Consultation nutritionnelle',
-  'Massage thérapeutique',
-  'Drainage lymphatique',
-  'Autre'
+  'Séance de contrôle',
+  'Thérapie manuelle',
+  'Séance à domicile',
+  'Clinique Taghzout',
+  'Clinique Chiekhe Essaadi Agadir'
 ];
 
 export function PatientDetail({ patientId }: PatientDetailProps) {
@@ -59,6 +65,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [newAppointmentDate, setNewAppointmentDate] = useState('');
   const [newAppointmentTime, setNewAppointmentTime] = useState('');
   const [newAppointmentMotif, setNewAppointmentMotif] = useState('Séance de Suivi');
+  const [showNewMotifDropdown, setShowNewMotifDropdown] = useState(false);
   const [newAppointmentLoading, setNewAppointmentLoading] = useState(false);
   const [newAppointmentMessage, setNewAppointmentMessage] = useState({ type: '', text: '' });
 
@@ -134,7 +141,27 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       setMotifs(motifData.map(m => m.nom));
     }
 
+    // Fetch motifs
+    const { data: motifsData } = await supabase.from('seance_motifs').select('nom');
+    if (motifsData) {
+      const dbMotifs = motifsData.map(m => m.nom);
+      const allMotifs = Array.from(new Set([...MOTIFS_SEANCE, ...dbMotifs]));
+      setMotifs(allMotifs);
+    } else {
+      setMotifs(MOTIFS_SEANCE);
+    }
+
     setLoading(false);
+  };
+
+  const ensureMotifExists = async (motif: string) => {
+    if (!motif) return;
+    if (!motifs.includes(motif)) {
+      const { error } = await supabase.from('seance_motifs').insert([{ nom: motif }]);
+      if (!error) {
+        setMotifs(prev => [...prev, motif]);
+      }
+    }
   };
 
   if (loading) {
@@ -291,6 +318,8 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     e.preventDefault();
     setNewAppointmentLoading(true);
     setNewAppointmentMessage({ type: '', text: '' });
+
+    await ensureMotifExists(newAppointmentMotif);
 
     const dateHeure = new Date(`${newAppointmentDate}T${newAppointmentTime}`).toISOString();
 
@@ -1024,15 +1053,37 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-2 relative">
             <label className="text-sm font-medium text-slate-700">Motif de la séance</label>
-            <select
+            <input
+              type="text"
               value={newAppointmentMotif}
-              onChange={(e) => setNewAppointmentMotif(e.target.value)}
+              onChange={(e) => {
+                setNewAppointmentMotif(e.target.value);
+                setShowNewMotifDropdown(true);
+              }}
+              onFocus={() => setShowNewMotifDropdown(true)}
+              onBlur={() => setTimeout(() => setShowNewMotifDropdown(false), 200)}
+              placeholder="Sélectionner ou écrire un motif..."
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-            >
-              {motifs.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
+            />
+            {showNewMotifDropdown && (
+              <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                {motifs.filter(m => m.toLowerCase().includes(newAppointmentMotif.toLowerCase())).map(m => (
+                  <div 
+                    key={m} 
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setNewAppointmentMotif(m);
+                      setShowNewMotifDropdown(false);
+                    }}
+                    className="p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 border-b border-slate-50 last:border-0"
+                  >
+                    {m}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
