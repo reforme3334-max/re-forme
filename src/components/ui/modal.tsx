@@ -23,17 +23,17 @@ export function Modal({ isOpen, onClose, title, children, maxWidth = "md" }: Mod
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
-      <div className={cn("bg-white rounded-xl shadow-lg w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200", maxWidthClass)}>
-        <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-slate-50/50">
-          <h2 className="text-lg font-semibold text-slate-800">{title}</h2>
+      <div className={cn("bg-white rounded-2xl shadow-2xl w-full flex flex-col max-h-[calc(100vh-2rem)] animate-in fade-in zoom-in-95 duration-200", maxWidthClass)}>
+        <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-slate-50/50 shrink-0">
+          <h2 className="text-lg font-bold text-slate-800">{title}</h2>
           <button 
             onClick={onClose} 
-            className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-md transition-colors"
+            className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-colors"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="p-5">
+        <div className="p-5 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200">
           {children}
         </div>
       </div>
