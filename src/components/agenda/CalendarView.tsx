@@ -419,19 +419,21 @@ export function CalendarView() {
                               accentColor = 'bg-indigo-500';
                             }
                             
+                            const isNarrow = count > 1;
+                            
                             return (
                               <motion.div 
                                 key={app.id}
                                 initial={{ opacity: 0, scale: 0.95 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 exit={{ opacity: 0, scale: 0.95 }}
-                                className={`absolute rounded-xl px-2.5 py-2 text-[11px] border shadow-md z-10 overflow-hidden transition-all cursor-pointer group/app ${statusStyles}`}
+                                className={`absolute rounded-xl ${isNarrow ? 'p-1.5' : 'px-2.5 py-2'} text-[11px] border shadow-md z-10 overflow-hidden transition-all duration-200 cursor-pointer group/app ${statusStyles} hover:!z-50 hover:!h-auto hover:!min-h-[60px] hover:!w-[140px] hover:shadow-xl`}
                                 style={{
                                   top: `${(startMin / 60) * 100}%`,
                                   height: `calc(${((app.duree || 30) / 60) * 100}% - 4px)`,
                                   minHeight: '40px',
-                                  left: count > 1 ? `calc(${(index / count) * 100}% + 4px)` : '4px',
-                                  width: count > 1 ? `calc(${(100 / count)}% - 8px)` : 'calc(100% - 8px)',
+                                  left: count > 1 ? `calc(${(index / count) * 100}% + 2px)` : '4px',
+                                  width: count > 1 ? `calc(${(100 / count)}% - 4px)` : 'calc(100% - 8px)',
                                 }}
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -444,15 +446,19 @@ export function CalendarView() {
                                   setIsBillingModalOpen(true);
                                 }}
                               >
-                                <div className={`absolute left-0 top-0 bottom-0 w-1 ${accentColor}`} />
-                                <div className="font-bold truncate flex items-center justify-between mb-1">
-                                  <span className="truncate">{app.patients?.prenom} {app.patients?.nom}</span>
-                                  {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-emerald-500 shrink-0" />}
-                                  {app.statut === 'Impayé' && <AlertCircle className="h-3 w-3 text-rose-500 shrink-0 animate-pulse" />}
+                                <div className={`absolute left-0 top-0 bottom-0 ${isNarrow ? 'w-0.5' : 'w-1'} ${accentColor}`} />
+                                <div className={`font-bold flex items-start justify-between ${isNarrow ? 'mb-0' : 'mb-1'} gap-1 pl-1`}>
+                                  <span className={`${isNarrow ? 'line-clamp-2 text-[10px] leading-tight break-words group-hover/app:line-clamp-none group-hover/app:text-[11px]' : 'truncate'}`}>
+                                    {app.patients?.prenom} {app.patients?.nom}
+                                  </span>
+                                  <div className={`flex shrink-0 ${isNarrow ? 'hidden group-hover/app:flex' : ''}`}>
+                                    {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-emerald-500" />}
+                                    {app.statut === 'Impayé' && <AlertCircle className="h-3 w-3 text-rose-500 animate-pulse" />}
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-1.5 opacity-70 font-medium">
-                                  <Clock className="h-3 w-3" />
-                                  <span className="truncate">{format(new Date(app.date_heure), 'HH:mm')} • {app.notes_seance}</span>
+                                <div className={`${isNarrow ? 'hidden group-hover/app:flex' : 'flex'} items-center gap-1.5 opacity-70 font-medium pl-1 mt-1`}>
+                                  <Clock className="h-3 w-3 shrink-0" />
+                                  <span className="truncate">{format(new Date(app.date_heure), 'HH:mm')} {app.notes_seance ? `• ${app.notes_seance}` : ''}</span>
                                 </div>
                               </motion.div>
                             );
