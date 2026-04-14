@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { DollarSign, TrendingUp, TrendingDown, Activity, Calendar, ArrowUpRight, ArrowDownRight, FileSpreadsheet, Plus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';

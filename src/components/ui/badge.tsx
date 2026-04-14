@@ -3,6 +3,8 @@ import { cn } from "@/lib/utils"
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'default' | 'success' | 'warning' | 'danger' | 'outline';
+  children?: React.ReactNode;
+  className?: string;
 }
 
 function Badge({ className, variant = "default", ...props }: BadgeProps) {

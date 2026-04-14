@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -542,7 +542,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                     </div>
                   </div>
                   {forfait < 2 && (
-                    <Badge variant="secondary" className="bg-orange-100 text-orange-700 hover:bg-orange-100">
+                    <Badge variant="outline" className="bg-orange-100 text-orange-700 hover:bg-orange-100 border-orange-200">
                       Renouvellement conseillé
                     </Badge>
                   )}
@@ -641,10 +641,10 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                             {treatment.date_debut ? `Depuis le ${new Date(treatment.date_debut).toLocaleDateString('fr-FR')}` : 'Date non renseignée'}
                           </p>
                         </div>
-                        <Badge variant="secondary" className={
-                          treatment.statut === 'Terminé' ? "bg-green-100 text-green-700" : 
-                          treatment.statut === 'En cours' ? "bg-blue-100 text-blue-700" : 
-                          "bg-slate-100 text-slate-700"
+                        <Badge variant="outline" className={
+                          treatment.statut === 'Terminé' ? "bg-green-100 text-green-700 border-green-200" : 
+                          treatment.statut === 'En cours' ? "bg-blue-100 text-blue-700 border-blue-200" : 
+                          "bg-slate-100 text-slate-700 border-slate-200"
                         }>
                           {treatment.statut || 'En cours'}
                         </Badge>
@@ -718,7 +718,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                             {app.duree || 30} min
                           </td>
                           <td className="px-6 py-4">
-                            <Badge variant={app.statut === 'Effectué' ? 'success' : app.statut === 'Annulé' ? 'secondary' : 'default'}>
+                            <Badge variant={app.statut === 'Effectué' ? 'success' : app.statut === 'Annulé' ? 'outline' : 'default'}>
                               {app.statut || 'Confirmé'}
                             </Badge>
                           </td>
