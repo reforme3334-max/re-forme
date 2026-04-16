@@ -12,6 +12,8 @@ export function Finance() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
+  const [dateFilter, setDateFilter] = useState('month'); // 'day', 'exact', 'week', 'month', 'all'
+  const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
   
   // Modal state
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
@@ -79,38 +81,60 @@ export function Finance() {
     return userProfile.permissions?.includes(permission);
   };
 
-  // Calculate metrics
+  // Calculate metrics based on filter
   const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const startOfWeek = new Date(today);
+  startOfWeek.setDate(today.getDate() - today.getDay() + (today.getDay() === 0 ? -6 : 1)); // Monday
+  
   const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-  const recettesDuMois = billings
-    .filter(b => {
-      const date = b.appointments?.date_heure ? new Date(b.appointments.date_heure) : new Date(b.created_at || new Date());
-      return date >= startOfMonth;
-    })
-    .reduce((sum, b) => sum + Number(b.montant), 0);
+  const filterByDate = (items: any[], dateExtractor: (item: any) => Date) => {
+    if (dateFilter === 'all') return items;
+    
+    return items.filter(item => {
+      const itemDate = dateExtractor(item);
+      if (dateFilter === 'day') {
+        return itemDate >= today;
+      } else if (dateFilter === 'week') {
+        return itemDate >= startOfWeek;
+      } else if (dateFilter === 'month') {
+        return itemDate >= startOfMonth;
+      } else if (dateFilter === 'exact') {
+        const year = itemDate.getFullYear();
+        const month = String(itemDate.getMonth() + 1).padStart(2, '0');
+        const day = String(itemDate.getDate()).padStart(2, '0');
+        const localDateString = `${year}-${month}-${day}`;
+        return localDateString === customDate;
+      }
+      return true;
+    });
+  };
 
-  const recettesDuJour = billings
-    .filter(b => {
-      const date = b.appointments?.date_heure ? new Date(b.appointments.date_heure) : new Date(b.created_at || new Date());
-      return date >= startOfDay;
-    })
-    .reduce((sum, b) => sum + Number(b.montant), 0);
+  const filteredBillings = filterByDate(billings, (b) => b.appointments?.date_heure ? new Date(b.appointments.date_heure) : new Date(b.created_at || new Date()));
+  const filteredExpenses = filterByDate(expenses, (e) => new Date(e.date));
 
-  const depensesDuMois = expenses
-    .filter(e => new Date(e.date) >= startOfMonth)
-    .reduce((sum, e) => sum + Number(e.amount), 0);
+  const totalRecettes = filteredBillings.reduce((sum, b) => sum + Number(b.montant), 0);
+  const totalDepenses = filteredExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
+  const caNet = totalRecettes - totalDepenses;
+  const totalTransactions = filteredBillings.length;
 
-  const depensesDuJour = expenses
-    .filter(e => new Date(e.date) >= startOfDay)
-    .reduce((sum, e) => sum + Number(e.amount), 0);
+  const getFilterLabel = () => {
+    switch (dateFilter) {
+      case 'day': return "Aujourd'hui";
+      case 'exact': return new Date(customDate).toLocaleDateString('fr-FR');
+      case 'week': return "Cette semaine";
+      case 'month': return "Ce mois";
+      case 'all': return "Global";
+      default: return "";
+    }
+  };
 
-  const caNetMois = recettesDuMois - depensesDuMois;
-  const caNetJour = recettesDuJour - depensesDuJour;
+  const filterLabel = getFilterLabel();
 
   const exportToExcel = () => {
-    const data = billings.map(bill => {
+    const data = filteredBillings.map(bill => {
       const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.created_at || new Date());
       return {
         'Date': date.toLocaleDateString('fr-FR'),
@@ -171,6 +195,30 @@ export function Finance() {
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Tableau de Bord Financier</h1>
           <p className="text-slate-500 mt-1">Suivez vos recettes, vos dépenses et votre chiffre d'affaires net.</p>
         </div>
+        <div className="flex items-center gap-2">
+          {dateFilter === 'exact' && (
+            <input
+              type="date"
+              value={customDate}
+              onChange={(e) => setCustomDate(e.target.value)}
+              className="p-1.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-primary-500 outline-none shadow-sm"
+            />
+          )}
+          <div className="flex items-center gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm">
+            <Calendar className="h-4 w-4 text-slate-400 ml-2" />
+            <select
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              className="bg-transparent border-none text-sm font-medium text-slate-700 focus:ring-0 cursor-pointer py-1 pr-8 pl-2 outline-none"
+            >
+              <option value="day">Aujourd'hui</option>
+              <option value="exact">Date exacte</option>
+              <option value="week">Cette semaine</option>
+              <option value="month">Ce mois</option>
+              <option value="all">Tout le temps</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* KPI Cards */}
@@ -178,53 +226,53 @@ export function Finance() {
         <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 mb-8">
           <Card className="border-0 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">CA Net (Mois)</CardTitle>
-              <div className={`h-8 w-8 rounded-full flex items-center justify-center ${caNetMois >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
-                <DollarSign className={`h-4 w-4 ${caNetMois >= 0 ? 'text-emerald-600' : 'text-rose-600'}`} />
+              <CardTitle className="text-sm font-medium text-slate-500">CA Net ({filterLabel})</CardTitle>
+              <div className={`h-8 w-8 rounded-full flex items-center justify-center ${caNet >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
+                <DollarSign className={`h-4 w-4 ${caNet >= 0 ? 'text-emerald-600' : 'text-rose-600'}`} />
               </div>
             </CardHeader>
             <CardContent>
-              <div className={`text-2xl font-bold ${caNetMois >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{caNetMois} DH</div>
+              <div className={`text-2xl font-bold ${caNet >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{caNet} DH</div>
               <p className="text-xs mt-1 text-slate-500">Recettes - Dépenses</p>
             </CardContent>
           </Card>
           
           <Card className="border-0 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">CA Net (Jour)</CardTitle>
-              <div className={`h-8 w-8 rounded-full flex items-center justify-center ${caNetJour >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
-                <Calendar className={`h-4 w-4 ${caNetJour >= 0 ? 'text-emerald-600' : 'text-rose-600'}`} />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className={`text-2xl font-bold ${caNetJour >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{caNetJour} DH</div>
-              <p className="text-xs mt-1 text-slate-500">Aujourd'hui</p>
-            </CardContent>
-          </Card>
-
-          <Card className="border-0 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">Recettes (Mois)</CardTitle>
+              <CardTitle className="text-sm font-medium text-slate-500">Recettes ({filterLabel})</CardTitle>
               <div className="h-8 w-8 rounded-full flex items-center justify-center bg-blue-50">
                 <TrendingUp className="h-4 w-4 text-blue-600" />
               </div>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{recettesDuMois} DH</div>
+              <div className="text-2xl font-bold text-slate-900">{totalRecettes} DH</div>
               <p className="text-xs mt-1 text-slate-500">Entrées brutes</p>
             </CardContent>
           </Card>
 
           <Card className="border-0 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">Dépenses (Mois)</CardTitle>
+              <CardTitle className="text-sm font-medium text-slate-500">Dépenses ({filterLabel})</CardTitle>
               <div className="h-8 w-8 rounded-full flex items-center justify-center bg-orange-50">
                 <TrendingDown className="h-4 w-4 text-orange-600" />
               </div>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{depensesDuMois} DH</div>
+              <div className="text-2xl font-bold text-slate-900">{totalDepenses} DH</div>
               <p className="text-xs mt-1 text-slate-500">Sorties brutes</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-0 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-slate-500">Transactions ({filterLabel})</CardTitle>
+              <div className="h-8 w-8 rounded-full flex items-center justify-center bg-indigo-50">
+                <Activity className="h-4 w-4 text-indigo-600" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-slate-900">{totalTransactions}</div>
+              <p className="text-xs mt-1 text-slate-500">Nombre de paiements</p>
             </CardContent>
           </Card>
         </div>
@@ -291,7 +339,7 @@ export function Finance() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {billings.length > 0 ? billings.map((bill) => {
+                  {filteredBillings.length > 0 ? filteredBillings.map((bill) => {
                     const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.created_at || new Date());
                     return (
                     <tr key={bill.id} className="hover:bg-slate-50 transition-colors">
@@ -357,7 +405,7 @@ export function Finance() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {expenses.length > 0 ? expenses.map((expense) => (
+                  {filteredExpenses.length > 0 ? filteredExpenses.map((expense) => (
                     <tr key={expense.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 text-slate-600">
                         {new Date(expense.date).toLocaleDateString('fr-FR')}

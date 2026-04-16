@@ -28,6 +28,7 @@ const StatCard = ({ title, value, icon: Icon, description, colorClass = "text-in
 export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('month');
+  const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
   const [rawData, setRawData] = useState({ billings: [] as any[], patients: [] as any[], appointments: [] as any[] });
 
   useEffect(() => {
@@ -51,7 +52,9 @@ export function Dashboard() {
   const dashboardData = useMemo(() => {
     const now = new Date();
     let startDate = new Date();
+    let endDate = new Date();
     let filterLabel = "Ce mois";
+    let isExactDate = false;
     
     if (filter === '7days') {
       startDate.setDate(now.getDate() - 7);
@@ -62,21 +65,37 @@ export function Dashboard() {
     } else if (filter === 'year') {
       startDate = new Date(now.getFullYear(), 0, 1);
       filterLabel = "Cette année";
+    } else if (filter === 'exact') {
+      isExactDate = true;
+      startDate = new Date(customDate);
+      startDate.setHours(0, 0, 0, 0);
+      endDate = new Date(customDate);
+      endDate.setHours(23, 59, 59, 999);
+      filterLabel = startDate.toLocaleDateString('fr-FR');
     }
+
+    const isDateInRange = (dateString: string | Date | undefined) => {
+      if (!dateString) return false;
+      const d = new Date(dateString);
+      if (isExactDate) {
+        return d >= startDate && d <= endDate;
+      }
+      return d >= startDate;
+    };
 
     // 1. CA Mensuel (ou selon filtre)
     const ca = rawData.billings
-      .filter(b => new Date(b.created_at || new Date()) >= startDate && (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut))
+      .filter(b => isDateInRange(b.created_at || new Date()) && (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut))
       .reduce((sum, b) => sum + Number(b.montant), 0);
 
     // 2. Nouveaux Patients
     const nouveauxPatients = rawData.patients
-      .filter(p => new Date(p.created_at || new Date()) >= startDate).length;
+      .filter(p => isDateInRange(p.created_at || new Date())).length;
 
     // 3. Taux d'Occupation
-    const days = filter === '7days' ? 7 : filter === 'month' ? 30 : 365;
+    const days = filter === '7days' ? 7 : filter === 'month' ? 30 : filter === 'year' ? 365 : 1;
     const capacity = days * 15; // Estimation de 15 créneaux par jour
-    const booked = rawData.appointments.filter(a => new Date(a.date_heure) >= startDate).length;
+    const booked = rawData.appointments.filter(a => isDateInRange(a.date_heure)).length;
     const occupation = capacity > 0 ? Math.min(Math.round((booked / capacity) * 100), 100) : 0;
 
     // 4. Impayés (Total global)
@@ -105,7 +124,7 @@ export function Dashboard() {
 
     // BarChart: Team workload
     const teamMap = new Map();
-    rawData.appointments.filter(a => new Date(a.date_heure) >= startDate).forEach(a => {
+    rawData.appointments.filter(a => isDateInRange(a.date_heure)).forEach(a => {
       const therapist = a.therapeute_id ? `Thérapeute ${a.therapeute_id.substring(0,4)}` : 'Dr. Dupont';
       teamMap.set(therapist, (teamMap.get(therapist) || 0) + 1);
     });
@@ -114,7 +133,7 @@ export function Dashboard() {
 
     // PieChart: Care types
     const actsMap = new Map();
-    rawData.appointments.filter(a => new Date(a.date_heure) >= startDate).forEach(a => {
+    rawData.appointments.filter(a => isDateInRange(a.date_heure)).forEach(a => {
       const act = a.motif || 'Général';
       actsMap.set(act, (actsMap.get(act) || 0) + 1);
     });
@@ -145,7 +164,7 @@ export function Dashboard() {
       actsChartData,
       topUnpaidList
     };
-  }, [rawData, filter]);
+  }, [rawData, filter, customDate]);
 
   const handleRelance = (patient: any) => {
     if (patient.email) {
@@ -174,16 +193,28 @@ export function Dashboard() {
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Dashboard Principal</h1>
           <p className="text-slate-500 mt-1">Vue d'ensemble des performances du cabinet.</p>
         </div>
-        <div>
-          <select
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="bg-white border border-slate-200 text-slate-700 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 shadow-sm outline-none font-medium"
-          >
-            <option value="7days">7 derniers jours</option>
-            <option value="month">Ce mois</option>
-            <option value="year">Cette année</option>
-          </select>
+        <div className="flex items-center gap-2">
+          {filter === 'exact' && (
+            <input
+              type="date"
+              value={customDate}
+              onChange={(e) => setCustomDate(e.target.value)}
+              className="p-1.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm"
+            />
+          )}
+          <div className="flex items-center gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm">
+            <Calendar className="h-4 w-4 text-slate-400 ml-2" />
+            <select
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className="bg-transparent border-none text-sm font-medium text-slate-700 focus:ring-0 cursor-pointer py-1 pr-8 pl-2 outline-none"
+            >
+              <option value="exact">Date exacte</option>
+              <option value="7days">7 derniers jours</option>
+              <option value="month">Ce mois</option>
+              <option value="year">Cette année</option>
+            </select>
+          </div>
         </div>
       </div>
 

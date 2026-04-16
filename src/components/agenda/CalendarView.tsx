@@ -72,12 +72,22 @@ export function CalendarView() {
   const [editMotif, setEditMotif] = useState('');
   const [showEditMotifDropdown, setShowEditMotifDropdown] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [isMobile, setIsMobile] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Setup grid (Lundi à Samedi, 8h à 20h)
   const startDate = startOfWeek(currentDate, { weekStartsOn: 1 });
-  const weekDays = Array.from({ length: 6 }).map((_, i) => addDays(startDate, i));
+  const displayedDays = isMobile 
+    ? [currentDate] 
+    : Array.from({ length: 6 }).map((_, i) => addDays(startDate, i));
   const hours = Array.from({ length: 13 }).map((_, i) => i + 8);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -293,20 +303,25 @@ export function CalendarView() {
           <motion.div 
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-baseline gap-4"
+            className="flex items-baseline gap-2 md:gap-4"
           >
-            <h1 className="text-7xl font-black text-slate-900/5 absolute -top-10 -left-4 pointer-events-none select-none uppercase tracking-tighter">
-              {format(startDate, 'MMMM', { locale: fr })}
+            <h1 className="text-5xl md:text-7xl font-black text-slate-900/5 absolute -top-6 md:-top-10 -left-2 md:-left-4 pointer-events-none select-none uppercase tracking-tighter">
+              {format(isMobile ? currentDate : startDate, 'MMMM', { locale: fr })}
             </h1>
-            <h2 className="text-4xl font-bold text-slate-900 capitalize tracking-tight flex items-center gap-3 relative z-10">
-              {format(startDate, 'MMMM', { locale: fr })}
-              <span className="text-primary-500 font-light">{format(startDate, 'yyyy')}</span>
+            <h2 className="text-3xl md:text-4xl font-bold text-slate-900 capitalize tracking-tight flex items-center gap-2 md:gap-3 relative z-10">
+              {format(isMobile ? currentDate : startDate, 'MMMM', { locale: fr })}
+              <span className="text-primary-500 font-light">{format(isMobile ? currentDate : startDate, 'yyyy')}</span>
             </h2>
           </motion.div>
-          <p className="text-slate-500 text-sm mt-1 font-medium">Semaine du {format(startDate, 'd MMMM', { locale: fr })}</p>
+          <p className="text-slate-500 text-sm mt-1 font-medium">
+            {isMobile 
+              ? format(currentDate, 'EEEE d MMMM', { locale: fr })
+              : `Semaine du ${format(startDate, 'd MMMM', { locale: fr })}`
+            }
+          </p>
         </div>
 
-        <div className="flex items-center gap-3 bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200">
+        <div className="flex items-center gap-3 bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 w-full md:w-auto justify-between md:justify-start">
           <Button 
             variant="ghost" 
             size="sm" 
@@ -315,12 +330,12 @@ export function CalendarView() {
           >
             Aujourd'hui
           </Button>
-          <div className="h-4 w-px bg-slate-200 mx-1" />
+          <div className="h-4 w-px bg-slate-200 mx-1 hidden md:block" />
           <div className="flex items-center gap-1">
             <Button 
               variant="ghost" 
               size="icon" 
-              onClick={() => setCurrentDate(addDays(currentDate, -7))} 
+              onClick={() => setCurrentDate(addDays(currentDate, isMobile ? -1 : -7))} 
               className="h-9 w-9 rounded-xl hover:bg-primary-50 hover:text-primary-600 transition-colors"
             >
               <ArrowLeft className="h-4 w-4" />
@@ -328,7 +343,7 @@ export function CalendarView() {
             <Button 
               variant="ghost" 
               size="icon" 
-              onClick={() => setCurrentDate(addDays(currentDate, 7))} 
+              onClick={() => setCurrentDate(addDays(currentDate, isMobile ? 1 : 7))} 
               className="h-9 w-9 rounded-xl hover:bg-primary-50 hover:text-primary-600 transition-colors"
             >
               <ArrowRight className="h-4 w-4" />
@@ -340,13 +355,13 @@ export function CalendarView() {
       {/* Calendar Grid */}
       <Card className="flex-1 overflow-hidden flex flex-col shadow-xl border-slate-200/60 rounded-2xl bg-white">
         <div className="overflow-x-auto flex-1 scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent" ref={scrollContainerRef}>
-          <div className="min-w-[900px] h-full flex flex-col relative">
+          <div className={`${isMobile ? 'min-w-full' : 'min-w-[900px]'} h-full flex flex-col relative`}>
             {/* Days Header */}
-            <div className="grid grid-cols-[80px_repeat(6,1fr)] border-b border-slate-200 bg-slate-50/50 backdrop-blur-sm sticky top-0 z-40">
+            <div className={`grid ${isMobile ? 'grid-cols-[60px_1fr]' : 'grid-cols-[80px_repeat(6,1fr)]'} border-b border-slate-200 bg-slate-50/50 backdrop-blur-sm sticky top-0 z-40`}>
               <div className="p-4 border-r border-slate-200 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center justify-center bg-slate-50/80">
                 GMT+1
               </div>
-              {weekDays.map((day, i) => {
+              {displayedDays.map((day, i) => {
                 const dayAppointmentsCount = appointments.filter(app => isSameDay(new Date(app.date_heure), day) && app.statut !== 'Annulé').length;
                 const isToday = isSameDay(day, new Date());
                 return (
@@ -376,7 +391,7 @@ export function CalendarView() {
             {/* Time Slots */}
             <div className="flex-1 relative bg-white">
               {/* Current Time Indicator Line */}
-              {weekDays.some(day => isSameDay(day, currentTime)) && (
+              {displayedDays.some(day => isSameDay(day, currentTime)) && (
                 <div 
                   className="absolute left-0 right-0 z-30 pointer-events-none flex items-center"
                   style={{ 
@@ -384,7 +399,7 @@ export function CalendarView() {
                     display: currentTime.getHours() >= 8 && currentTime.getHours() < 21 ? 'flex' : 'none'
                   }}
                 >
-                  <div className="w-[80px] flex justify-end pr-2">
+                  <div className={`${isMobile ? 'w-[60px]' : 'w-[80px]'} flex justify-end pr-2`}>
                     <span className="bg-rose-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow-sm">
                       {format(currentTime, 'HH:mm')}
                     </span>
@@ -396,14 +411,14 @@ export function CalendarView() {
               )}
 
               {hours.map((hour) => (
-                <div key={hour} className="grid grid-cols-[80px_repeat(6,1fr)] border-b border-slate-100 min-h-[80px] group/row">
+                <div key={hour} className={`grid ${isMobile ? 'grid-cols-[60px_1fr]' : 'grid-cols-[80px_repeat(6,1fr)]'} border-b border-slate-100 min-h-[80px] group/row`}>
                   <div className="p-3 border-r border-slate-200 text-right text-[11px] font-bold text-slate-400 sticky left-0 bg-slate-50/80 backdrop-blur-sm z-20 flex flex-col justify-start">
                     <span>{hour}:00</span>
                     <span className="text-[9px] opacity-0 group-hover/row:opacity-100 transition-opacity mt-1 font-medium">
                       {hour}:30
                     </span>
                   </div>
-                  {weekDays.map((day, dayIdx) => {
+                  {displayedDays.map((day, dayIdx) => {
                     const slotAppointments = getAppointmentsForSlot(day, hour);
                     const isToday = isSameDay(day, new Date());
                     return (
