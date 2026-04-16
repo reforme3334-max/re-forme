@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -163,6 +163,27 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       }
     }
   };
+
+  // Calculate session progression based on actual appointments
+  const activeTreatment = useMemo(() => {
+    // Find the current active treatment or the most recent one
+    const activeTreatmentData = treatments.find(t => t.statut === 'En cours') || treatments[0];
+    
+    // Count completed sessions
+    // We count all 'Effectué' appointments for this patient to ensure synchronization with history
+    const seances_effectuees = appointments.filter(a => a.statut === 'Effectué').length;
+
+    return {
+      motif: activeTreatmentData?.motif || patient?.pathologie || 'Non renseigné',
+      seances_prescrites: activeTreatmentData?.nombre_seances_prescrites || patient?.nombre_seances || 0,
+      seances_effectuees: seances_effectuees,
+    };
+  }, [appointments, treatments, patient]);
+
+  const remainingSessions = Math.max(0, activeTreatment.seances_prescrites - activeTreatment.seances_effectuees);
+  const progressPercentage = activeTreatment.seances_prescrites > 0 
+    ? Math.min(100, (activeTreatment.seances_effectuees / activeTreatment.seances_prescrites) * 100) 
+    : 0;
 
   if (loading) {
     return <div className="p-8 text-center text-slate-500">Chargement des détails du patient...</div>;
@@ -427,18 +448,6 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     
     doc.save(`Calendrier_Soins_${patient.nom}_${patient.prenom}.pdf`);
   };
-
-  // Fallback for missing active_treatment data in Supabase (since we just added the columns)
-  const activeTreatment = {
-    motif: patient.pathologie || 'Non renseigné',
-    seances_prescrites: patient.nombre_seances || 0,
-    seances_effectuees: 0, // This would ideally come from counting appointments
-  };
-
-  const remainingSessions = activeTreatment.seances_prescrites - activeTreatment.seances_effectuees;
-  const progressPercentage = activeTreatment.seances_prescrites > 0 
-    ? (activeTreatment.seances_effectuees / activeTreatment.seances_prescrites) * 100 
-    : 0;
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
