@@ -37,16 +37,33 @@ export function Dashboard() {
 
   const fetchData = async () => {
     setLoading(true);
-    const { data: patients } = await supabase.from('patients').select('id, created_at');
-    const { data: billings } = await supabase.from('billings').select('*, patients(nom, prenom, email)');
-    const { data: appointments } = await supabase.from('appointments').select('*');
-    
-    setRawData({
-      patients: patients || [],
-      billings: billings || [],
-      appointments: appointments || []
-    });
-    setLoading(false);
+    try {
+      const { data: patients, error: pErr } = await supabase.from('patients').select('id, created_at, pathologie');
+      if (pErr) console.error('Error fetching patients:', pErr);
+
+      const { data: billings, error: bErr } = await supabase.from('billings').select('*, patients(nom, prenom, email)');
+      if (bErr) console.error('Error fetching billings:', bErr);
+
+      // Try to fetch appointments. If the join fails, fallback to simple select
+      let { data: appointments, error: aErr } = await supabase.from('appointments').select('*, treatments(motif)');
+      
+      if (aErr) {
+        console.warn('Join with treatments failed, falling back to simple appointments select:', aErr.message);
+        const { data: simpleAppts, error: simpleErr } = await supabase.from('appointments').select('*');
+        if (simpleErr) console.error('Error fetching simple appointments:', simpleErr);
+        appointments = simpleAppts;
+      }
+      
+      setRawData({
+        patients: patients || [],
+        billings: billings || [],
+        appointments: appointments || []
+      });
+    } catch (err) {
+      console.error('Unexpected error in fetchData:', err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const dashboardData = useMemo(() => {
@@ -65,6 +82,8 @@ export function Dashboard() {
     } else if (filter === 'year') {
       startDate = new Date(now.getFullYear(), 0, 1);
       filterLabel = "Cette année";
+    } else if (filter === 'all') {
+      filterLabel = "Tout le temps";
     } else if (filter === 'exact') {
       isExactDate = true;
       startDate = new Date(customDate);
@@ -76,6 +95,7 @@ export function Dashboard() {
 
     const isDateInRange = (dateString: string | Date | undefined) => {
       if (!dateString) return false;
+      if (filter === 'all') return true;
       const d = new Date(dateString);
       if (isExactDate) {
         return d >= startDate && d <= endDate;
@@ -131,14 +151,40 @@ export function Dashboard() {
     const teamChartData = Array.from(teamMap, ([name, seances]) => ({ name, seances }));
     if (teamChartData.length === 0) teamChartData.push({ name: 'Dr. Dupont', seances: 0 });
 
-    // PieChart: Care types
+    // PieChart: Care types (Motifs)
     const actsMap = new Map();
     rawData.appointments.filter(a => isDateInRange(a.date_heure)).forEach(a => {
-      const act = a.motif || 'Général';
+      const act = a.treatments?.motif || a.notes_seance || a.motif || 'Général';
       actsMap.set(act, (actsMap.get(act) || 0) + 1);
     });
-    const actsChartData = Array.from(actsMap, ([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 5);
+    const actsChartData = Array.from(actsMap, ([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 8);
     if (actsChartData.length === 0) actsChartData.push({ name: 'Aucun soin', value: 1 });
+
+    // PieChart: Pathologies
+    const pathologyMap = new Map();
+    // We count pathologies from patients who had appointments in the range
+    const patientIdsWithAppointments = new Set(
+      rawData.appointments
+        .filter(a => isDateInRange(a.date_heure))
+        .map(a => a.patient_id)
+        .filter(Boolean)
+    );
+
+    rawData.patients.forEach(p => {
+      if (patientIdsWithAppointments.has(p.id)) {
+        let patho = p.pathologie ? p.pathologie.trim() : 'Non renseignée';
+        // Normalize: Capitalize first letter
+        patho = patho.charAt(0).toUpperCase() + patho.slice(1);
+        pathologyMap.set(patho, (pathologyMap.get(patho) || 0) + 1);
+      }
+    });
+    const pathologyChartData = Array.from(pathologyMap, ([name, value]) => ({ name, value }))
+      .sort((a,b) => b.value - a.value)
+      .slice(0, 8);
+    
+    if (pathologyChartData.length === 0) {
+      pathologyChartData.push({ name: 'Aucune donnée', value: 1 });
+    }
 
     // Top 5 Impayés
     const unpaidMap = new Map();
@@ -162,9 +208,12 @@ export function Dashboard() {
       last6Months,
       teamChartData,
       actsChartData,
+      pathologyChartData,
       topUnpaidList
     };
   }, [rawData, filter, customDate]);
+
+  const [pieToggle, setPieToggle] = useState<'motifs' | 'pathologies'>('motifs');
 
   const handleRelance = (patient: any) => {
     if (patient.email) {
@@ -209,6 +258,7 @@ export function Dashboard() {
               onChange={(e) => setFilter(e.target.value)}
               className="bg-transparent border-none text-sm font-medium text-slate-700 focus:ring-0 cursor-pointer py-1 pr-8 pl-2 outline-none"
             >
+              <option value="all">Tout le temps</option>
               <option value="exact">Date exacte</option>
               <option value="7days">7 derniers jours</option>
               <option value="month">Ce mois</option>
@@ -281,28 +331,46 @@ export function Dashboard() {
 
         {/* PieChart (Répartition) */}
         <Card className="border-0 shadow-sm">
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-base font-semibold text-slate-800">Répartition des Soins</CardTitle>
+            <div className="flex bg-slate-100 p-1 rounded-lg">
+              <button 
+                onClick={() => setPieToggle('motifs')}
+                className={`px-2 py-1 text-[10px] font-bold uppercase rounded-md transition-all ${pieToggle === 'motifs' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Motifs
+              </button>
+              <button 
+                onClick={() => setPieToggle('pathologies')}
+                className={`px-2 py-1 text-[10px] font-bold uppercase rounded-md transition-all ${pieToggle === 'pathologies' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Pathologies
+              </button>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] w-full flex flex-col items-center justify-center">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={dashboardData.actsChartData}
+                    data={pieToggle === 'motifs' ? dashboardData.actsChartData : dashboardData.pathologyChartData}
                     cx="50%"
                     cy="50%"
                     innerRadius={60}
                     outerRadius={80}
                     paddingAngle={5}
                     dataKey="value"
+                    label={({ name, percent }) => `${(percent * 100).toFixed(0)}%`}
                   >
-                    {dashboardData.actsChartData.map((entry, index) => (
+                    {(pieToggle === 'motifs' ? dashboardData.actsChartData : dashboardData.pathologyChartData).map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-                  <Legend verticalAlign="bottom" height={36} iconType="circle" />
+                  <Tooltip 
+                    contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} 
+                    formatter={(value: number) => [`${value} ${pieToggle === 'motifs' ? 'séances' : 'patients'}`, 'Total']}
+                  />
+                  <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -384,6 +452,43 @@ export function Dashboard() {
                 </tbody>
               </table>
             </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 4. Pathologies Fréquentes */}
+      <div className="mt-4">
+        <Card className="border-0 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-base font-semibold text-slate-800 flex items-center gap-2">
+              <Activity className="h-5 w-5 text-indigo-500" />
+              Pathologies les plus fréquentes ({dashboardData.filterLabel})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {dashboardData.pathologyChartData.filter(p => p.name !== 'Aucune donnée').length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {dashboardData.pathologyChartData.filter(p => p.name !== 'Aucune donnée').map((p, i) => (
+                  <div key={i} className="p-4 rounded-xl bg-slate-50 border border-slate-100 flex flex-col gap-1 hover:bg-slate-100 transition-colors">
+                    <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest truncate" title={p.name}>{p.name}</span>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-bold text-slate-900">{p.value}</span>
+                      <span className="text-xs text-slate-500 font-medium">patients</span>
+                    </div>
+                    <div className="w-full bg-slate-200 h-1 rounded-full mt-2 overflow-hidden">
+                      <div 
+                        className="h-full bg-indigo-500 rounded-full" 
+                        style={{ width: `${(p.value / Math.max(...dashboardData.pathologyChartData.map(x => x.value))) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-8 text-center text-slate-500 text-sm">
+                Aucune donnée de pathologie pour cette période.
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
