@@ -451,9 +451,9 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       ["Téléphone :", patient.telephone || "Non renseigné"],
       [],
       ["Désignation", "Quantité", "Prix Unitaire", "Total"],
-      ["Séances de kinésithérapie", sessionsCount, "-", `${totalPaid} €`],
+      ["Séances de kinésithérapie", sessionsCount, "-", `${totalPaid} DH`],
       [],
-      ["", "", "Total Payé :", `${totalPaid} €`]
+      ["", "", "Total Payé :", `${totalPaid} DH`]
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -758,7 +758,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                         </div>
                         <div>
                           <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Bilan Financier</p>
-                          <p className="text-slate-900 font-medium">Total facturé : {treatment.total_facture || 0} €</p>
+                          <p className="text-slate-900 font-medium">Total facturé : {treatment.total_facture || 0} DH</p>
                         </div>
                         <div>
                           <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Médecin Prescripteur</p>
@@ -889,7 +889,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                             {bill.appointments?.date_heure ? new Date(bill.appointments.date_heure).toLocaleDateString('fr-FR') : 'N/A'}
                           </td>
                           <td className="px-6 py-4 font-medium text-slate-900">
-                            {bill.montant} €
+                            {bill.montant} DH
                           </td>
                           <td className="px-6 py-4 text-slate-600">
                             {bill.type_paiement}

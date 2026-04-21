@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { format, addDays, startOfWeek, isSameDay, setHours, setMinutes, isSameMonth } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Euro, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -886,15 +886,15 @@ export function CalendarView() {
             <div className="space-y-4 bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
               <div className="flex items-center justify-between">
                 <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Règlement</h4>
-                <Euro className="h-4 w-4 text-slate-200" />
+                <Wallet className="h-4 w-4 text-slate-200" />
               </div>
               
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Montant (€)</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Montant (DH)</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Euro className="h-3 w-3 text-slate-400" />
+                      <Wallet className="h-3 w-3 text-slate-400" />
                     </div>
                     <input
                       type="number"

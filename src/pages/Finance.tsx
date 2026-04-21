@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { DollarSign, TrendingUp, TrendingDown, Activity, Calendar, ArrowUpRight, ArrowDownRight, FileSpreadsheet, Plus } from 'lucide-react';
+import { Wallet, TrendingUp, TrendingDown, Activity, Calendar, ArrowUpRight, ArrowDownRight, FileSpreadsheet, Plus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Modal } from '../components/ui/modal';
@@ -228,7 +228,7 @@ export function Finance() {
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-slate-500">CA Net ({filterLabel})</CardTitle>
               <div className={`h-8 w-8 rounded-full flex items-center justify-center ${caNet >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
-                <DollarSign className={`h-4 w-4 ${caNet >= 0 ? 'text-emerald-600' : 'text-rose-600'}`} />
+                <Wallet className={`h-4 w-4 ${caNet >= 0 ? 'text-emerald-600' : 'text-rose-600'}`} />
               </div>
             </CardHeader>
             <CardContent>
