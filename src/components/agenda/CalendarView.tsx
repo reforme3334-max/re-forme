@@ -14,14 +14,23 @@ interface Patient {
   prenom: string;
 }
 
+interface Therapist {
+  id: string;
+  nom: string;
+  prenom: string;
+  specialite: string;
+}
+
 interface Appointment {
   id: string;
   patient_id: string;
+  therapist_id?: string;
   date_heure: string;
   duree: number;
   statut: string;
   notes_seance: string; // Utilisé pour stocker "Bilan" ou "Séance"
   patients?: { nom: string; prenom: string };
+  therapists?: { nom: string; prenom: string };
 }
 
 const MOTIFS_SEANCE = [
@@ -46,6 +55,8 @@ export function CalendarView() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [therapists, setTherapists] = useState<Therapist[]>([]);
+  const [selectedTherapistId, setSelectedTherapistId] = useState<string>('all');
   const [motifs, setMotifs] = useState<string[]>(MOTIFS_SEANCE);
   
   // Modal state
@@ -53,6 +64,7 @@ export function CalendarView() {
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [newAppointmentTime, setNewAppointmentTime] = useState('');
   const [newAppointmentMotif, setNewAppointmentMotif] = useState('Séance de Suivi');
+  const [newAppointmentTherapist, setNewAppointmentTherapist] = useState('');
   const [showNewMotifDropdown, setShowNewMotifDropdown] = useState(false);
   
   // Form state
@@ -70,6 +82,7 @@ export function CalendarView() {
   const [editDate, setEditDate] = useState('');
   const [editTime, setEditTime] = useState('');
   const [editMotif, setEditMotif] = useState('');
+  const [editTherapist, setEditTherapist] = useState('');
   const [showEditMotifDropdown, setShowEditMotifDropdown] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isMobile, setIsMobile] = useState(false);
@@ -99,8 +112,19 @@ export function CalendarView() {
   useEffect(() => {
     fetchAppointments();
     fetchPatients();
+    fetchTherapists();
     fetchMotifs();
   }, [currentDate]);
+
+  const fetchTherapists = async () => {
+    const { data, error } = await supabase
+      .from('therapists')
+      .select('*')
+      .order('nom');
+    if (!error && data) {
+      setTherapists(data);
+    }
+  };
 
   const fetchMotifs = async () => {
     const { data, error } = await supabase.from('seance_motifs').select('nom');
@@ -127,7 +151,7 @@ export function CalendarView() {
     // Dans une vraie app, on filtrerait par date de début et fin de semaine
     const { data, error } = await supabase
       .from('appointments')
-      .select('*, patients(nom, prenom)');
+      .select('*, patients(nom, prenom), therapists(nom, prenom)');
       
     if (!error && data) {
       setAppointments(data);
@@ -178,6 +202,7 @@ export function CalendarView() {
       .from('appointments')
       .insert([{
         patient_id: selectedPatient,
+        therapist_id: newAppointmentTherapist || null,
         date_heure: finalDate.toISOString(),
         notes_seance: newAppointmentMotif
       }]);
@@ -203,7 +228,8 @@ export function CalendarView() {
       .from('appointments')
       .update({ 
         date_heure: newDateTime.toISOString(),
-        notes_seance: editMotif
+        notes_seance: editMotif,
+        therapist_id: editTherapist || null
       })
       .eq('id', selectedAppointment.id);
 
@@ -291,7 +317,8 @@ export function CalendarView() {
   const getAppointmentsForSlot = (day: Date, hour: number) => {
     return appointments.filter(app => {
       const appDate = new Date(app.date_heure);
-      return isSameDay(appDate, day) && appDate.getHours() === hour;
+      const matchesTherapist = selectedTherapistId === 'all' || app.therapist_id === selectedTherapistId;
+      return isSameDay(appDate, day) && appDate.getHours() === hour && matchesTherapist;
     });
   };
 
@@ -322,6 +349,19 @@ export function CalendarView() {
         </div>
 
         <div className="flex items-center gap-3 bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 w-full md:w-auto justify-between md:justify-start">
+          <div className="flex items-center gap-2 px-2 border-r border-slate-100">
+            <User className="h-4 w-4 text-slate-400" />
+            <select 
+              value={selectedTherapistId}
+              onChange={(e) => setSelectedTherapistId(e.target.value)}
+              className="text-xs font-bold text-slate-600 bg-transparent border-none focus:ring-0 outline-none pr-8"
+            >
+              <option value="all">Tous les praticiens</option>
+              {therapists.map(t => (
+                <option key={t.id} value={t.id}>{t.prenom} {t.nom}</option>
+              ))}
+            </select>
+          </div>
           <Button 
             variant="ghost" 
             size="sm" 
@@ -484,6 +524,7 @@ export function CalendarView() {
                                   setEditDate(format(appDate, 'yyyy-MM-dd'));
                                   setEditTime(format(appDate, 'HH:mm'));
                                   setEditMotif(app.notes_seance || 'Séance de Suivi');
+                                  setEditTherapist(app.therapist_id || '');
                                   setErrorMsg(null);
                                   setIsBillingModalOpen(true);
                                 }}
@@ -498,6 +539,11 @@ export function CalendarView() {
                                     {app.statut === 'Impayé' && <AlertCircle className="h-3 w-3 text-rose-500 animate-pulse" />}
                                   </div>
                                 </div>
+                                {app.therapists && (
+                                  <div className={`text-[9px] font-bold uppercase tracking-tighter text-slate-500/60 mb-1 pl-1 ${isNarrow ? 'hidden group-hover/app:block' : ''}`}>
+                                    Praticien: {app.therapists.prenom} {app.therapists.nom}
+                                  </div>
+                                )}
                                 <div className={`${isNarrow ? 'hidden group-hover/app:flex' : 'flex'} items-center gap-1.5 opacity-70 font-medium pl-1 mt-1`}>
                                   <Clock className="h-3 w-3 shrink-0" />
                                   <span className="truncate">{format(new Date(app.date_heure), 'HH:mm')} {app.notes_seance ? `• ${app.notes_seance}` : ''}</span>
@@ -565,6 +611,20 @@ export function CalendarView() {
               </div>
             </div>
           )}
+
+          <div className="space-y-2 relative">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Praticien</label>
+            <select
+              value={newAppointmentTherapist}
+              onChange={(e) => setNewAppointmentTherapist(e.target.value)}
+              className="w-full p-3 border border-slate-200 rounded-xl font-medium text-slate-900 focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50 outline-none"
+            >
+              <option value="">Sélectionner un praticien (optionnel)</option>
+              {therapists.map(t => (
+                <option key={t.id} value={t.id}>{t.prenom} {t.nom}</option>
+              ))}
+            </select>
+          </div>
 
           <div className="space-y-2 relative">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Motif de la séance</label>
@@ -758,6 +818,20 @@ export function CalendarView() {
                   disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
                   className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400"
                 />
+              </div>
+              <div className="space-y-1.5 col-span-2 relative">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Praticien</label>
+                <select
+                  value={editTherapist}
+                  onChange={(e) => setEditTherapist(e.target.value)}
+                  disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
+                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400 bg-slate-50/30 outline-none"
+                >
+                  <option value="">Non assigné</option>
+                  {therapists.map(t => (
+                    <option key={t.id} value={t.id}>{t.prenom} {t.nom}</option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-1.5 col-span-2 relative">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Motif</label>

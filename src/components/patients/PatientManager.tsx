@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail, Search, Filter } from 'lucide-react';
+import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail, Search, Filter, Upload } from 'lucide-react';
+import Papa from 'papaparse';
 
 interface Patient {
   id: string;
@@ -52,6 +53,10 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const [searchPathologie, setSearchPathologie] = useState('');
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
 
+  // Import state
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importLoading, setImportLoading] = useState(false);
+
   // Fetch patients on component mount
   useEffect(() => {
     fetchPatients();
@@ -73,6 +78,87 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     }
     
     setFetching(false);
+  };
+
+  const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImportLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        try {
+          const validPatients = results.data
+            .map((row: any) => {
+              // Map possible headers to db columns (case insensitive, various common formats)
+              const findVal = (keys: string[]) => {
+                const key = Object.keys(row).find(k => keys.includes(k.toLowerCase().trim()));
+                return key ? row[key] : null;
+              };
+
+              const nom = findVal(['nom', 'last name', 'lastname', 'nom_patient']) || 'Inconnu';
+              const prenom = findVal(['prenom', 'prénom', 'first name', 'firstname', 'prenom_patient']) || 'Inconnu';
+              const tel = findVal(['tel', 'téléphone', 'telephone', 'phone', 'contact']) || null;
+              const emailVal = findVal(['email', 'e-mail', 'mail', 'courriel']) || null;
+              const pathologieVal = findVal(['pathologie', 'pathology', 'motif', 'diagnostic']) || null;
+              const dateNaiss = findVal(['date de naissance', 'date_naissance', 'dob', 'birthdate', 'birth date']) || null;
+              const adresseVal = findVal(['adresse', 'address']) || null;
+
+              // Enforce some formatting if needed
+              let formattedDate = null;
+              if (dateNaiss) {
+                // Try to parse simple dates if they look like yyyy-mm-dd
+                // if not, you might want a more complex parser. Supabase accepts YYYY-MM-DD
+                const parts = dateNaiss.split('/');
+                if (parts.length === 3) { // Assume DD/MM/YYYY
+                  formattedDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                } else {
+                  formattedDate = dateNaiss; // Pass as is, hope it works
+                }
+              }
+
+              return {
+                nom,
+                prenom,
+                telephone: tel,
+                email: emailVal,
+                pathologie: pathologieVal,
+                date_naissance: formattedDate,
+                adresse: adresseVal,
+              };
+            })
+            // Filters out empty rows that somehow bypassed Papaparse
+            .filter((p) => p.nom !== 'Inconnu' || p.prenom !== 'Inconnu');
+
+          if (validPatients.length === 0) {
+            throw new Error("Aucun patient valide trouvé dans le fichier. Veuillez vérifier le format (colonnes : Nom, Prénom, Téléphone, Email...).");
+          }
+
+          const { error: insertError } = await supabase.from('patients').insert(validPatients);
+          if (insertError) throw insertError;
+
+          setSuccess(`${validPatients.length} patients importés avec succès !`);
+          fetchPatients();
+        } catch (err: any) {
+          setError(`Erreur d'importation : ${err.message}`);
+        } finally {
+          setImportLoading(false);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+          }
+        }
+      },
+      error: (error) => {
+        setError("Erreur de lecture du fichier CSV : " + error.message);
+        setImportLoading(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -285,6 +371,23 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
             Base de données Patients
           </CardTitle>
           <div className="flex items-center gap-2">
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleImportCSV} 
+              accept=".csv" 
+              className="hidden" 
+            />
+            <Button 
+              variant="outline" 
+              size="sm" 
+              className="gap-2 bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100 hover:text-indigo-800"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={importLoading || fetching}
+            >
+              <Upload className={`h-4 w-4 ${importLoading ? 'animate-bounce' : ''}`} />
+              <span className="hidden sm:inline">{importLoading ? 'Import en cours...' : 'Importer CSV'}</span>
+            </Button>
             <Button 
               variant="outline" 
               size="sm" 
@@ -292,17 +395,17 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
               className={`gap-2 ${showAdvancedSearch ? 'bg-slate-100' : ''}`}
             >
               <Filter className="h-4 w-4" />
-              Filtres
+              <span className="hidden sm:inline">Filtres</span>
             </Button>
             <Button 
               variant="outline" 
               size="sm" 
               onClick={fetchPatients} 
-              disabled={fetching}
+              disabled={fetching || importLoading}
               className="gap-2"
             >
               <RefreshCw className={`h-4 w-4 ${fetching ? 'animate-spin' : ''}`} />
-              Actualiser
+              <span className="hidden sm:inline">Actualiser</span>
             </Button>
           </div>
         </CardHeader>

@@ -145,11 +145,11 @@ export function Dashboard() {
     // BarChart: Team workload
     const teamMap = new Map();
     rawData.appointments.filter(a => isDateInRange(a.date_heure)).forEach(a => {
-      const therapist = a.therapeute_id ? `Thérapeute ${a.therapeute_id.substring(0,4)}` : 'Dr. Dupont';
+      const therapist = a.therapeute_id ? `Thérapeute ${a.therapeute_id.substring(0,4)}` : 'Mr HADDAOUI Younes';
       teamMap.set(therapist, (teamMap.get(therapist) || 0) + 1);
     });
     const teamChartData = Array.from(teamMap, ([name, seances]) => ({ name, seances }));
-    if (teamChartData.length === 0) teamChartData.push({ name: 'Dr. Dupont', seances: 0 });
+    if (teamChartData.length === 0) teamChartData.push({ name: 'Mr HADDAOUI Younes', seances: 0 });
 
     // PieChart: Care types (Motifs)
     const actsMap = new Map();

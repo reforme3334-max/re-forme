@@ -63,7 +63,7 @@ export function NewPatientForm({ onSuccess, onCancel }: NewPatientFormProps) {
                 value={nom}
                 onChange={(e) => setNom(e.target.value)}
                 className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-                placeholder="Ex: Dupont"
+                placeholder="Ex: HADDAOUI"
               />
             </div>
             <div className="space-y-1.5">

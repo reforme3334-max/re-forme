@@ -213,7 +213,7 @@ export function PatientPortal() {
                   {new Date(nextAppointment.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à {new Date(nextAppointment.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                 </p>
                 <p className="text-xs text-blue-600/80 mt-1.5 flex items-center gap-1">
-                  <User className="h-3 w-3" /> Dr. Dupont
+                  <User className="h-3 w-3" /> Mr HADDAOUI Younes
                 </p>
               </div>
             </div>
@@ -296,7 +296,7 @@ export function PatientPortal() {
                     </span>
                     <span className="flex items-center gap-1.5 bg-slate-50 px-2 py-1 rounded-md">
                       <User className="h-3.5 w-3.5 text-slate-400" />
-                      Dr. Dupont
+                      Mr HADDAOUI Younes
                     </span>
                   </div>
                 </div>

@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Shield, Users, UserPlus, Mail, Lock, AlertCircle, CheckCircle, Activity, Save, CheckSquare, Square } from 'lucide-react';
+import { Shield, Users, UserPlus, Mail, Lock, AlertCircle, AlertTriangle, CheckCircle, Activity, Save, CheckSquare, Square, Stethoscope, Plus, Trash2, Database, Upload, Phone } from 'lucide-react';
+import Papa from 'papaparse';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 
@@ -17,17 +18,33 @@ const PERMISSIONS_LIST = [
 export function Settings() {
   const [activeTab, setActiveTab] = useState('equipe');
   const [profiles, setProfiles] = useState<any[]>([]);
+  const [therapists, setTherapists] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Form state
+  // Form state for collaborators
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('therapeute');
   const [createLoading, setCreateLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
 
+  // Form state for practitioners
+  const [newTherapist, setNewTherapist] = useState({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
+  const [therapistLoading, setTherapistLoading] = useState(false);
+
+  // Form state for import
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importType, setImportType] = useState('appointments');
+  const [importLoading, setImportLoading] = useState(false);
+  const [importMessage, setImportMessage] = useState({ type: '', text: '' });
+  
+  // Dedup state
+  const [dedupLoading, setDedupLoading] = useState(false);
+  const [dedupMessage, setDedupMessage] = useState({ type: '', text: '' });
+
   useEffect(() => {
     fetchProfiles();
+    fetchTherapists();
   }, []);
 
   const fetchProfiles = async () => {
@@ -47,6 +64,34 @@ export function Settings() {
       setProfiles(formattedData);
     }
     setLoading(false);
+  };
+
+  const fetchTherapists = async () => {
+    const { data, error } = await supabase
+      .from('therapists')
+      .select('*')
+      .order('nom');
+    if (data) setTherapists(data);
+  };
+
+  const handleAddTherapist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTherapistLoading(true);
+    const { error } = await supabase.from('therapists').insert([newTherapist]);
+    setTherapistLoading(false);
+    if (!error) {
+      setNewTherapist({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
+      fetchTherapists();
+    } else {
+      alert("Erreur lors de l'ajout du praticien.");
+    }
+  };
+
+  const handleDeleteTherapist = async (id: string) => {
+    if (confirm("Voulez-vous vraiment supprimer ce praticien ?")) {
+      const { error } = await supabase.from('therapists').delete().eq('id', id);
+      if (!error) fetchTherapists();
+    }
   };
 
   const handleUpdateRole = async (id: string, newRole: string) => {
@@ -79,6 +124,235 @@ export function Settings() {
       console.error(error);
       alert("Erreur lors de la mise à jour des permissions. Assurez-vous d'avoir exécuté le script SQL pour ajouter la colonne 'permissions' (JSONB) à la table 'profiles'.");
       fetchProfiles(); // Revert on error
+    }
+  };
+
+  const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImportLoading(true);
+    setImportMessage({ type: '', text: '' });
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        try {
+          // 1. Fetch existing patients to match
+          const { data: existingPatients, error: pError } = await supabase.from('patients').select('id, nom, prenom');
+          if (pError) throw pError;
+
+          const rows = results.data as any[];
+          const newAppointments = [];
+          const billingsMap: { [key: string]: any } = {}; // To store billing info linked to appointment index
+          let errorCount = 0;
+
+          // Instead of looping blindly, we'll index our appointments so we can attach billings map to them
+          let currentAppIndex = 0;
+
+          for (const row of rows) {
+            // Find patient columns
+            const findVal = (keys: string[]) => {
+              const key = Object.keys(row).find(k => keys.includes(k.toLowerCase().trim()));
+              return key ? row[key] : null;
+            };
+
+            const nomPatient = findVal(['nom patient', 'nom', 'patient nom', 'last name'])?.trim();
+            const prenomPatient = findVal(['prenom patient', 'prénom patient', 'prenom', 'prénom', 'first name'])?.trim();
+            const dateSeance = findVal(['date', 'date seance', 'date de séance', 'appointment date']);
+            const heureSeance = findVal(['heure', 'time', 'heure seance', 'appointment time']) || '08:00'; // Default time if missing
+            const motif = findVal(['motif', 'notes', 'notes seance', 'description', 'raison']) || 'Séance de suivi';
+            const statut = findVal(['statut', 'status', 'état']) || 'Effectué'; // Automatically mark past imports as completed if appropriate, but keeping what's read
+
+            // Billings
+            const montantStr = findVal(['montant', 'prix', 'tarif', 'price', 'amount', 'règlement', 'reglement']);
+            const typePaiementStr = findVal(['type paiement', 'methode paiement', 'moyen de paiement', 'type de règlement', 'type de reglement']);
+            const statutPaiementStr = findVal(['statut paiement', 'etat paiement', 'payment status', 'statut règlement']);
+
+            if (!nomPatient || !dateSeance) {
+              errorCount++;
+              continue;
+            }
+
+            // Find matching patient
+            const patient = existingPatients.find(p => 
+              p.nom.toLowerCase() === nomPatient.toLowerCase() && 
+              p.prenom.toLowerCase() === prenomPatient?.toLowerCase()
+            );
+
+            if (!patient) {
+              errorCount++;
+              continue;
+            }
+
+            // Parse Date
+            let isoDate = null;
+            try {
+              let datePart = dateSeance;
+              if (dateSeance.includes('/')) {
+                const parts = dateSeance.split('/');
+                if (parts.length === 3) {
+                  datePart = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                }
+              }
+              const dateTimeString = `${datePart}T${heureSeance.padStart(5, '0')}:00`;
+              isoDate = new Date(dateTimeString).toISOString();
+            } catch (e) {
+              errorCount++;
+              continue;
+            }
+
+            let finalStatut = 'Effectué';
+            const sLow = statut.toLowerCase();
+            if (sLow.includes('annul') || sLow.includes('cancel')) finalStatut = 'Annulé';
+            if (sLow.includes('confirm')) finalStatut = 'Confirmé';
+            if (sLow.includes('impay') || sLow.includes('non pay')) finalStatut = 'Impayé';
+
+            newAppointments.push({
+              patient_id: patient.id,
+              date_heure: isoDate,
+              duree: 30, // Default duration
+              notes_seance: motif,
+              statut: finalStatut
+            });
+
+            // Extract billing if available
+            if (montantStr) {
+              const montantNum = parseFloat(montantStr.toString().replace(',', '.').replace(/[^0-9.-]+/g, ''));
+              if (!isNaN(montantNum)) {
+                let finalTypePaiement = 'Patient';
+                if (typePaiementStr) {
+                  const tpLow = typePaiementStr.toString().toLowerCase();
+                  if (tpLow.includes('tiers') || tpLow.includes('payant')) finalTypePaiement = 'Tiers-payant';
+                  if (tpLow.includes('hors') || tpLow.includes('nomenclature')) finalTypePaiement = 'Hors nomenclature';
+                  if (tpLow.includes('mutuelle')) finalTypePaiement = 'Mutuelle';
+                }
+
+                let finalStatutPaiement = 'En attente';
+                if (statutPaiementStr) {
+                  const spLow = statutPaiementStr.toString().toLowerCase();
+                  if (spLow.includes('payé') || spLow.includes('reglé') || spLow.includes('réglé')) finalStatutPaiement = 'Payé';
+                  if (spLow.includes('rejet')) finalStatutPaiement = 'Rejeté';
+                } else {
+                   // Si pas de statut défini mais on a un montant et un type, on peut par defaut considerer payé pour l'historique
+                   finalStatutPaiement = 'Payé';
+                }
+                
+                billingsMap[currentAppIndex] = {
+                  patient_id: patient.id,
+                  montant: montantNum,
+                  type_paiement: finalTypePaiement,
+                  statut: finalStatutPaiement,
+                  date_facturation: isoDate
+                };
+              }
+            }
+
+            currentAppIndex++;
+          }
+
+          if (newAppointments.length === 0) {
+            throw new Error(`Aucune séance valide trouvée. ${errorCount} lignes ignorées (patient non trouvé ou format date invalide).`);
+          }
+
+          // Insert appointments AND get their IDs back 
+          const { data: insertedApps, error: insertError } = await supabase.from('appointments').insert(newAppointments).select('id');
+          if (insertError) throw insertError;
+
+          // Prepare billings mapping
+          let totalBillings = 0;
+          if (insertedApps && insertedApps.length > 0) {
+            const billingsToInsert = [];
+            for (let i = 0; i < insertedApps.length; i++) {
+              if (billingsMap[i]) {
+                billingsToInsert.push({
+                   ...billingsMap[i],
+                   appointment_id: insertedApps[i].id
+                });
+              }
+            }
+
+            if (billingsToInsert.length > 0) {
+              const { error: billError } = await supabase.from('billings').insert(billingsToInsert);
+              if (billError) {
+                console.error("Erreur import paiements:", billError);
+              } else {
+                totalBillings = billingsToInsert.length;
+              }
+            }
+          }
+
+          setImportMessage({ type: 'success', text: `${newAppointments.length} séances importées avec succès (et ${totalBillings} règlements) ! ${errorCount > 0 ? `(${errorCount} ignorées).` : ''}` });
+
+        } catch (err: any) {
+          setImportMessage({ type: 'error', text: err.message || 'Erreur lors de l\'import.' });
+        } finally {
+          setImportLoading(false);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      },
+      error: (error) => {
+        setImportMessage({ type: 'error', text: "Erreur de lecture du fichier CSV : " + error.message });
+        setImportLoading(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    });
+  };
+
+  const handleRemoveDuplicates = async () => {
+    setDedupLoading(true);
+    setDedupMessage({ type: '', text: '' });
+    try {
+      // Fetch all appointments
+      const { data, error } = await supabase
+        .from('appointments')
+        .select('id, patient_id, date_heure, created_at')
+        .order('created_at', { ascending: true }); // Keep the oldest one
+
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        setDedupMessage({ type: 'success', text: 'Aucune séance trouvée.' });
+        return;
+      }
+
+      const seen = new Set();
+      const toDelete: string[] = [];
+
+      for (const app of data) {
+        // composite key to identify a duplicate: same patient, same exact date and time
+        const key = `${app.patient_id}_${app.date_heure}`;
+        if (seen.has(key)) {
+          toDelete.push(app.id);
+        } else {
+          seen.add(key);
+        }
+      }
+
+      if (toDelete.length === 0) {
+        setDedupMessage({ type: 'success', text: 'Aucun doublon trouvé. Votre base est saine !' });
+        return;
+      }
+
+      // Delete in batches of max 100 just in case
+      let deletedCount = 0;
+      const batchSize = 100;
+      for (let i = 0; i < toDelete.length; i += batchSize) {
+        const batch = toDelete.slice(i, i + batchSize);
+        const { error: delError } = await supabase
+          .from('appointments')
+          .delete()
+          .in('id', batch);
+        if (delError) throw delError;
+        deletedCount += batch.length;
+      }
+
+      setDedupMessage({ type: 'success', text: `${deletedCount} séance(s) en doublon supprimée(s) avec succès !` });
+    } catch (e: any) {
+      setDedupMessage({ type: 'error', text: e.message || 'Erreur lors du nettoyage.' });
+    } finally {
+      setDedupLoading(false);
     }
   };
 
@@ -150,6 +424,17 @@ export function Settings() {
             Gestion de l'équipe
           </button>
           <button
+            onClick={() => setActiveTab('praticiens')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-colors ${
+              activeTab === 'praticiens'
+                ? 'bg-primary-50 text-primary-700'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <Stethoscope className={`h-5 w-5 ${activeTab === 'praticiens' ? 'text-primary-600' : 'text-slate-400'}`} />
+            Gestion des praticiens
+          </button>
+          <button
             onClick={() => setActiveTab('create')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-colors ${
               activeTab === 'create'
@@ -159,6 +444,17 @@ export function Settings() {
           >
             <UserPlus className={`h-5 w-5 ${activeTab === 'create' ? 'text-primary-600' : 'text-slate-400'}`} />
             Nouveau collaborateur
+          </button>
+          <button
+            onClick={() => setActiveTab('import')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-colors ${
+              activeTab === 'import'
+                ? 'bg-primary-50 text-primary-700'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <Database className={`h-5 w-5 ${activeTab === 'import' ? 'text-primary-600' : 'text-slate-400'}`} />
+            Import CSV
           </button>
         </div>
 
@@ -251,6 +547,118 @@ export function Settings() {
             </Card>
           )}
 
+          {activeTab === 'praticiens' && (
+            <div className="space-y-6">
+              <Card className="border-0 shadow-sm rounded-2xl overflow-hidden">
+                <CardHeader className="bg-white border-b border-slate-100 pb-6">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Stethoscope className="h-5 w-5 text-primary-500" />
+                    Ajouter un praticien
+                  </CardTitle>
+                  <p className="text-sm text-slate-500 mt-1.5">
+                    Définissez les praticiens qui apparaîtront dans l'agenda et les dossiers patients.
+                  </p>
+                </CardHeader>
+                <CardContent className="p-6">
+                  <form onSubmit={handleAddTherapist} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Nom</label>
+                      <input
+                        type="text"
+                        required
+                        value={newTherapist.nom}
+                        onChange={(e) => setNewTherapist({...newTherapist, nom: e.target.value})}
+                        className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+                        placeholder="Ex: HADDAOUI"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Prénom</label>
+                      <input
+                        type="text"
+                        required
+                        value={newTherapist.prenom}
+                        onChange={(e) => setNewTherapist({...newTherapist, prenom: e.target.value})}
+                        className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+                        placeholder="Ex: Younes"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Spécialité</label>
+                      <input
+                        type="text"
+                        value={newTherapist.specialite}
+                        onChange={(e) => setNewTherapist({...newTherapist, specialite: e.target.value})}
+                        className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+                        placeholder="Ex: Kinésithérapeute du sport"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Téléphone</label>
+                      <input
+                        type="tel"
+                        value={newTherapist.tel}
+                        onChange={(e) => setNewTherapist({...newTherapist, tel: e.target.value})}
+                        className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+                        placeholder="06..."
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Email</label>
+                      <input
+                        type="email"
+                        value={newTherapist.email}
+                        onChange={(e) => setNewTherapist({...newTherapist, email: e.target.value})}
+                        className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+                        placeholder="email@exemple.com"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <Button type="submit" disabled={therapistLoading} className="w-full sm:w-auto">
+                        <Plus className="h-4 w-4 mr-2" />
+                        {therapistLoading ? 'Ajout...' : 'Ajouter le praticien'}
+                      </Button>
+                    </div>
+                  </form>
+                </CardContent>
+              </Card>
+
+              <Card className="border-0 shadow-sm rounded-2xl overflow-hidden">
+                <CardHeader className="bg-white border-b border-slate-100 pb-6">
+                  <CardTitle className="text-lg">Liste des praticiens</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="divide-y divide-slate-100">
+                    {therapists.length === 0 ? (
+                      <div className="p-8 text-center text-slate-500">Aucun praticien enregistré.</div>
+                    ) : (
+                      therapists.map((t) => (
+                        <div key={t.id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                          <div className="flex items-center gap-3">
+                            <div className="h-10 w-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold">
+                              {t.nom[0]}{t.prenom[0]}
+                            </div>
+                            <div>
+                              <p className="font-semibold text-slate-900">{t.prenom} {t.nom}</p>
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 mt-1">
+                                <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-600 border border-slate-200">{t.specialite || 'Généraliste'}</span>
+                                {t.tel && <span className="flex items-center gap-1 font-medium"><Phone className="h-3 w-3" /> {t.tel}</span>}
+                                {t.email && <span className="flex items-center gap-1 font-medium"><Mail className="h-3 w-3" /> {t.email}</span>}
+                              </div>
+                            </div>
+                          </div>
+                          <Button variant="ghost" size="icon" onClick={() => handleDeleteTherapist(t.id)} className="text-rose-500 hover:bg-rose-50 hover:text-rose-600">
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
           {activeTab === 'create' && (
             <Card className="border-0 shadow-sm rounded-2xl overflow-hidden">
               <CardHeader className="bg-white border-b border-slate-100 pb-6">
@@ -335,6 +743,110 @@ export function Settings() {
                     Note : Selon la configuration de votre projet Supabase, la création d'un compte peut nécessiter une validation par email.
                   </p>
                 </form>
+              </CardContent>
+            </Card>
+          )}
+
+          {activeTab === 'import' && (
+            <Card className="border-0 shadow-sm rounded-2xl overflow-hidden">
+              <CardHeader className="bg-white border-b border-slate-100 pb-6">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Database className="h-5 w-5 text-primary-500" />
+                  Importation des données
+                </CardTitle>
+                <p className="text-sm text-slate-500 mt-1.5">
+                  Récupérez vos historiques de séances depuis d'anciens logiciels via un fichier Excel/CSV.
+                </p>
+              </CardHeader>
+              <CardContent className="p-6">
+                <div className="space-y-6">
+                  {importMessage.text && (
+                    <div className={`p-4 rounded-xl flex items-start gap-3 text-sm ${
+                      importMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                    }`}>
+                      {importMessage.type === 'success' ? <CheckCircle className="h-5 w-5 mt-0.5 flex-shrink-0" /> : <AlertCircle className="h-5 w-5 mt-0.5 flex-shrink-0" />}
+                      <p>{importMessage.text}</p>
+                    </div>
+                  )}
+
+                  <div className="bg-slate-50 p-6 rounded-xl border border-slate-200">
+                    <h3 className="font-semibold text-slate-800 mb-2">Import Historique des Séances (Agenda)</h3>
+                    <p className="text-sm text-slate-600 mb-4 leading-relaxed">
+                      Associez vos anciennes séances à vos patients actuels. Le fichier (format <b>.csv</b>) doit idéalement contenir les colonnes suivantes :
+                      <br /><br />
+                      <span className="font-mono bg-white px-2 py-1 rounded text-xs border border-slate-200 break-words mb-1 inline-block">Date</span>
+                      <span className="font-mono bg-white px-2 py-1 rounded text-xs border border-slate-200 ml-2 mb-1 inline-block">Heure</span>
+                      <span className="font-mono bg-white px-2 py-1 rounded text-xs border border-slate-200 ml-2 mb-1 inline-block">Nom patient</span>
+                      <span className="font-mono bg-white px-2 py-1 rounded text-xs border border-slate-200 ml-2 mb-1 inline-block">Prénom patient</span>
+                      <span className="font-mono bg-white px-2 py-1 rounded text-xs border border-slate-200 ml-2 mb-1 inline-block">Motif</span>
+                      <span className="font-mono bg-white px-2 py-1 rounded text-xs border border-slate-200 ml-2 mb-1 inline-block">Statut</span>
+                      <span className="font-mono bg-blue-50 px-2 py-1 rounded text-xs border border-blue-200 ml-2 mb-1 inline-block text-blue-700">Montant (ex: 50)</span>
+                      <span className="font-mono bg-blue-50 px-2 py-1 rounded text-xs border border-blue-200 ml-2 mb-1 inline-block text-blue-700">Type de paiement</span>
+                      <span className="font-mono bg-blue-50 px-2 py-1 rounded text-xs border border-blue-200 ml-2 mb-1 inline-block text-blue-700">Statut paiement</span>
+                    </p>
+                    <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-800 p-3 flex-col sm:flex-row text-sm rounded-lg mb-6">
+                      <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                      <p>
+                        <b>Attention :</b> Le patient <b>doit déjà exister</b> dans la base de données (onglet Patients) avec exactement la même orthographe pour nom et prénom. Autrement, la ligne sera ignorée.
+                      </p>
+                    </div>
+
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      onChange={handleImportCSV} 
+                      accept=".csv" 
+                      className="hidden" 
+                    />
+                    
+                    <Button 
+                      variant="outline"
+                      disabled={importLoading}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="bg-white hover:bg-slate-50 w-full sm:w-auto"
+                    >
+                      {importLoading ? (
+                        <>Importation en cours...</>
+                      ) : (
+                        <>
+                          <Upload className="h-4 w-4 mr-2" />
+                          Sélectionner le fichier CSV des séances
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  {/* Deduplication Section */}
+                  <div className="bg-white border border-slate-200 p-6 rounded-xl mt-8">
+                    <h3 className="font-semibold text-slate-800 mb-2 flex items-center gap-2">
+                       <Trash2 className="h-5 w-5 text-rose-500" />
+                       Nettoyer les doublons
+                    </h3>
+                    <p className="text-sm text-slate-600 mb-4">
+                       Si des doublons ont été créés lors d'une importation précédente (même patient, même date, même heure), vous pouvez utiliser cet outil pour les supprimer automatiquement. 
+                       <br/><b>Attention :</b> Cette action est irréversible. L'outil conservera la séance créée en premier.
+                    </p>
+                    
+                    {dedupMessage.text && (
+                      <div className={`p-3 rounded-xl flex items-start gap-2 mb-4 text-sm ${
+                        dedupMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                      }`}>
+                        {dedupMessage.type === 'success' ? <CheckCircle className="h-4 w-4 mt-0.5" /> : <AlertCircle className="h-4 w-4 mt-0.5" />}
+                        <p>{dedupMessage.text}</p>
+                      </div>
+                    )}
+
+                    <Button 
+                      variant="outline" 
+                      onClick={handleRemoveDuplicates} 
+                      disabled={dedupLoading} 
+                      className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200 w-full sm:w-auto"
+                    >
+                       {dedupLoading ? 'Recherche et suppression...' : 'Rechercher et supprimer les doublons'}
+                    </Button>
+                  </div>
+
+                </div>
               </CardContent>
             </Card>
           )}

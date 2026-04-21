@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2 } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -80,6 +80,16 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   });
   const [newTreatmentLoading, setNewTreatmentLoading] = useState(false);
   const [newTreatmentMessage, setNewTreatmentMessage] = useState({ type: '', text: '' });
+
+  // Delete Appointment Modal State
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [appointmentToDelete, setAppointmentToDelete] = useState<string | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // Delete Billing Modal State
+  const [isDeleteBillingModalOpen, setIsDeleteBillingModalOpen] = useState(false);
+  const [billingToDelete, setBillingToDelete] = useState<string | null>(null);
+  const [deleteBillingLoading, setDeleteBillingLoading] = useState(false);
 
   useEffect(() => {
     if (patientId) {
@@ -335,6 +345,59 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     }
   };
 
+  const confirmDeleteAppointment = (id: string) => {
+    setAppointmentToDelete(id);
+    setIsDeleteModalOpen(true);
+  };
+
+  const executeDeleteAppointment = async () => {
+    if (!appointmentToDelete) return;
+    
+    setDeleteLoading(true);
+    
+    // First safely delete the billing record associated to this appointment
+    await supabase.from('billings').delete().eq('appointment_id', appointmentToDelete);
+    
+    const { error } = await supabase
+      .from('appointments')
+      .delete()
+      .eq('id', appointmentToDelete);
+
+    if (!error) {
+      setAppointments(appointments.filter(app => app.id !== appointmentToDelete));
+      setBillings(billings.filter(b => b.appointment_id !== appointmentToDelete));
+      setIsDeleteModalOpen(false);
+      setAppointmentToDelete(null);
+    } else {
+      console.error("Erreur lors de la suppression de la séance : " + error.message);
+    }
+    setDeleteLoading(false);
+  };
+
+  const confirmDeleteBilling = (id: string) => {
+    setBillingToDelete(id);
+    setIsDeleteBillingModalOpen(true);
+  };
+
+  const executeDeleteBilling = async () => {
+    if (!billingToDelete) return;
+    
+    setDeleteBillingLoading(true);
+    const { error } = await supabase
+      .from('billings')
+      .delete()
+      .eq('id', billingToDelete);
+
+    if (!error) {
+      setBillings(billings.filter(b => b.id !== billingToDelete));
+      setIsDeleteBillingModalOpen(false);
+      setBillingToDelete(null);
+    } else {
+      console.error("Erreur lors de la suppression de la facture : " + error.message);
+    }
+    setDeleteBillingLoading(false);
+  };
+
   const handleNewAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
     setNewAppointmentLoading(true);
@@ -408,7 +471,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     const data = completedAppointments.map(app => ({
       'Date': new Date(app.date_heure).toLocaleDateString('fr-FR'),
       'Heure': new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      'Thérapeute': 'Dr. Dupont',
+      'Thérapeute': 'Mr HADDAOUI Younes',
       'Nature des soins': app.notes_seance || 'Séance de kinésithérapie'
     }));
 
@@ -734,12 +797,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                       <th className="px-6 py-4 font-medium">Date & Heure</th>
                       <th className="px-6 py-4 font-medium">Durée</th>
                       <th className="px-6 py-4 font-medium">Statut</th>
+                      <th className="px-6 py-4 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {appointments.length === 0 ? (
                       <tr>
-                        <td colSpan={3} className="px-6 py-8 text-center text-slate-500">
+                        <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
                           Aucun rendez-vous trouvé.
                         </td>
                       </tr>
@@ -759,6 +823,17 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                             <Badge variant={app.statut === 'Effectué' ? 'success' : app.statut === 'Annulé' ? 'outline' : 'default'}>
                               {app.statut || 'Confirmé'}
                             </Badge>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <Button 
+                              variant="ghost" 
+                              size="sm" 
+                              onClick={() => confirmDeleteAppointment(app.id)}
+                              className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                              title="Supprimer la séance"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
                           </td>
                         </tr>
                       ))
@@ -797,12 +872,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                       <th className="px-6 py-4 font-medium">Montant</th>
                       <th className="px-6 py-4 font-medium">Type de paiement</th>
                       <th className="px-6 py-4 font-medium">Statut</th>
+                      <th className="px-6 py-4 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {billings.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
+                        <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
                           Aucune facture trouvée.
                         </td>
                       </tr>
@@ -822,6 +898,17 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                             <Badge variant="success">
                               {bill.statut}
                             </Badge>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <Button 
+                              variant="ghost" 
+                              size="sm" 
+                              onClick={() => confirmDeleteBilling(bill.id)}
+                              className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                              title="Supprimer la facturation"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
                           </td>
                         </tr>
                       ))
@@ -1162,7 +1249,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             <label className="text-sm font-medium text-slate-700">Médecin Prescripteur</label>
             <input
               type="text"
-              placeholder="Ex: Dr. Jean Dupont"
+              placeholder="Ex: Mr HADDAOUI Younes"
               value={newTreatmentData.medecin_prescripteur}
               onChange={(e) => setNewTreatmentData({ ...newTreatmentData, medecin_prescripteur: e.target.value })}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -1179,6 +1266,58 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           </div>
         </form>
       </Modal>
+
+      {/* Delete Appointment Modal */}
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={() => setIsDeleteModalOpen(false)}
+        title="Supprimer la séance"
+      >
+        <div className="space-y-4">
+          <p className="text-slate-600 text-sm">
+            Êtes-vous sûr de vouloir supprimer cette séance ? Cette action est irréversible et la séance disparaîtra de l'historique et de l'agenda.
+            <br/><br/><i>Note : si un règlement était associé à cette séance, il sera également supprimé automatiquement de la facturation.</i>
+          </p>
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => setIsDeleteModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button 
+              className="bg-rose-600 hover:bg-rose-700 text-white" 
+              onClick={executeDeleteAppointment}
+              disabled={deleteLoading}
+            >
+              {deleteLoading ? 'Suppression...' : 'Supprimer'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Delete Billing Modal */}
+      <Modal
+        isOpen={isDeleteBillingModalOpen}
+        onClose={() => setIsDeleteBillingModalOpen(false)}
+        title="Supprimer la facture / le règlement"
+      >
+        <div className="space-y-4">
+          <p className="text-slate-600 text-sm">
+            Êtes-vous sûr de vouloir supprimer ce règlement ? Cette action supprimera définitivement le paiement de l'historique de ce patient et impactera vos statistiques de recettes.
+          </p>
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => setIsDeleteBillingModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button 
+              className="bg-rose-600 hover:bg-rose-700 text-white" 
+              onClick={executeDeleteBilling}
+              disabled={deleteBillingLoading}
+            >
+              {deleteBillingLoading ? 'Suppression...' : 'Supprimer'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
     </div>
   );
 }
