@@ -110,6 +110,27 @@ export function CalendarView() {
   }, []);
 
   useEffect(() => {
+    const fetchBillingForAppointment = async () => {
+      if (selectedAppointment) {
+        const { data, error } = await supabase
+          .from('billings')
+          .select('*')
+          .eq('appointment_id', selectedAppointment.id)
+          .maybeSingle();
+        
+        if (!error && data) {
+          setBillingAmount(data.montant.toString());
+          setPaymentType(data.type_paiement);
+        } else {
+          setBillingAmount('50');
+          setPaymentType('Patient');
+        }
+      }
+    };
+    fetchBillingForAppointment();
+  }, [selectedAppointment]);
+
+  useEffect(() => {
     fetchAppointments();
     fetchPatients();
     fetchTherapists();
@@ -322,20 +343,64 @@ export function CalendarView() {
     setErrorMsg(null);
     if (!selectedAppointment) return;
 
+    const amount = parseFloat(billingAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setErrorMsg("Veuillez indiquer un montant valide à payer.");
+      return;
+    }
+
     setLoading(true);
     
-    const { error } = await supabase
+    // 1. Mark appointment as Impayé
+    const { error: apptError } = await supabase
       .from('appointments')
       .update({ statut: 'Impayé' })
       .eq('id', selectedAppointment.id);
 
+    if (apptError) {
+      setLoading(false);
+      setErrorMsg("Erreur d'enregistrement : " + apptError.message);
+      return;
+    }
+
+    // 2. Create an unpaid billing (En attente) - Check if one already exists for this appointment
+    const { data: existingBill } = await supabase
+      .from('billings')
+      .select('id')
+      .eq('appointment_id', selectedAppointment.id)
+      .maybeSingle();
+
+    let billError;
+    if (existingBill) {
+      const { error } = await supabase
+        .from('billings')
+        .update({
+          montant: amount,
+          statut: 'En attente',
+          type_paiement: paymentType
+        })
+        .eq('id', existingBill.id);
+      billError = error;
+    } else {
+      const { error } = await supabase
+        .from('billings')
+        .insert([{
+          patient_id: selectedAppointment.patient_id,
+          appointment_id: selectedAppointment.id,
+          montant: amount,
+          type_paiement: paymentType,
+          statut: 'En attente'
+        }]);
+      billError = error;
+    }
+
     setLoading(false);
-    if (!error) {
+    if (!billError) {
       setIsBillingModalOpen(false);
       setSelectedAppointment(null);
       fetchAppointments();
     } else {
-      setErrorMsg("Erreur d'enregistrement : " + error.message);
+      setErrorMsg("Rendez-vous marqué impayé mais échec mise à jour facture : " + billError.message);
     }
   };
 
@@ -967,7 +1032,7 @@ export function CalendarView() {
                       variant="ghost" 
                       className="w-full h-10 rounded-xl font-bold text-rose-600 hover:bg-rose-50 transition-colors"
                     >
-                      {loading ? '...' : 'Marquer comme impayé'}
+                      {loading ? '...' : `Marquer comme impayé (${billingAmount} DH)`}
                     </Button>
                   )}
                 </div>

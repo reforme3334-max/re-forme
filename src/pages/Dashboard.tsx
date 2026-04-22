@@ -38,7 +38,7 @@ export function Dashboard() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const { data: patients, error: pErr } = await supabase.from('patients').select('id, created_at, pathologie');
+      const { data: patients, error: pErr } = await supabase.from('patients').select('id, nom, prenom, created_at, pathologie');
       if (pErr) console.error('Error fetching patients:', pErr);
 
       const { data: billings, error: bErr } = await supabase.from('billings').select('*, patients(nom, prenom, email)');
@@ -119,9 +119,14 @@ export function Dashboard() {
     const occupation = capacity > 0 ? Math.min(Math.round((booked / capacity) * 100), 100) : 0;
 
     // 4. Impayés (Total global)
+    const billedAppIds = new Set(rawData.billings.map(b => b.appointment_id).filter(Boolean));
+    const extraUnpaidAmount = rawData.appointments
+      .filter(a => a.statut === 'Impayé' && !billedAppIds.has(a.id))
+      .length * 50;
+
     const impayesTotal = rawData.billings
-      .filter(b => b.statut === 'Impayé' || b.statut === 'En attente')
-      .reduce((sum, b) => sum + Number(b.montant), 0);
+      .filter(b => b.statut === 'Impayé' || b.statut === 'En attente' || b.statut === 'Rejeté')
+      .reduce((sum, b) => sum + Number(b.montant), 0) + extraUnpaidAmount;
 
     // LineChart: 6 months revenue
     const last6Months = [];
@@ -188,16 +193,35 @@ export function Dashboard() {
 
     // Top 5 Impayés
     const unpaidMap = new Map();
-    rawData.billings.filter(b => b.statut === 'Impayé' || b.statut === 'En attente').forEach(b => {
-      if (b.patients) {
-        const pName = `${b.patients.prenom} ${b.patients.nom}`;
-        const current = unpaidMap.get(pName) || { name: pName, amount: 0, sessions: 0, email: b.patients.email };
+    
+    // 1. Check billings (En attente or Impayé if it exists)
+    rawData.billings.filter(b => b.statut === 'Impayé' || b.statut === 'En attente' || b.statut === 'Rejeté').forEach(b => {
+      const p = b.patients as any;
+      if (p) {
+        const pName = `${p.prenom} ${p.nom}`;
+        const current = unpaidMap.get(p.id) || { name: pName, amount: 0, sessions: 0, email: p.email };
         current.amount += Number(b.montant);
         current.sessions += 1;
-        unpaidMap.set(pName, current);
+        unpaidMap.set(p.id, current);
       }
     });
-    const topUnpaidList = Array.from(unpaidMap.values()).sort((a, b) => b.amount - a.amount).slice(0, 5);
+
+    // 2. Check appointments marked as 'Impayé' that might not have a billing yet
+    const billedAppointmentIds = new Set(rawData.billings.map(b => b.appointment_id).filter(Boolean));
+    const patientsMap = new Map(rawData.patients.map(p => [p.id, p]));
+
+    rawData.appointments.filter(a => a.statut === 'Impayé' && !billedAppointmentIds.has(a.id)).forEach(a => {
+      const p = patientsMap.get(a.patient_id) as any;
+      if (p) {
+        const pName = `${p.prenom} ${p.nom}`;
+        const current = unpaidMap.get(p.id) || { name: pName, amount: 0, sessions: 0, email: p.email };
+        current.amount += 50; // Assume 50 DH per unpaid appointment if no billing exists
+        current.sessions += 1;
+        unpaidMap.set(p.id, current);
+      }
+    });
+
+    const topUnpaidList = Array.from(unpaidMap.values()).sort((a: any, b: any) => b.amount - a.amount).slice(0, 5);
 
     return {
       ca,
