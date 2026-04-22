@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail, Search, Filter, Upload } from 'lucide-react';
+import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail, Search, Filter, Upload, Lock } from 'lucide-react';
 import Papa from 'papaparse';
 
 interface Patient {
@@ -17,6 +17,7 @@ interface Patient {
   pathologie?: string;
   nombre_seances?: number;
   atcd?: string;
+  has_access?: boolean;
   created_at: string;
 }
 
@@ -464,6 +465,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                 <tr>
                   <th className="px-6 py-4 font-medium">Patient</th>
                   <th className="px-6 py-4 font-medium">Contact</th>
+                  <th className="px-6 py-4 font-medium">Accès Portail</th>
                   <th className="px-6 py-4 font-medium">Détails Médicaux</th>
                   <th className="px-6 py-4 font-medium">Date d'ajout</th>
                 </tr>
@@ -506,6 +508,17 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                             </div>
                           )}
                         </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        {(patient as any).has_access ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-mint-50 text-mint-700 border border-mint-200">
+                            <CheckCircle2 className="h-3 w-3" /> Actif
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                            <Lock className="h-3 w-3" /> Non généré
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4">
                         <div className="space-y-1">

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Users, Wallet, Activity, AlertCircle, Send, Calendar } from 'lucide-react';
+import { Users, Wallet, Activity, AlertCircle, Send, Calendar, Lock, Mail } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { LineChart, Line, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { supabase } from '../lib/supabaseClient';
@@ -25,7 +25,7 @@ const StatCard = ({ title, value, icon: Icon, description, colorClass = "text-in
   </Card>
 );
 
-export function Dashboard() {
+export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) => void }) {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('month');
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
@@ -127,6 +127,10 @@ export function Dashboard() {
     const impayesTotal = rawData.billings
       .filter(b => b.statut === 'Impayé' || b.statut === 'En attente' || b.statut === 'Rejeté')
       .reduce((sum, b) => sum + Number(b.montant), 0) + extraUnpaidAmount;
+
+    // 5. Patients sans accès (Simulation basée sur le champ email/tel renseigné et un flag virtuel)
+    // Note: Pour une détection réelle, il faudrait une colonne 'has_access' dans la table patients
+    const patientsSansAcces = rawData.patients.filter(p => !p.has_access);
 
     // LineChart: 6 months revenue
     const last6Months = [];
@@ -233,7 +237,9 @@ export function Dashboard() {
       teamChartData,
       actsChartData,
       pathologyChartData,
-      topUnpaidList
+      topUnpaidList,
+      patientsSansAccesCount: patientsSansAcces.length,
+      patientsSansAccesList: patientsSansAcces.slice(0, 10)
     };
   }, [rawData, filter, customDate]);
 
@@ -293,7 +299,7 @@ export function Dashboard() {
       </div>
 
       {/* 1. Composants de Statistiques (Top Bar) */}
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard 
           title={`Chiffre d'Affaires (${dashboardData.filterLabel})`}
           value={`${dashboardData.ca} DH`} 
@@ -325,6 +331,14 @@ export function Dashboard() {
           description="Séances non réglées"
           colorClass="text-rose-600"
           bgClass="bg-rose-50"
+        />
+        <StatCard 
+          title="Patients sans accès" 
+          value={dashboardData.patientsSansAccesCount} 
+          icon={Lock} 
+          description="Accès portail non généré"
+          colorClass="text-amber-600"
+          bgClass="bg-amber-50"
         />
       </div>
 
@@ -513,6 +527,70 @@ export function Dashboard() {
                 Aucune donnée de pathologie pour cette période.
               </div>
             )}
+          </CardContent>
+        </Card>
+      </div>
+      
+      {/* 5. Patients sans accès */}
+      <div className="mt-4">
+        <Card className="border-0 shadow-sm border-t-4 border-t-amber-500">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base font-semibold flex items-center gap-2 text-slate-800">
+              <Lock className="h-5 w-5 text-amber-500" />
+              Patients sans accès Portail
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto mt-2">
+              <div className="bg-amber-50 text-amber-800 p-3 rounded-lg text-xs mb-4 border border-amber-100 italic">
+                <strong>Note :</strong> Cette liste affiche les patients n'ayant pas encore d'accès au portail généré. 
+                Une fois l'accès généré dans la fiche patient, ils disparaîtront de cette liste de vigilance.
+              </div>
+              <table className="w-full text-sm text-left">
+                <thead className="text-xs text-slate-500 uppercase bg-slate-50 rounded-t-lg">
+                  <tr>
+                    <th className="px-4 py-3 font-medium rounded-tl-lg">Patient</th>
+                    <th className="px-4 py-3 font-medium">Contact</th>
+                    <th className="px-4 py-3 font-medium text-center rounded-tr-lg">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboardData.patientsSansAccesList.length > 0 ? dashboardData.patientsSansAccesList.map((p, i) => (
+                    <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors last:border-0">
+                      <td className="px-4 py-3 font-medium text-slate-900">{p.nom} {p.prenom}</td>
+                      <td className="px-4 py-3 text-slate-600">
+                        <div className="text-xs">
+                          {p.email ? <div className="flex items-center gap-1"><Mail className="h-3 w-3" /> {p.email}</div> : null}
+                          {p.tel ? <div className="flex items-center gap-1"><Send className="h-3 w-3" /> {p.tel}</div> : null}
+                          {!p.email && !p.tel ? <span className="text-rose-500 font-bold">Aucun contact !</span> : null}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <Button 
+                          size="sm" 
+                          variant="ghost" 
+                          className="h-8 text-xs text-indigo-600 hover:bg-indigo-50" 
+                          onClick={() => onSelectPatient ? onSelectPatient(p.id) : window.location.hash = `patients`}
+                        >
+                          Gérer l'accès
+                        </Button>
+                      </td>
+                    </tr>
+                  )) : (
+                    <tr>
+                      <td colSpan={3} className="px-4 py-8 text-center text-slate-500">
+                        Tous les patients ont un accès configuré. Magnifique !
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              {dashboardData.patientsSansAccesCount > 10 && (
+                <div className="mt-4 text-center">
+                  <p className="text-xs text-slate-400 italic">Et {dashboardData.patientsSansAccesCount - 10} autres patients...</p>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>

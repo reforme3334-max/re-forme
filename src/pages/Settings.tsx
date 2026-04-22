@@ -31,6 +31,7 @@ export function Settings() {
   // Form state for practitioners
   const [newTherapist, setNewTherapist] = useState({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
   const [therapistLoading, setTherapistLoading] = useState(false);
+  const [therapistMessage, setTherapistMessage] = useState({ type: '', text: '' });
 
   // Form state for import
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -67,23 +68,67 @@ export function Settings() {
   };
 
   const fetchTherapists = async () => {
-    const { data, error } = await supabase
-      .from('therapists')
-      .select('*')
-      .order('nom');
-    if (data) setTherapists(data);
+    try {
+      const { data, error } = await supabase
+        .from('therapists')
+        .select('*')
+        .order('nom');
+      
+      if (error) {
+        console.error("Error fetching therapists:", error);
+        setTherapistMessage({ 
+          type: 'error', 
+          text: `Erreur de chargement des praticiens: ${error.message}. Vérifiez que la table 'therapists' existe dans Supabase.` 
+        });
+      }
+      if (data) setTherapists(data);
+    } catch (err: any) {
+      console.error("Fetch therapists failed:", err);
+    }
   };
 
   const handleAddTherapist = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Validation
+    if (!newTherapist.nom.trim() || !newTherapist.prenom.trim()) {
+      setTherapistMessage({ type: 'error', text: 'Le nom et le prénom sont obligatoires.' });
+      return;
+    }
+
     setTherapistLoading(true);
-    const { error } = await supabase.from('therapists').insert([newTherapist]);
-    setTherapistLoading(false);
-    if (!error) {
-      setNewTherapist({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
-      fetchTherapists();
-    } else {
-      alert("Erreur lors de l'ajout du praticien.");
+    setTherapistMessage({ type: '', text: '' });
+    
+    try {
+      // Trim values before insert
+      const therapistToInsert = {
+        nom: newTherapist.nom.trim(),
+        prenom: newTherapist.prenom.trim(),
+        specialite: newTherapist.specialite.trim(),
+        email: newTherapist.email.trim(),
+        tel: newTherapist.tel.trim()
+      };
+
+      const { error } = await supabase.from('therapists').insert([therapistToInsert]);
+      
+      if (!error) {
+        setNewTherapist({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
+        await fetchTherapists();
+        setTherapistMessage({ type: 'success', text: 'Praticien ajouté avec succès !' });
+        setTimeout(() => setTherapistMessage({ type: '', text: '' }), 4000);
+      } else {
+        throw error;
+      }
+    } catch (err: any) {
+      console.error("Error adding therapist:", err);
+      // More detailed error for debugging
+      const detailedError = err.details || err.message || JSON.stringify(err);
+      setTherapistMessage({ 
+        type: 'error', 
+        text: `Échec de l'ajout: ${detailedError}. Vérifiez vos permissions RLS sur la table 'therapists'.` 
+      });
+    } finally {
+      setTherapistLoading(false);
     }
   };
 
@@ -561,6 +606,14 @@ export function Settings() {
                 </CardHeader>
                 <CardContent className="p-6">
                   <form onSubmit={handleAddTherapist} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {therapistMessage.text && (
+                      <div className={`sm:col-span-2 p-3 rounded-xl flex items-center gap-3 text-sm ${
+                        therapistMessage.type === 'error' ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                      }`}>
+                        {therapistMessage.type === 'error' ? <AlertCircle className="h-4 w-4" /> : <CheckCircle className="h-4 w-4" />}
+                        <span className="font-medium">{therapistMessage.text}</span>
+                      </div>
+                    )}
                     <div className="space-y-1.5">
                       <label className="text-sm font-semibold text-slate-700">Nom</label>
                       <input
@@ -664,10 +717,11 @@ export function Settings() {
               <CardHeader className="bg-white border-b border-slate-100 pb-6">
                 <CardTitle className="text-lg flex items-center gap-2">
                   <UserPlus className="h-5 w-5 text-primary-500" />
-                  Créer un compte collaborateur
+                  Créer un compte de connexion (Collaborateur)
                 </CardTitle>
                 <p className="text-sm text-slate-500 mt-1.5">
-                  Ajoutez un nouveau membre à votre équipe. Il pourra se connecter immédiatement avec ces identifiants.
+                  Ajoutez un membre qui pourra <b>se connecter</b> à l'application. 
+                  <br/><span className="text-primary-600 font-medium italic">Important : Pour que son nom apparaisse dans l'agenda, ajoutez-le également dans l'onglet "Gestion des praticiens".</span>
                 </p>
               </CardHeader>
               <CardContent className="p-6">

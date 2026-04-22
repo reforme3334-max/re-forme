@@ -5,7 +5,7 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Modal } from '../components/ui/modal';
 import { supabase } from '../lib/supabaseClient';
-import jsPDF from 'jspdf';
+import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 
@@ -253,6 +253,12 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           ]);
 
         if (profileError) throw profileError;
+
+        // 3. Update patient to record that access has been generated
+        await supabase
+          .from('patients')
+          .update({ has_access: true })
+          .eq('id', patientId);
 
         setAccessMessage({ type: 'success', text: 'Accès généré avec succès ! Le patient peut se connecter avec son numéro de téléphone et ce mot de passe.' });
         setAccessPassword('');
