@@ -412,7 +412,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       .insert([{
         patient_id: patientId,
         date_heure: dateHeure,
-        statut: 'Prévu',
+        statut: 'Confirmé',
         notes_seance: newAppointmentMotif
       }]);
 

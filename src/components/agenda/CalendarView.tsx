@@ -92,8 +92,8 @@ export function CalendarView() {
   const startDate = startOfWeek(currentDate, { weekStartsOn: 1 });
   const displayedDays = isMobile 
     ? [currentDate] 
-    : Array.from({ length: 6 }).map((_, i) => addDays(startDate, i));
-  const hours = Array.from({ length: 13 }).map((_, i) => i + 8);
+    : Array.from({ length: 7 }).map((_, i) => addDays(startDate, i));
+  const hours = Array.from({ length: 14 }).map((_, i) => i + 7); // Start at 7h to be safe
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
@@ -148,12 +148,37 @@ export function CalendarView() {
   };
 
   const fetchAppointments = async () => {
-    // Dans une vraie app, on filtrerait par date de début et fin de semaine
-    const { data, error } = await supabase
+    // Try to fetch with joins
+    let { data, error } = await supabase
       .from('appointments')
       .select('*, patients(nom, prenom), therapists(nom, prenom)');
       
-    if (!error && data) {
+    if (error) {
+      console.warn("Join failed or error fetching appointments, trying robust fetch:", error.message);
+      
+      // Manual robust fetch: Get all appointments
+      const { data: appData, error: appError } = await supabase.from('appointments').select('*');
+      
+      if (!appError && appData) {
+        // Fetch all patients and therapists to map them manually
+        const { data: patData } = await supabase.from('patients').select('id, nom, prenom');
+        const { data: therData } = await supabase.from('therapists').select('id, nom, prenom');
+        
+        const patientsMap = new Map(patData ? patData.map(p => [p.id, p]) : []);
+        const therapistsMap = new Map(therData ? therData.map(t => [t.id, t]) : []);
+        
+        data = appData.map(app => ({
+          ...app,
+          patients: patientsMap.get(app.patient_id),
+          therapists: therapistsMap.get(app.therapist_id)
+        }));
+      } else {
+        console.error("Critical error fetching appointments:", appError?.message);
+        return;
+      }
+    }
+
+    if (data) {
       setAppointments(data);
     }
   };
@@ -397,7 +422,7 @@ export function CalendarView() {
         <div className="overflow-x-auto flex-1 scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent" ref={scrollContainerRef}>
           <div className={`${isMobile ? 'min-w-full' : 'min-w-[900px]'} h-full flex flex-col relative`}>
             {/* Days Header */}
-            <div className={`grid ${isMobile ? 'grid-cols-[60px_1fr]' : 'grid-cols-[80px_repeat(6,1fr)]'} border-b border-slate-200 bg-slate-50/50 backdrop-blur-sm sticky top-0 z-40`}>
+            <div className={`grid ${isMobile ? 'grid-cols-[60px_1fr]' : 'grid-cols-[80px_repeat(7,1fr)]'} border-b border-slate-200 bg-slate-50/50 backdrop-blur-sm sticky top-0 z-40`}>
               <div className="p-4 border-r border-slate-200 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center justify-center bg-slate-50/80">
                 GMT+1
               </div>
@@ -435,8 +460,8 @@ export function CalendarView() {
                 <div 
                   className="absolute left-0 right-0 z-30 pointer-events-none flex items-center"
                   style={{ 
-                    top: `${((currentTime.getHours() - 8) * 80) + (currentTime.getMinutes() / 60 * 80)}px`,
-                    display: currentTime.getHours() >= 8 && currentTime.getHours() < 21 ? 'flex' : 'none'
+                    top: `${((currentTime.getHours() - 7) * 80) + (currentTime.getMinutes() / 60 * 80)}px`,
+                    display: currentTime.getHours() >= 7 && currentTime.getHours() < 21 ? 'flex' : 'none'
                   }}
                 >
                   <div className={`${isMobile ? 'w-[60px]' : 'w-[80px]'} flex justify-end pr-2`}>
@@ -451,7 +476,7 @@ export function CalendarView() {
               )}
 
               {hours.map((hour) => (
-                <div key={hour} className={`grid ${isMobile ? 'grid-cols-[60px_1fr]' : 'grid-cols-[80px_repeat(6,1fr)]'} border-b border-slate-100 min-h-[80px] group/row`}>
+                <div key={hour} className={`grid ${isMobile ? 'grid-cols-[60px_1fr]' : 'grid-cols-[80px_repeat(7,1fr)]'} border-b border-slate-100 min-h-[80px] group/row`}>
                   <div className="p-3 border-r border-slate-200 text-right text-[11px] font-bold text-slate-400 sticky left-0 bg-slate-50/80 backdrop-blur-sm z-20 flex flex-col justify-start">
                     <span>{hour}:00</span>
                     <span className="text-[9px] opacity-0 group-hover/row:opacity-100 transition-opacity mt-1 font-medium">
@@ -532,7 +557,7 @@ export function CalendarView() {
                                 <div className={`absolute left-0 top-0 bottom-0 ${isNarrow ? 'w-0.5' : 'w-1'} ${accentColor}`} />
                                 <div className={`font-bold flex items-start justify-between ${isNarrow ? 'mb-0' : 'mb-1'} gap-1 pl-1`}>
                                   <span className={`${isNarrow ? 'line-clamp-2 text-[10px] leading-tight break-words group-hover/app:line-clamp-none group-hover/app:text-[11px]' : 'truncate'}`}>
-                                    {app.patients?.prenom} {app.patients?.nom}
+                                    {app.patients ? `${app.patients.prenom} ${app.patients.nom}` : (app.patient_id ? `Chargement...` : 'Patient inconnu')}
                                   </span>
                                   <div className={`flex shrink-0 ${isNarrow ? 'hidden group-hover/app:flex' : ''}`}>
                                     {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-emerald-500" />}
