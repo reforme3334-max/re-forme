@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2 } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -189,6 +189,18 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       seances_effectuees: seances_effectuees,
     };
   }, [appointments, treatments, patient]);
+
+  const age = useMemo(() => {
+    if (!patient?.date_naissance) return null;
+    const birthDate = new Date(patient.date_naissance);
+    const today = new Date();
+    let years = today.getFullYear() - birthDate.getFullYear();
+    const m = today.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+      years--;
+    }
+    return years;
+  }, [patient]);
 
   const remainingSessions = Math.max(0, activeTreatment.seances_prescrites - activeTreatment.seances_effectuees);
   const progressPercentage = activeTreatment.seances_prescrites > 0 
@@ -580,97 +592,157 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
 
       {/* Tab Content */}
       {activeTab === 'dossier' && (
-        <div className="grid gap-6 md:grid-cols-3">
-          {/* Left Column */}
-          <div className="md:col-span-2 space-y-6">
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <Activity className="h-5 w-5 text-primary-500" />
-                  Traitement Actuel
-                </CardTitle>
-                <Badge variant="success">En cours</Badge>
+        <div className="grid gap-6 md:grid-cols-12">
+          {/* Main Content Area */}
+          <div className="md:col-span-8 space-y-6">
+            {/* Nouveau Bloc: Fiche Administrative */}
+            <Card className="border-0 shadow-sm overflow-hidden bg-white">
+              <CardHeader className="pb-3 border-b border-slate-50">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base font-bold flex items-center gap-2 text-slate-800">
+                    <User className="h-5 w-5 text-primary-500" />
+                    Fiche Administrative
+                  </CardTitle>
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    className="h-8 text-primary-600 hover:text-primary-700 hover:bg-primary-50 font-bold"
+                    onClick={() => {
+                      setEditPatientData(patient);
+                      setIsEditPatientModalOpen(true);
+                    }}
+                  >
+                    MODIFIER
+                  </Button>
+                </div>
               </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <div>
-                    <h4 className="text-sm font-medium text-slate-500">Motif de consultation</h4>
-                    <p className="text-base font-medium text-slate-900 mt-1">{activeTreatment.motif}</p>
-                  </div>
-                  
-                  <div className="pt-4 border-t border-slate-100">
-                    <div className="flex justify-between text-sm mb-2">
-                      <span className="font-medium text-slate-700">Progression des séances</span>
-                      <span className="text-slate-500">{activeTreatment.seances_effectuees} / {activeTreatment.seances_prescrites}</span>
-                    </div>
-                    <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
-                      <div 
-                        className="h-full bg-mint-500 rounded-full transition-all duration-500"
-                        style={{ width: `${progressPercentage}%` }}
-                      ></div>
-                    </div>
-                    <p className="text-xs text-slate-500 mt-2 text-right">
-                      {remainingSessions} séance{remainingSessions > 1 ? 's' : ''} restante{remainingSessions > 1 ? 's' : ''}
+              <CardContent className="pt-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Âge / Date de naissance</h4>
+                    <p className="text-sm font-bold text-slate-900">
+                      {age ? `${age} ans` : 'N/A'} 
+                      {patient.date_naissance && <span className="text-slate-400 font-medium ml-1">({new Date(patient.date_naissance).toLocaleDateString('fr-FR')})</span>}
                     </p>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <FileText className="h-5 w-5 text-primary-500" />
-                  Gestion des Forfaits
-                </CardTitle>
-                <Button variant="outline" size="sm" onClick={handleAddForfait}>+ 10 Séances</Button>
-              </CardHeader>
-              <CardContent>
-                <div className={`p-4 rounded-xl border flex items-center justify-between ${forfait < 2 ? 'bg-orange-50 border-orange-200' : 'bg-mint-50 border-mint-200'}`}>
-                  <div className="flex items-center gap-3">
-                    {forfait < 2 ? (
-                      <AlertCircle className="h-8 w-8 text-orange-500" />
-                    ) : (
-                      <Activity className="h-8 w-8 text-mint-500" />
-                    )}
-                    <div>
-                      <h4 className={`font-semibold ${forfait < 2 ? 'text-orange-800' : 'text-mint-800'}`}>
-                        Forfait en cours
-                      </h4>
-                      <p className={`text-sm ${forfait < 2 ? 'text-orange-600' : 'text-mint-600'}`}>
-                        {forfait} séance{forfait > 1 ? 's' : ''} restante{forfait > 1 ? 's' : ''}
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">CIN / Identité</h4>
+                    <p className="text-sm font-bold text-slate-900">{patient.cin || 'Non renseigné'}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">N° de Téléphone</h4>
+                    <div className="flex items-center gap-2">
+                      <Phone className="h-3.5 w-3.5 text-primary-500" />
+                      <p className="text-sm font-bold text-slate-900">{patient.telephone || 'Non renseigné'}</p>
+                    </div>
+                  </div>
+                  <div className="space-y-1 sm:col-span-2 md:col-span-1">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Adresse E-mail</h4>
+                    <div className="flex items-center gap-2">
+                      <Mail className="h-3.5 w-3.5 text-primary-500" />
+                      <p className="text-sm font-bold text-slate-900 truncate">{patient.email || 'Non renseigné'}</p>
+                    </div>
+                  </div>
+                  <div className="space-y-1 sm:col-span-2">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Adresse Résidence</h4>
+                    <div className="flex items-center gap-2">
+                      <MapPin className="h-3.5 w-3.5 text-primary-500" />
+                      <p className="text-sm font-bold text-slate-900 leading-tight">
+                        {patient.adresse || 'Aucune adresse enregistrée'}
                       </p>
                     </div>
                   </div>
-                  {forfait < 2 && (
-                    <Badge variant="outline" className="bg-orange-100 text-orange-700 hover:bg-orange-100 border-orange-200">
-                      Renouvellement conseillé
-                    </Badge>
-                  )}
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <Card className="border-0 shadow-sm border-t-4 border-t-primary-500">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-bold flex items-center gap-2 text-primary-700">
+                    <Activity className="h-4 w-4" />
+                    Traitement Actuel
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    <div>
+                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Motif de consultation</h4>
+                      <p className="text-base font-bold text-slate-900 mt-1">{activeTreatment.motif}</p>
+                      {activeTreatment.medecin_prescripteur && (
+                        <p className="text-xs text-slate-500 mt-1 font-medium italic">
+                          Prescrit par : {activeTreatment.medecin_prescripteur}
+                        </p>
+                      )}
+                    </div>
+                    <div className="pt-2">
+                      <div className="flex justify-between text-[11px] mb-1.5 font-bold uppercase text-slate-500">
+                        <span>Séances effectuées</span>
+                        <span className="text-primary-600">{activeTreatment.seances_effectuees} / {activeTreatment.seances_prescrites}</span>
+                      </div>
+                      <div className="h-2 w-full bg-slate-200/50 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-primary-500 rounded-full transition-all duration-500 shadow-[0_0_8px_rgba(var(--primary-500),0.3)]"
+                          style={{ width: `${progressPercentage}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-0 shadow-sm border-t-4 border-t-emerald-500">
+                <CardHeader className="flex flex-row items-center justify-between pb-2">
+                  <CardTitle className="text-sm font-bold flex items-center gap-2 text-emerald-700">
+                    <FileText className="h-4 w-4" />
+                    Forfait
+                  </CardTitle>
+                  <Button variant="ghost" size="sm" className="h-7 text-[10px] font-bold" onClick={handleAddForfait}>+ 10 SÉANCES</Button>
+                </CardHeader>
+                <CardContent>
+                  <div className={`p-4 rounded-xl flex items-center justify-between ${forfait < 2 ? 'bg-orange-50' : 'bg-emerald-50'}`}>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-2xl font-black ${forfait < 2 ? 'text-orange-600' : 'text-emerald-600'}`}>{forfait}</span>
+                      <div>
+                        <h4 className={`text-[10px] font-black uppercase tracking-wider ${forfait < 2 ? 'text-orange-800' : 'text-emerald-800'}`}>
+                          Restantes
+                        </h4>
+                        <p className={`text-[9px] font-bold ${forfait < 2 ? 'text-orange-600' : 'text-emerald-600'}`}>
+                          {forfait < 2 ? 'Renouvellement conseillé' : 'Solde suffisant'}
+                        </p>
+                      </div>
+                    </div>
+                    <Activity className={`h-8 w-8 opacity-20 ${forfait < 2 ? 'text-orange-500' : 'text-emerald-500'}`} />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card className="border-0 shadow-sm">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
+                <CardTitle className="text-base font-bold flex items-center gap-2">
                   <FileText className="h-5 w-5 text-primary-500" />
                   Notes de séance
                 </CardTitle>
-                <Button variant="outline" size="sm" onClick={() => setIsNoteModalOpen(true)}>Ajouter une note</Button>
+                <Button variant="outline" size="sm" className="rounded-lg font-bold text-xs" onClick={() => setIsNoteModalOpen(true)}>+ Ajouter une note</Button>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   {appointments.filter(app => app.notes_seance).length === 0 ? (
-                    <p className="text-sm text-slate-500 text-center py-4">Aucune note de séance enregistrée.</p>
+                    <div className="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Aucune note pour le moment</p>
+                    </div>
                   ) : (
-                    appointments.filter(app => app.notes_seance).map((app, index) => (
-                      <div key={app.id} className={`border-l-2 ${index === 0 ? 'border-primary-200' : 'border-slate-200'} pl-4 pb-4`}>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-sm font-semibold text-slate-900">Séance du {new Date(app.date_heure).toLocaleDateString('fr-FR')}</span>
-                          <span className="text-xs text-slate-500">{new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+                    appointments.filter(app => app.notes_seance).slice(0, 5).map((app) => (
+                      <div key={app.id} className="group relative bg-white p-4 rounded-xl border border-slate-100 hover:border-primary-100 hover:shadow-md hover:shadow-primary-500/5 transition-all">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-primary-500" />
+                            <span className="text-sm font-bold text-slate-900">Séance du {new Date(app.date_heure).toLocaleDateString('fr-FR')}</span>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md">{new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
                         </div>
-                        <p className="text-sm text-slate-600">{app.notes_seance}</p>
+                        <p className="text-sm text-slate-600 leading-relaxed italic">"{app.notes_seance}"</p>
                       </div>
                     ))
                   )}
@@ -679,29 +751,81 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             </Card>
           </div>
 
-          {/* Right Column */}
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Antécédents & Notes</CardTitle>
+          {/* Right Column - Status & History */}
+          <div className="md:col-span-4 space-y-6">
+            <Card className="border-0 shadow-sm border-t-4 border-t-indigo-500 bg-indigo-50/30">
+               <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2 text-indigo-800">
+                  <Clock className="h-4 w-4 text-indigo-500" />
+                  Prochain RDV
+                </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-slate-600 whitespace-pre-line">
-                  {patient.atcd || patient.notes_antecedents || 'Aucun antécédent renseigné.'}
-                </p>
+                {appointments.filter(a => new Date(a.date_heure) > new Date()).length > 0 ? (
+                  (() => {
+                    const next = appointments.filter(a => new Date(a.date_heure) > new Date()).sort((a,b) => new Date(a.date_heure).getTime() - new Date(b.date_heure).getTime())[0];
+                    return (
+                      <div className="p-4 bg-white rounded-xl border border-indigo-100 shadow-sm">
+                        <p className="font-black text-indigo-900 text-base">
+                          {new Date(next.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
+                        </p>
+                        <p className="text-sm text-indigo-600 mt-1 font-bold">
+                          à {new Date(next.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                        <div className="mt-3 pt-3 border-t border-indigo-50 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Durée : 30 min</span>
+                          <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Kiné : Younes</span>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="p-4 bg-slate-50/50 rounded-xl border border-dashed border-slate-200 text-center">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Aucun RDV à venir</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Prochain RDV</CardTitle>
+            <Card className="border-0 shadow-sm border-t-4 border-t-rose-500">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2 text-rose-800">
+                  <ShieldAlert className="h-4 w-4 text-rose-500" />
+                  Situation Médicale
+                </CardTitle>
               </CardHeader>
-              <CardContent>
-                <div className="flex items-start gap-3 p-3 bg-primary-50 rounded-lg border border-primary-100">
-                  <Clock className="h-5 w-5 text-primary-600 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-primary-900">Demain à 11h00</p>
-                    <p className="text-sm text-primary-700 mt-0.5">Durée: 30 min</p>
+              <CardContent className="space-y-4">
+                <div className="p-3 bg-rose-50/50 rounded-xl border border-rose-100">
+                  <h4 className="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-1.5">Pathologie</h4>
+                  <p className="text-xs text-rose-900 font-bold leading-relaxed">
+                    {patient.pathologie || 'Non renseigné'}
+                  </p>
+                </div>
+                <div className="p-3 bg-amber-50/50 rounded-xl border border-amber-100">
+                  <h4 className="text-[10px] font-bold text-amber-500 uppercase tracking-widest mb-1.5">Antécédents</h4>
+                  <p className="text-xs text-amber-900 font-medium leading-relaxed">
+                    {patient.atcd || patient.notes_antecedents || 'Aucun antécédent médical signalé.'}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-0 shadow-sm border-t-4 border-t-slate-800 bg-slate-900 text-white overflow-hidden relative">
+              <div className="absolute top-0 right-0 p-4 opacity-5">
+                <FileText className="h-24 w-24" />
+              </div>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-bold uppercase tracking-widest text-slate-400">Statistiques Patient</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-2 space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white/5 p-3 rounded-lg">
+                    <p className="text-xl font-black">{appointments.filter(a => a.statut === 'Effectué').length}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Séances effectuées</p>
+                  </div>
+                  <div className="bg-white/5 p-3 rounded-lg">
+                    <p className="text-xl font-black">{billings.length}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Factures réglées</p>
                   </div>
                 </div>
               </CardContent>
@@ -1092,6 +1216,24 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                 className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               />
             </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">CIN</label>
+              <input
+                type="text"
+                value={editPatientData.cin || ''}
+                onChange={(e) => setEditPatientData({ ...editPatientData, cin: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Adresse</label>
+            <input
+              type="text"
+              value={editPatientData.adresse || ''}
+              onChange={(e) => setEditPatientData({ ...editPatientData, adresse: e.target.value })}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
           </div>
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-slate-700">Antécédents & Notes</label>
