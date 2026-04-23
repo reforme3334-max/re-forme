@@ -49,22 +49,35 @@ export function Settings() {
   }, []);
 
   const fetchProfiles = async () => {
-    setLoading(true);
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .neq('role', 'patient')
-      .order('created_at', { ascending: false });
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .neq('role', 'patient')
+        .order('created_at', { ascending: false });
 
-    if (data) {
-      // Ensure permissions is an array
-      const formattedData = data.map(p => ({
-        ...p,
-        permissions: p.permissions || []
-      }));
-      setProfiles(formattedData);
+      if (error) {
+        console.error("Error fetching profiles:", error);
+        setMessage({ 
+          type: 'error', 
+          text: `Erreur profils: ${error.message}. Vérifiez la table 'profiles'.` 
+        });
+      }
+      
+      if (data) {
+        // Ensure permissions is an array
+        const formattedData = data.map(p => ({
+          ...p,
+          permissions: p.permissions || []
+        }));
+        setProfiles(formattedData);
+      }
+    } catch (err: any) {
+      console.error("Fetch profiles failed:", err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const fetchTherapists = async () => {
@@ -91,7 +104,10 @@ export function Settings() {
     e.preventDefault();
     
     // Validation
-    if (!newTherapist.nom.trim() || !newTherapist.prenom.trim()) {
+    const nom = newTherapist.nom.trim();
+    const prenom = newTherapist.prenom.trim();
+
+    if (!nom || !prenom) {
       setTherapistMessage({ type: 'error', text: 'Le nom et le prénom sont obligatoires.' });
       return;
     }
@@ -102,30 +118,33 @@ export function Settings() {
     try {
       // Trim values before insert
       const therapistToInsert = {
-        nom: newTherapist.nom.trim(),
-        prenom: newTherapist.prenom.trim(),
+        nom: nom,
+        prenom: prenom,
         specialite: newTherapist.specialite.trim(),
         email: newTherapist.email.trim(),
         tel: newTherapist.tel.trim()
       };
 
+      console.log("Adding therapist:", therapistToInsert);
       const { error } = await supabase.from('therapists').insert([therapistToInsert]);
       
-      if (!error) {
-        setNewTherapist({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
-        await fetchTherapists();
-        setTherapistMessage({ type: 'success', text: 'Praticien ajouté avec succès !' });
-        setTimeout(() => setTherapistMessage({ type: '', text: '' }), 4000);
-      } else {
+      if (error) {
+        console.error("Supabase error adding therapist:", error);
         throw error;
       }
+      
+      setNewTherapist({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
+      await fetchTherapists();
+      setTherapistMessage({ type: 'success', text: 'Praticien ajouté avec succès !' });
+      
+      // Auto clear success message after 4s
+      setTimeout(() => setTherapistMessage(prev => prev.type === 'success' ? { type: '', text: '' } : prev), 4000);
     } catch (err: any) {
       console.error("Error adding therapist:", err);
-      // More detailed error for debugging
       const detailedError = err.details || err.message || JSON.stringify(err);
       setTherapistMessage({ 
         type: 'error', 
-        text: `Échec de l'ajout: ${detailedError}. Vérifiez vos permissions RLS sur la table 'therapists'.` 
+        text: `Échec de l'ajout: ${detailedError}. Vérifiez que la table 'therapists' existe.` 
       });
     } finally {
       setTherapistLoading(false);
@@ -403,6 +422,13 @@ export function Settings() {
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Validation
+    if (!email || !password || password.length < 6) {
+      setMessage({ type: 'error', text: 'Email et mot de passe (min 6 caractères) requis.' });
+      return;
+    }
+
     setCreateLoading(true);
     setMessage({ type: '', text: '' });
 
@@ -430,7 +456,7 @@ export function Settings() {
         const { error: profileError } = await supabase
           .from('profiles')
           .upsert([
-            { id: authData.user.id, role: role, permissions: defaultPermissions }
+            { id: authData.user.id, role: role, permissions: defaultPermissions, email: email }
           ]);
 
         if (profileError) throw profileError;
@@ -438,9 +464,13 @@ export function Settings() {
         setMessage({ type: 'success', text: 'Compte collaborateur créé avec succès !' });
         setEmail('');
         setPassword('');
-        fetchProfiles();
+        await fetchProfiles();
+        
+        // Auto clear message
+        setTimeout(() => setMessage(prev => prev.type === 'success' ? { type: '', text: '' } : prev), 5000);
       }
     } catch (err: any) {
+      console.error("Error creating account:", err);
       setMessage({ type: 'error', text: err.message || 'Erreur lors de la création du compte.' });
     } finally {
       setCreateLoading(false);
@@ -530,8 +560,9 @@ export function Settings() {
                         <div key={profile.id} className="p-6 flex flex-col gap-4 hover:bg-slate-50 transition-colors">
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                             <div>
+                              <p className="font-bold text-slate-800">{profile.email || 'Pas d\'email'}</p>
                               <div className="flex items-center gap-2 mb-1">
-                                <span className="font-mono text-xs text-slate-400 bg-slate-100 px-2 py-1 rounded-md">
+                                <span className="font-mono text-[10px] text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
                                   ID: {profile.id.substring(0, 8)}...
                                 </span>
                                 {profile.role === 'admin' && (

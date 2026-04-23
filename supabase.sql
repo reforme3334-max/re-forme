@@ -35,6 +35,15 @@ CREATE TABLE therapists (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW())
 );
 
+-- Table des profils (étendu pour les rôles et permissions)
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users ON DELETE CASCADE,
+    role VARCHAR(20) DEFAULT 'therapeute',
+    permissions TEXT[] DEFAULT '{}',
+    email VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW())
+);
+
 -- Table des rendez-vous
 CREATE TYPE appointment_status AS ENUM ('Confirmé', 'Effectué', 'Annulé', 'Impayé');
 
@@ -75,11 +84,13 @@ CREATE INDEX idx_billings_patient ON billings(patient_id);
 ALTER TABLE patients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE treatments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE therapists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE billings ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow public full access to patients" ON patients FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow public full access to treatments" ON treatments FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow public full access to therapists" ON therapists FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public full access to profiles" ON profiles FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow public full access to appointments" ON appointments FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow public full access to billings" ON billings FOR ALL USING (true) WITH CHECK (true);
