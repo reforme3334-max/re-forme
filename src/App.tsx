@@ -44,14 +44,12 @@ export default function App() {
     }
 
     switch (currentRoute) {
-      case 'admin/dashboard':
       case 'dashboard':
         return (
           <ProtectedRoute allowedRoles={['admin']}>
             <Dashboard onSelectPatient={handleSelectPatient} />
           </ProtectedRoute>
         );
-      case 'app/agenda-pro':
       case 'agenda':
         return (
           <ProtectedRoute allowedPermissions={['agenda']}>
@@ -62,12 +60,6 @@ export default function App() {
         return (
           <ProtectedRoute allowedPermissions={['patients']}>
             <Patients onSelectPatient={handleSelectPatient} />
-          </ProtectedRoute>
-        );
-      case 'app/accueil-secretariat':
-        return (
-          <ProtectedRoute allowedPermissions={['agenda', 'patients']}>
-            <Dashboard onSelectPatient={handleSelectPatient} /> {/* Placeholder pour l'accueil secrétariat */}
           </ProtectedRoute>
         );
       case 'settings':
@@ -84,8 +76,8 @@ export default function App() {
         );
       default:
         return (
-          <ProtectedRoute allowedPermissions={['agenda', 'patients', 'finance_recettes', 'finance_depenses_view', 'finance_depenses_edit', 'settings']}>
-            <Dashboard onSelectPatient={handleSelectPatient} />
+          <ProtectedRoute allowedPermissions={['agenda']}>
+            <Agenda />
           </ProtectedRoute>
         );
     }

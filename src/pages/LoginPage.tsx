@@ -55,11 +55,11 @@ export function LoginPage() {
         // 3. Redirection Intelligente selon le rôle
         const role = profile.role;
         if (role === 'admin') {
-          window.location.hash = 'admin/dashboard';
+          window.location.hash = 'dashboard';
         } else if (role === 'therapeute') {
-          window.location.hash = 'app/agenda-pro';
+          window.location.hash = 'agenda';
         } else if (role === 'secretaire') {
-          window.location.hash = 'app/accueil-secretariat';
+          window.location.hash = 'agenda';
         } else if (role === 'patient') {
           window.location.hash = 'espace-patient';
         } else {
