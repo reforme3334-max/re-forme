@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Wallet, TrendingUp, TrendingDown, Activity, Calendar, ArrowUpRight, ArrowDownRight, FileSpreadsheet, Plus } from 'lucide-react';
+import { Wallet, TrendingUp, TrendingDown, Activity, Calendar, ArrowUpRight, ArrowDownRight, FileSpreadsheet, Plus, AlertCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Modal } from '../components/ui/modal';
@@ -9,6 +9,7 @@ import * as XLSX from 'xlsx';
 export function Finance() {
   const [activeTab, setActiveTab] = useState('recettes');
   const [billings, setBillings] = useState<any[]>([]);
+  const [unpaidBillings, setUnpaidBillings] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
@@ -19,6 +20,7 @@ export function Finance() {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [newExpense, setNewExpense] = useState({ amount: '', category: 'Matériel', description: '', date: new Date().toISOString().split('T')[0] });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSettling, setIsSettling] = useState<string | null>(null);
 
   useEffect(() => {
     fetchFinancialData();
@@ -46,13 +48,20 @@ export function Finance() {
     }
 
     // Fetch billings (Recettes)
-    const { data: billingData } = await supabase
+    const { data: billingData, error: bErr } = await supabase
       .from('billings')
-      .select('*, patients(nom, prenom), appointments(date_heure)')
-      .order('id', { ascending: false });
+      .select('*, patients(nom, prenom), appointments(id, date_heure)')
+      .order('date_facturation', { ascending: false });
+      
+    if (bErr) console.error('Error fetching billings:', bErr);
       
     if (billingData) {
-      setBillings(billingData);
+      // payment_status enum is 'En attente', 'Payé', 'Rejeté'
+      setBillings(billingData.filter(b => b.statut === 'Payé'));
+      setUnpaidBillings(billingData.filter(b => b.statut === 'En attente' || b.statut === 'Impayé' || b.statut === 'Rejeté'));
+    } else {
+      setBillings([]);
+      setUnpaidBillings([]);
     }
 
     // Fetch expenses (Dépenses)
@@ -116,6 +125,7 @@ export function Finance() {
   const filteredExpenses = filterByDate(expenses, (e) => new Date(e.date));
 
   const totalRecettes = filteredBillings.reduce((sum, b) => sum + Number(b.montant), 0);
+  const totalUnpaid = unpaidBillings.reduce((sum, b) => sum + Number(b.montant), 0);
   const totalDepenses = filteredExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
   const caNet = totalRecettes - totalDepenses;
   const totalTransactions = filteredBillings.length;
@@ -178,6 +188,57 @@ export function Finance() {
     }
     
     setIsSubmitting(false);
+  };
+
+  const handleSettleBilling = async (billId: string, inputAppId: string | null) => {
+    console.log("handleSettleBilling triggered for:", billId, inputAppId);
+    
+    setIsSettling(billId);
+    
+    try {
+      // 1. Update billing status
+      const { data: updatedBillings, error: billError } = await supabase
+        .from('billings')
+        .update({ 
+          statut: 'Payé', 
+          date_facturation: new Date().toISOString() 
+        })
+        .eq('id', billId)
+        .select();
+        
+      if (billError) throw new Error("Erreur mise à jour facture: " + billError.message);
+      
+      console.log("Billing updated successfully", updatedBillings);
+
+      // 2. Update appointment status if exists
+      let appointmentId = inputAppId;
+      if (!appointmentId && updatedBillings && updatedBillings.length > 0) {
+        appointmentId = updatedBillings[0].appointment_id;
+      }
+
+      if (appointmentId) {
+        console.log("Updating appointment status for:", appointmentId);
+        const { error: apptError } = await supabase
+          .from('appointments')
+          .update({ statut: 'Effectué' })
+          .eq('id', appointmentId);
+          
+        if (apptError) {
+          console.warn("Could not update appointment status:", apptError.message);
+        } else {
+          console.log("Appointment status updated to Effectué");
+        }
+      }
+      
+      // 3. Refresh records without blocking the whole UI if possible
+      // but fetchFinancialData uses setLoading(true) internally, let's keep it for now but maybe later refactor
+      await fetchFinancialData();
+    } catch (error: any) {
+      console.error("Settle error details:", error);
+      alert("Erreur lors du règlement : " + (error.message || "Erreur inconnue"));
+    } finally {
+      setIsSettling(null);
+    }
   };
 
   if (loading) {
@@ -263,6 +324,19 @@ export function Finance() {
             </CardContent>
           </Card>
 
+          <Card className="border-0 shadow-sm border-t-4 border-t-rose-500">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-slate-500">Impayés</CardTitle>
+              <div className="h-8 w-8 rounded-full flex items-center justify-center bg-rose-50">
+                <AlertCircle className="h-4 w-4 text-rose-600" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-rose-600">{totalUnpaid} DH</div>
+              <p className="text-xs mt-1 text-slate-500">À recouvrer</p>
+            </CardContent>
+          </Card>
+
           <Card className="border-0 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-slate-500">Transactions ({filterLabel})</CardTitle>
@@ -295,6 +369,26 @@ export function Finance() {
             </div>
           </button>
         )}
+        {hasPermission('finance_recettes') && (
+          <button
+            onClick={() => setActiveTab('impayer')}
+            className={`py-3 px-6 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'impayer'
+                ? 'border-rose-500 text-rose-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-4 w-4" />
+              Impayés
+              {unpaidBillings.length > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[10px] font-bold">
+                  {unpaidBillings.length}
+                </span>
+              )}
+            </div>
+          </button>
+        )}
         {(hasPermission('finance_depenses_view') || hasPermission('finance_depenses_edit')) && (
           <button
             onClick={() => setActiveTab('depenses')}
@@ -314,6 +408,70 @@ export function Finance() {
 
       {/* Tab Content */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        {activeTab === 'impayer' && hasPermission('finance_recettes') && (
+          <>
+            <div className="p-4 border-b border-slate-100 bg-rose-50/30">
+              <h3 className="font-semibold text-rose-800">Séances en attente de règlement</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="text-xs text-slate-500 uppercase bg-slate-50">
+                  <tr>
+                    <th className="px-6 py-4 font-medium">Date</th>
+                    <th className="px-6 py-4 font-medium">Patient</th>
+                    <th className="px-6 py-4 font-medium">Mode</th>
+                    <th className="px-6 py-4 font-medium text-right">Montant</th>
+                    <th className="px-6 py-4 font-medium text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {unpaidBillings.length > 0 ? unpaidBillings.map((bill) => {
+                    const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.created_at || new Date());
+                    return (
+                    <tr key={bill.id} className="hover:bg-rose-50/30 transition-colors">
+                      <td className="px-6 py-4 text-slate-600">
+                        {date.toLocaleDateString('fr-FR')}
+                      </td>
+                      <td className="px-6 py-4 font-medium text-slate-900">
+                        {bill.patients ? `${bill.patients.prenom} ${bill.patients.nom}` : 'Client divers'}
+                      </td>
+                      <td className="px-6 py-4 text-slate-600">
+                        <span className="bg-slate-100 px-2.5 py-1 rounded-md text-xs font-medium">
+                          {bill.type_paiement}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-right font-bold text-rose-600">
+                        {bill.montant} DH
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        <Button 
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const appId = bill.appointment_id || (bill.appointments && !Array.isArray(bill.appointments) ? bill.appointments.id : (bill.appointments?.[0]?.id));
+                            handleSettleBilling(bill.id, appId);
+                          }}
+                          disabled={isSettling === bill.id}
+                          size="sm"
+                          className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs h-8"
+                        >
+                          {isSettling === bill.id ? "..." : "Régler"}
+                        </Button>
+                      </td>
+                    </tr>
+                  )}) : (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
+                        Aucun impayé en cours. Félicitations !
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
         {activeTab === 'recettes' && hasPermission('finance_recettes') && (
           <>
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">

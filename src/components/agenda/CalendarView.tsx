@@ -318,24 +318,46 @@ export function CalendarView() {
       .update({ statut: 'Effectué' })
       .eq('id', selectedAppointment.id);
 
-    // 2. Créer la facture
-    const { error } = await supabase
+    // 2. Vérifier si une facture existe déjà
+    const { data: existingBill } = await supabase
       .from('billings')
-      .insert([{
-        patient_id: selectedAppointment.patient_id,
-        appointment_id: selectedAppointment.id,
-        montant: parseFloat(billingAmount),
-        type_paiement: paymentType,
-        statut: 'Payé'
-      }]);
+      .select('id')
+      .eq('appointment_id', selectedAppointment.id)
+      .maybeSingle();
+
+    let billingError;
+    if (existingBill) {
+      // Mettre à jour la facture existante
+      const { error } = await supabase
+        .from('billings')
+        .update({
+          montant: parseFloat(billingAmount),
+          type_paiement: paymentType,
+          statut: 'Payé'
+        })
+        .eq('id', existingBill.id);
+      billingError = error;
+    } else {
+      // Créer une nouvelle facture
+      const { error } = await supabase
+        .from('billings')
+        .insert([{
+          patient_id: selectedAppointment.patient_id,
+          appointment_id: selectedAppointment.id,
+          montant: parseFloat(billingAmount),
+          type_paiement: paymentType,
+          statut: 'Payé'
+        }]);
+      billingError = error;
+    }
 
     setLoading(false);
-    if (!error) {
+    if (!billingError) {
       setIsBillingModalOpen(false);
       setSelectedAppointment(null);
       fetchAppointments();
     } else {
-      setErrorMsg("Erreur de facturation : " + error.message);
+      setErrorMsg("Erreur de facturation : " + billingError.message);
     }
   };
 

@@ -90,6 +90,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [isDeleteBillingModalOpen, setIsDeleteBillingModalOpen] = useState(false);
   const [billingToDelete, setBillingToDelete] = useState<string | null>(null);
   const [deleteBillingLoading, setDeleteBillingLoading] = useState(false);
+  const [isSettling, setIsSettling] = useState<string | null>(null);
 
   useEffect(() => {
     if (patientId) {
@@ -126,7 +127,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     // Fetch billings
     const { data: billingData } = await supabase
       .from('billings')
-      .select('*, appointments(date_heure)')
+      .select('*, appointments(id, date_heure)')
       .eq('patient_id', patientId)
       .order('id', { ascending: false }); // Fallback order if created_at doesn't exist
       
@@ -414,6 +415,54 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       console.error("Erreur lors de la suppression de la facture : " + error.message);
     }
     setDeleteBillingLoading(false);
+  };
+
+  const handleSettleBilling = async (bill: any) => {
+    setIsSettling(bill.id);
+    // Be robust with appointment ID
+    const appointmentId = bill.appointment_id || (bill.appointments && !Array.isArray(bill.appointments) ? bill.appointments.id : (bill.appointments?.[0]?.id));
+    console.log("Settling billing:", bill.id, "for appointment:", appointmentId);
+
+    try {
+      // 1. Update billing status
+      const { data: updatedBillings, error: billError } = await supabase
+        .from('billings')
+        .update({ 
+          statut: 'Payé', 
+          date_facturation: new Date().toISOString() 
+        })
+        .eq('id', bill.id)
+        .select();
+        
+      if (billError) {
+        throw new Error("Erreur mise à jour facture: " + billError.message);
+      }
+      
+      // 2. Update appointment status if exists
+      let finalAppId = appointmentId;
+      if (!finalAppId && updatedBillings && updatedBillings.length > 0) {
+        finalAppId = updatedBillings[0].appointment_id;
+      }
+
+      if (finalAppId) {
+        const { error: apptError } = await supabase
+          .from('appointments')
+          .update({ statut: 'Effectué' })
+          .eq('id', finalAppId);
+          
+        if (apptError) {
+          console.warn("Could not update appointment status:", apptError.message);
+        }
+      }
+      
+      // 3. Refresh patient details
+      await fetchPatientDetails();
+    } catch (error: any) {
+      console.error("Settle error:", error);
+      alert("Erreur lors du règlement : " + (error.message || "Erreur inconnue"));
+    } finally {
+      setIsSettling(null);
+    }
   };
 
   const handleNewAppointment = async (e: React.FormEvent) => {
@@ -1013,8 +1062,10 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                         </td>
                       </tr>
                     ) : (
-                      billings.map((bill) => (
-                        <tr key={bill.id} className="bg-white hover:bg-slate-50 transition-colors">
+                      billings.map((bill) => {
+                        const isUnpaid = bill.statut === 'En attente' || bill.statut === 'Impayé';
+                        return (
+                        <tr key={bill.id} className={`bg-white hover:bg-slate-50 transition-colors ${isUnpaid ? 'bg-rose-50/20' : ''}`}>
                           <td className="px-6 py-4 font-medium text-slate-900">
                             {bill.appointments?.date_heure ? new Date(bill.appointments.date_heure).toLocaleDateString('fr-FR') : 'N/A'}
                           </td>
@@ -1025,11 +1076,25 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                             {bill.type_paiement}
                           </td>
                           <td className="px-6 py-4">
-                            <Badge variant="success">
+                            <Badge variant={isUnpaid ? 'outline' : 'success'} className={isUnpaid ? 'text-rose-600 border-rose-200 bg-rose-50' : ''}>
                               {bill.statut}
                             </Badge>
                           </td>
-                          <td className="px-6 py-4 text-right">
+                          <td className="px-6 py-4 text-right flex items-center justify-end gap-2">
+                            {isUnpaid && (
+                              <Button 
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleSettleBilling(bill);
+                                }}
+                                disabled={isSettling === bill.id}
+                                size="sm"
+                                className="bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] h-7 px-3 uppercase font-bold"
+                              >
+                                {isSettling === bill.id ? "..." : "Régler"}
+                              </Button>
+                            )}
                             <Button 
                               variant="ghost" 
                               size="sm" 
@@ -1041,7 +1106,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                             </Button>
                           </td>
                         </tr>
-                      ))
+                      )})
                     )}
                   </tbody>
                 </table>
