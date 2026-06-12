@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail, Search, Filter, Upload, Lock } from 'lucide-react';
+import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail, Search, Filter, Upload, Lock, Trash2 } from 'lucide-react';
+import { Modal } from '@/components/ui/modal';
 import Papa from 'papaparse';
 
 interface Patient {
@@ -46,6 +47,8 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   
   // Data state
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [appointments, setAppointments] = useState<any[]>([]);
+  const [treatments, setTreatments] = useState<any[]>([]);
 
   // Search states
   const [searchQuery, setSearchQuery] = useState('');
@@ -58,6 +61,11 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importLoading, setImportLoading] = useState(false);
 
+  // Delete states
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [patientToDelete, setPatientToDelete] = useState<Patient | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
   // Fetch patients on component mount
   useEffect(() => {
     fetchPatients();
@@ -67,18 +75,32 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     setFetching(true);
     setError(null);
     
-    const { data, error: fetchError } = await supabase
-      .from('patients')
-      .select('*')
-      .order('created_at', { ascending: false });
+    try {
+      const { data: pData, error: fetchError } = await supabase
+        .from('patients')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-    if (fetchError) {
-      setError(`Erreur lors du chargement : ${fetchError.message}`);
-    } else {
-      setPatients(data || []);
+      if (fetchError) throw fetchError;
+
+      const { data: appData, error: appError } = await supabase
+        .from('appointments')
+        .select('patient_id, statut, date_heure');
+      if (appError) console.error("Error fetching appointments:", appError);
+
+      const { data: treatData, error: treatError } = await supabase
+        .from('treatments')
+        .select('patient_id, statut, nombre_seances_prescrites');
+      if (treatError) console.error("Error fetching treatments:", treatError);
+
+      setPatients(pData || []);
+      setAppointments(appData || []);
+      setTreatments(treatData || []);
+    } catch (err: any) {
+      setError(`Erreur lors du chargement : ${err.message}`);
+    } finally {
+      setFetching(false);
     }
-    
-    setFetching(false);
   };
 
   const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -206,6 +228,95 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
       // Clear success message after 3 seconds
       setTimeout(() => setSuccess(null), 3000);
     }
+  };
+
+  const handleDeletePatient = async () => {
+    if (!patientToDelete) return;
+    setDeleteLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      // 1. Delete associated billings
+      await supabase.from('billings').delete().eq('patient_id', patientToDelete.id);
+      
+      // 2. Delete associated appointments
+      await supabase.from('appointments').delete().eq('patient_id', patientToDelete.id);
+      
+      // 3. Delete associated treatments
+      await supabase.from('treatments').delete().eq('patient_id', patientToDelete.id);
+      
+      // 4. Delete the patient record
+      const { error: deleteError } = await supabase
+        .from('patients')
+        .delete()
+        .eq('id', patientToDelete.id);
+        
+      if (deleteError) throw deleteError;
+      
+      setSuccess(`Le patient ${patientToDelete.nom} ${patientToDelete.prenom} a été supprimé avec succès.`);
+      setIsDeleteModalOpen(false);
+      setPatientToDelete(null);
+      fetchPatients();
+      
+      // Clear success message after 3 seconds
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err: any) {
+      setError(`Erreur lors de la suppression : ${err.message}`);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const getPatientAlertBadge = (patientItem: Patient) => {
+    const pAppts = appointments.filter(a => a.patient_id === patientItem.id);
+    const completedAppts = pAppts.filter(a => a.statut === 'Effectué');
+    
+    const nowLocalDate = new Date();
+    const upcomingAppts = pAppts.filter(a => {
+      const apptDate = new Date(a.date_heure);
+      return apptDate >= nowLocalDate;
+    });
+
+    const completedCount = completedAppts.length;
+    const hasUpcoming = upcomingAppts.length > 0;
+
+    let lastApptDate: Date | null = null;
+    if (completedAppts.length > 0) {
+      const sortedCompleted = [...completedAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
+      lastApptDate = new Date(sortedCompleted[0].date_heure);
+    } else if (pAppts.length > 0) {
+      const pastAppts = pAppts.filter(a => new Date(a.date_heure) < nowLocalDate);
+      if (pastAppts.length > 0) {
+        const sortedPast = [...pastAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
+        lastApptDate = new Date(sortedPast[0].date_heure);
+      }
+    }
+
+    let prescribed = patientItem.nombre_seances || 0;
+    const activeTreats = treatments.filter(t => t.patient_id === patientItem.id && t.statut === 'En cours');
+    if (activeTreats.length > 0) {
+      prescribed = activeTreats[0].nombre_seances_prescrites || prescribed;
+    }
+
+    if (prescribed > 0 && completedCount < prescribed && !hasUpcoming) {
+      return {
+        text: `Incomplet (${completedCount}/${prescribed})`,
+        tooltip: `${completedCount} séance(s) sur ${prescribed} réalisées, sans prochain RDV`,
+        className: 'bg-amber-50 text-amber-700 border-amber-200'
+      };
+    } else if (lastApptDate && !hasUpcoming) {
+      const diffMs = nowLocalDate.getTime() - lastApptDate.getTime();
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      if (diffDays >= 14) {
+        return {
+          text: `Inactif (${diffDays}j)`,
+          tooltip: `Aucune séance depuis ${diffDays} jours, sans prochain RDV`,
+          className: 'bg-rose-50 text-rose-700 border-rose-200'
+        };
+      }
+    }
+
+    return null;
   };
 
   const filteredPatients = patients.filter(p => {
@@ -468,33 +579,46 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                   <th className="px-6 py-4 font-medium">Accès Portail</th>
                   <th className="px-6 py-4 font-medium">Détails Médicaux</th>
                   <th className="px-6 py-4 font-medium">Date d'ajout</th>
+                  <th className="px-6 py-4 font-medium text-right font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredPatients.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
+                    <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
                       {fetching ? 'Chargement des patients...' : 'Aucun patient trouvé.'}
                     </td>
                   </tr>
                 ) : (
-                  filteredPatients.map((patient) => (
-                    <tr 
-                      key={patient.id} 
-                      className={`bg-white hover:bg-slate-50 transition-colors ${onSelectPatient ? 'cursor-pointer' : ''}`}
-                      onClick={() => onSelectPatient && onSelectPatient(patient.id)}
-                    >
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="h-9 w-9 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold text-sm">
-                            {patient.prenom?.[0]}{patient.nom?.[0]}
+                  filteredPatients.map((patient) => {
+                    const alertBadge = getPatientAlertBadge(patient);
+                    return (
+                      <tr 
+                        key={patient.id} 
+                        className={`bg-white hover:bg-slate-50 transition-colors ${onSelectPatient ? 'cursor-pointer' : ''}`}
+                        onClick={() => onSelectPatient && onSelectPatient(patient.id)}
+                      >
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="h-9 w-9 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold text-sm">
+                              {patient.prenom?.[0]}{patient.nom?.[0]}
+                            </div>
+                            <div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-medium text-slate-900">{patient.nom} {patient.prenom}</span>
+                                {alertBadge && (
+                                  <span 
+                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${alertBadge.className}`}
+                                    title={alertBadge.tooltip}
+                                  >
+                                    {alertBadge.text}
+                                  </span>
+                                )}
+                              </div>
+                              {patient.cin && <div className="text-xs text-slate-500">CIN: {patient.cin}</div>}
+                            </div>
                           </div>
-                          <div>
-                            <div className="font-medium text-slate-900">{patient.nom} {patient.prenom}</div>
-                            {patient.cin && <div className="text-xs text-slate-500">CIN: {patient.cin}</div>}
-                          </div>
-                        </div>
-                      </td>
+                        </td>
                       <td className="px-6 py-4">
                         <div className="space-y-1">
                           {patient.telephone && (
@@ -543,14 +667,78 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                           year: 'numeric'
                         })}
                       </td>
+                      <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setPatientToDelete(patient);
+                            setIsDeleteModalOpen(true);
+                          }}
+                          className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 h-8 w-8 p-0 rounded-full"
+                          title="Supprimer le patient"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>
           </div>
         </CardContent>
       </Card>
+
+      {/* Modal de confirmation de suppression */}
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={() => {
+          if (!deleteLoading) {
+            setIsDeleteModalOpen(false);
+            setPatientToDelete(null);
+          }
+        }}
+        title="Confirmer la suppression"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            Êtes-vous sûr de vouloir supprimer définitivement le patient{" "}
+            <strong className="text-slate-900 font-bold">
+              {patientToDelete?.nom} {patientToDelete?.prenom}
+            </strong>{" "}
+            de la base de données ?
+          </p>
+          <div className="p-3 bg-rose-50 text-rose-800 rounded-lg text-sm flex gap-2 border border-rose-100">
+            <AlertCircle className="h-5 w-5 text-rose-500 flex-shrink-0" />
+            <span>
+              <strong>Attention :</strong> Cette action est irréversible. Toutes les données associées (séances, rendez-vous, factures, et historique de traitements) seront définitivement supprimées.
+            </span>
+          </div>
+          <div className="flex justify-end gap-3 pt-3">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsDeleteModalOpen(false);
+                setPatientToDelete(null);
+              }}
+              disabled={deleteLoading}
+            >
+              Annuler
+            </Button>
+            <Button
+              onClick={handleDeletePatient}
+              disabled={deleteLoading}
+              className="bg-rose-600 hover:bg-rose-700 text-white font-medium"
+            >
+              {deleteLoading ? "Suppression en cours..." : "Supprimer définitivement"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

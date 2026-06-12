@@ -92,6 +92,10 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [deleteBillingLoading, setDeleteBillingLoading] = useState(false);
   const [isSettling, setIsSettling] = useState<string | null>(null);
 
+  // Delete Patient Modal State
+  const [isDeletePatientModalOpen, setIsDeletePatientModalOpen] = useState(false);
+  const [deletePatientLoading, setDeletePatientLoading] = useState(false);
+
   useEffect(() => {
     if (patientId) {
       fetchPatientDetails();
@@ -417,6 +421,39 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     setDeleteBillingLoading(false);
   };
 
+  const executeDeletePatient = async () => {
+    if (!patientId) return;
+    
+    setDeletePatientLoading(true);
+    try {
+      // 1. Delete associated billings
+      await supabase.from('billings').delete().eq('patient_id', patientId);
+      
+      // 2. Delete associated appointments
+      await supabase.from('appointments').delete().eq('patient_id', patientId);
+      
+      // 3. Delete associated treatments
+      await supabase.from('treatments').delete().eq('patient_id', patientId);
+      
+      // 4. Delete patient
+      const { error } = await supabase
+        .from('patients')
+        .delete()
+        .eq('id', patientId);
+        
+      if (error) throw error;
+      
+      setIsDeletePatientModalOpen(false);
+      // Navigate back to patients list
+      window.location.hash = 'patients';
+    } catch (err: any) {
+      console.error("Erreur lors de la suppression de la fiche patient :", err.message);
+      alert("Une erreur est survenue lors de la suppression : " + err.message);
+    } finally {
+      setDeletePatientLoading(false);
+    }
+  };
+
   const handleSettleBilling = async (bill: any) => {
     setIsSettling(bill.id);
     // Be robust with appointment ID
@@ -579,6 +616,60 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     doc.save(`Calendrier_Soins_${patient.nom}_${patient.prenom}.pdf`);
   };
 
+  const getPatientAlert = () => {
+    if (!patient) return null;
+    const nowLocalDate = new Date();
+    
+    const completedAppts = appointments.filter(a => a.statut === 'Effectué');
+    const upcomingAppts = appointments.filter(a => {
+      const apptDate = new Date(a.date_heure);
+      return apptDate >= nowLocalDate;
+    });
+    const hasUpcoming = upcomingAppts.length > 0;
+    const completedCount = completedAppts.length;
+
+    let lastApptDate: Date | null = null;
+    if (completedAppts.length > 0) {
+      const sortedCompleted = [...completedAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
+      lastApptDate = new Date(sortedCompleted[0].date_heure);
+    } else if (appointments.length > 0) {
+      const pastAppts = appointments.filter(a => new Date(a.date_heure) < nowLocalDate);
+      if (pastAppts.length > 0) {
+        const sortedPast = [...pastAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
+        lastApptDate = new Date(sortedPast[0].date_heure);
+      }
+    }
+
+    let prescribedSessions = patient.nombre_seances || 0;
+    const activeTreatments = treatments.filter(t => t.statut === 'En cours');
+    if (activeTreatments.length > 0) {
+      prescribedSessions = activeTreatments[0].nombre_seances_prescrites || prescribedSessions;
+    }
+
+    if (prescribedSessions > 0 && completedCount < prescribedSessions && !hasUpcoming) {
+      return {
+        type: 'uncompleted',
+        title: "Alerte d'Assiduité : Séances incomplètes",
+        message: `Le patient a réalisé uniquement ${completedCount} séance(s) sur les ${prescribedSessions} prescrites pour son traitement, et aucun nouveau rendez-vous n'est planifié.`,
+        badgeColor: 'border-amber-200 bg-amber-50 text-amber-800'
+      };
+    } else if (lastApptDate && !hasUpcoming) {
+      const diffMs = nowLocalDate.getTime() - lastApptDate.getTime();
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      if (diffDays >= 14) {
+        return {
+          type: 'discontinued',
+          title: "Alerte d'Assiduité : Patient inactif / Arrêt de soins",
+          message: `Le patient n'a plus effectué de séance depuis ${diffDays} jours (dernière séance le ${lastApptDate.toLocaleDateString('fr-FR')}) et n'est inscrit à aucun prochain rendez-vous.`,
+          badgeColor: 'border-rose-200 bg-rose-50 text-rose-800'
+        };
+      }
+    }
+    return null;
+  };
+
+  const activeAlert = getPatientAlert();
+
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
       {/* Header Profile */}
@@ -603,6 +694,9 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           </div>
         </div>
         <div className="flex gap-3 w-full md:w-auto flex-wrap">
+          <Button variant="outline" className="flex-1 md:flex-none text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200" onClick={() => setIsDeletePatientModalOpen(true)}>
+            <Trash2 className="h-4 w-4 mr-2" /> Supprimer
+          </Button>
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => setIsAccessModalOpen(true)}>
             <Key className="h-4 w-4 mr-2" /> Accès
           </Button>
@@ -616,6 +710,42 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           <Button className="flex-1 md:flex-none gap-2" onClick={() => setIsNewAppointmentModalOpen(true)}><Plus className="h-4 w-4" /> Nouveau RDV</Button>
         </div>
       </div>
+
+      {/* Active Assiduousness Alert Banner */}
+      {activeAlert && (
+        <div className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm transition-all ${activeAlert.badgeColor}`}>
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-current flex-shrink-0 mt-0.5" />
+            <div>
+              <h4 className="font-bold text-sm sm:text-base">{activeAlert.title}</h4>
+              <p className="text-xs sm:text-sm opacity-90 mt-0.5">{activeAlert.message}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-center">
+            {patient.email && (
+              <Button 
+                size="sm" 
+                variant="outline" 
+                className="bg-white hover:bg-slate-50 border-slate-200 text-slate-800"
+                onClick={() => {
+                  const subject = encodeURIComponent("Suivi de votre traitement - Cabinet Re Forme");
+                  const text = `Bonjour ${patient.prenom} ${patient.nom},\n\nNous vous contactons pour faire le suivi de votre dossier thérapeutique chez Cabinet Re Forme.\n\n${activeAlert.type === 'uncompleted' ? `Nous constatons que vous n'avez réalisé que certaines séances prescrites, et aucun nouveau rendez-vous n'est planifié.` : `Vous n'avez pas réalisé de séance récemment, et aucun rendez-vous de suivi n'est au calendrier.`}\n\nPour la réussite de votre traitement, nous vous encourageons à prendre rendez-vous en ligne ou en nous appelant.\n\nCordialement,\nL'équipe Cabinet Re Forme`;
+                  window.location.href = `mailto:${patient.email}?subject=${subject}&body=${encodeURIComponent(text)}`;
+                }}
+              >
+                <Mail className="h-3.5 w-3.5 mr-1 text-slate-650" /> Contacter par Email
+              </Button>
+            )}
+            <Button
+              size="sm"
+              className="bg-transparent hover:bg-black/5 text-current border border-current font-semibold"
+              onClick={() => setIsNewAppointmentModalOpen(true)}
+            >
+              Planifier un RDV
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex space-x-1 border-b border-slate-200 overflow-x-auto">
@@ -1526,6 +1656,49 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
               disabled={deleteBillingLoading}
             >
               {deleteBillingLoading ? 'Suppression...' : 'Supprimer'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Delete Patient Modal */}
+      <Modal
+        isOpen={isDeletePatientModalOpen}
+        onClose={() => {
+          if (!deletePatientLoading) {
+            setIsDeletePatientModalOpen(false);
+          }
+        }}
+        title="Supprimer entièrement le patient"
+      >
+        <div className="space-y-4">
+          <p className="text-slate-600 text-sm">
+            Êtes-vous sûr de vouloir supprimer définitivement le patient{" "}
+            <strong className="text-slate-900 font-semibold">
+              {patient?.prenom} {patient?.nom}
+            </strong>{" "}
+            de la base de données ?
+          </p>
+          <div className="p-3 bg-rose-50 text-rose-800 rounded-lg text-sm flex gap-2 border border-rose-100">
+            <ShieldAlert className="h-5 w-5 text-rose-500 flex-shrink-0" />
+            <span>
+              <strong>Attention :</strong> Cette action supprimera définitivement toutes les séances associées, l'historique des traitements, et les factures/règlements de ce patient. Cette opération est irréversible.
+            </span>
+          </div>
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <Button
+              variant="outline"
+              onClick={() => setIsDeletePatientModalOpen(false)}
+              disabled={deletePatientLoading}
+            >
+              Annuler
+            </Button>
+            <Button 
+              className="bg-rose-600 hover:bg-rose-700 text-white font-medium" 
+              onClick={executeDeletePatient}
+              disabled={deletePatientLoading}
+            >
+              {deletePatientLoading ? 'Suppression totale...' : 'Supprimer définitivement'}
             </Button>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Users, Wallet, Activity, AlertCircle, Send, Calendar, Lock, Mail } from 'lucide-react';
+import { Users, Wallet, Activity, AlertCircle, Send, Calendar, Lock, Mail, AlertTriangle, Phone, Clock } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { LineChart, Line, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { supabase } from '../lib/supabaseClient';
@@ -48,7 +48,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('month');
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
-  const [rawData, setRawData] = useState({ billings: [] as any[], patients: [] as any[], appointments: [] as any[] });
+  const [rawData, setRawData] = useState({ billings: [] as any[], patients: [] as any[], appointments: [] as any[], treatments: [] as any[] });
 
   useEffect(() => {
     fetchData();
@@ -57,7 +57,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const { data: patients, error: pErr } = await supabase.from('patients').select('id, nom, prenom, created_at, pathologie');
+      const { data: patients, error: pErr } = await supabase.from('patients').select('id, nom, prenom, created_at, pathologie, telephone, email, nombre_seances');
       if (pErr) console.error('Error fetching patients:', pErr);
 
       const { data: billings, error: bErr } = await supabase.from('billings').select('*, patients(nom, prenom, email), appointments(id, date_heure)');
@@ -72,11 +72,16 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
         if (simpleErr) console.error('Error fetching simple appointments:', simpleErr);
         appointments = simpleAppts;
       }
+
+      // Fetch treatments for tracking patient progress
+      const { data: treatments, error: tErr } = await supabase.from('treatments').select('*');
+      if (tErr) console.error('Error fetching treatments:', tErr);
       
       setRawData({
         patients: patients || [],
         billings: billings || [],
-        appointments: appointments || []
+        appointments: appointments || [],
+        treatments: treatments || []
       });
     } catch (err) {
       console.error('Unexpected error in fetchData:', err);
@@ -303,6 +308,94 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
     const topUnpaidList = Array.from(unpaidMap.values()).sort((a: any, b: any) => b.amount - a.amount).slice(0, 5);
 
+    // Compute Attendance Alerts (Patients who stopped coming / did not complete their sessions)
+    const attendanceAlerts: any[] = [];
+    const nowLocalDate = new Date();
+    
+    rawData.patients.forEach(p => {
+      // Find all appointments for this patient
+      const pAppts = rawData.appointments.filter(a => a.patient_id === p.id);
+      
+      // Filter into completed (statut === 'Effectué')
+      const completedAppts = pAppts.filter(a => a.statut === 'Effectué');
+      
+      // Filter into upcoming (date is in the future)
+      const upcomingAppts = pAppts.filter(a => {
+        const apptDate = new Date(a.date_heure);
+        return apptDate >= nowLocalDate;
+      });
+
+      const completedCount = completedAppts.length;
+      const hasUpcoming = upcomingAppts.length > 0;
+
+      // Find the last completed appointment date; fallback to completed or some past appointment
+      let lastApptDate: Date | null = null;
+      if (completedAppts.length > 0) {
+        const sortedCompleted = [...completedAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
+        lastApptDate = new Date(sortedCompleted[0].date_heure);
+      } else if (pAppts.length > 0) {
+        const pastAppts = pAppts.filter(a => new Date(a.date_heure) < nowLocalDate);
+        if (pastAppts.length > 0) {
+          const sortedPast = [...pastAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
+          lastApptDate = new Date(sortedPast[0].date_heure);
+        }
+      }
+
+      // Check if patient has prescribed sessions
+      let prescribedSessions = p.nombre_seances || 0;
+      
+      // Or in active treatments
+      const activeTreatments = rawData.treatments?.filter(t => t.patient_id === p.id && t.statut === 'En cours') || [];
+      if (activeTreatments.length > 0) {
+        prescribedSessions = activeTreatments[0].nombre_seances_prescrites || prescribedSessions;
+      }
+
+      if (prescribedSessions > 0 && completedCount < prescribedSessions && !hasUpcoming) {
+        attendanceAlerts.push({
+          patientId: p.id,
+          nom: p.nom,
+          prenom: p.prenom,
+          type: 'uncompleted',
+          title: 'Séances incomplètes',
+          badgeColor: 'bg-amber-100 text-amber-800 border-amber-200',
+          message: `${completedCount}/${prescribedSessions} séance(s) effectuée(s) (aucun RDV prévu)`,
+          email: p.email,
+          telephone: p.telephone,
+          lastSessionDate: lastApptDate,
+          completedCount,
+          prescribedSessions
+        });
+      } else if (lastApptDate && !hasUpcoming) {
+        // Calculate days of inactivity
+        const diffMs = nowLocalDate.getTime() - lastApptDate.getTime();
+        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        if (diffDays >= 14) {
+          attendanceAlerts.push({
+            patientId: p.id,
+            nom: p.nom,
+            prenom: p.prenom,
+            type: 'discontinued',
+            title: 'Arrêt de soins (Inactif)',
+            badgeColor: 'bg-rose-100 text-rose-800 border-rose-200',
+            message: `Inactif depuis ${diffDays} jours (dernière séance le ${lastApptDate.toLocaleDateString('fr-FR')})`,
+            email: p.email,
+            telephone: p.telephone,
+            lastSessionDate: lastApptDate,
+            completedCount,
+            prescribedSessions,
+            inactiveDays: diffDays
+          });
+        }
+      }
+    });
+
+    // Sort alerts by urgency (discontinued first, then by duration of inactivity)
+    attendanceAlerts.sort((a, b) => {
+      if (a.type === 'discontinued' && b.type !== 'discontinued') return -1;
+      if (a.type !== 'discontinued' && b.type === 'discontinued') return 1;
+      return (b.inactiveDays || 0) - (a.inactiveDays || 0);
+    });
+
     return {
       ca,
       caTrend,
@@ -320,7 +413,8 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       pathologyChartData,
       topUnpaidList,
       patientsSansAccesCount: patientsSansAcces.length,
-      patientsSansAccesList: patientsSansAcces.slice(0, 10)
+      patientsSansAccesList: patientsSansAcces.slice(0, 10),
+      attendanceAlerts: attendanceAlerts
     };
   }, [rawData, filter, customDate]);
 
@@ -331,6 +425,16 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       window.location.href = `mailto:${patient.email}?subject=Relance de paiement - Re Forme Center&body=Bonjour ${patient.name},%0D%0A%0D%0ANous vous contactons concernant un solde en attente de ${patient.amount} DH pour vos ${patient.sessions} dernières séances.%0D%0A%0D%0AMerci de régulariser votre situation.%0D%0A%0D%0ACordialement,%0D%0AL'équipe Re Forme Center`;
     } else {
       alert(`Aucun email renseigné pour ${patient.name}. Veuillez le contacter par téléphone.`);
+    }
+  };
+
+  const handleFollowUpAttendance = (alertItem: any) => {
+    if (alertItem.email) {
+      const subject = encodeURIComponent("Suivi de votre traitement - Cabinet Re Forme");
+      const text = `Bonjour ${alertItem.prenom} ${alertItem.nom},\n\nNous faisons le suivi de votre dossier thérapeutique chez Cabinet Re Forme.\n\n${alertItem.type === 'uncompleted' ? `Nous constatons que vous avez réalisé ${alertItem.completedCount} séances sur les ${alertItem.prescribedSessions} prescrites pour votre traitement en cours, et qu'aucun nouveau rendez-vous n'est planifié.` : `Votre dernière séance remonte au ${alertItem.lastSessionDate ? new Date(alertItem.lastSessionDate).toLocaleDateString('fr-FR') : 'quelques semaines'} et aucun rendez-vous de suivi n'est programmé.`}\n\nPour assurer la continuité des soins et l'efficacité de votre rétablissement, nous vous invitons à planifier vos prochaines séances.\n\nVous pouvez le faire directement en ligne sur votre Espace Patient ou en contactant notre secrétariat.\n\nBien cordialement,\nL'équipe Cabinet Re Forme`;
+      window.location.href = `mailto:${alertItem.email}?subject=${subject}&body=${encodeURIComponent(text)}`;
+    } else {
+      alert(`Aucun email enregistré pour ${alertItem.prenom} ${alertItem.nom}. Veuillez contacter directement le patient par téléphone au ${alertItem.telephone || 'Non renseigné'}.`);
     }
   };
 
@@ -585,6 +689,99 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                 </tbody>
               </table>
             </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 3.5. Suivi de l'Assiduité & Alertes d'activité */}
+      <div className="grid gap-4 grid-cols-1">
+        <Card className="border-0 shadow-sm border-t-4 border-t-amber-500">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base font-semibold flex items-center justify-between text-slate-800">
+              <span className="flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-amber-500" />
+                Alertes d'Assiduité : Patients inactifs ou séances incomplètes
+              </span>
+              <span className="bg-amber-50 text-amber-800 border border-amber-200 rounded-full px-2.5 py-0.5 text-xs font-bold">
+                {dashboardData.attendanceAlerts.length} alertes actives
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="text-xs text-slate-500 uppercase bg-slate-50 rounded-t-lg">
+                  <tr>
+                    <th className="px-4 py-3 font-medium rounded-tl-lg">Patient</th>
+                    <th className="px-4 py-3 font-medium">Type d'alerte</th>
+                    <th className="px-4 py-3 font-medium">Détails du suivi</th>
+                    <th className="px-4 py-3 font-medium text-center rounded-tr-lg">Actions de relance</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {dashboardData.attendanceAlerts.length > 0 ? (
+                    dashboardData.attendanceAlerts.slice(0, 5).map((alertItem: any, index: number) => (
+                      <tr key={index} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="px-4 py-3 font-semibold text-slate-900">
+                          {alertItem.prenom} {alertItem.nom}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold border ${alertItem.badgeColor}`}>
+                            {alertItem.type === 'discontinued' ? <Clock className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
+                            {alertItem.title}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-600 text-xs">
+                          {alertItem.message}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-center gap-2">
+                            <Button 
+                              size="sm" 
+                              variant="outline" 
+                              className="h-8 text-xs text-indigo-600 border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700" 
+                              onClick={() => handleFollowUpAttendance(alertItem)}
+                            >
+                              <Send className="h-3 w-3 mr-1.5" /> Recommander RDV
+                            </Button>
+                            {alertItem.telephone && (
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                className="h-8 text-xs text-slate-600 hover:bg-slate-50" 
+                                onClick={() => window.location.href = `tel:${alertItem.telephone}`}
+                                title={`Appeler le ${alertItem.telephone}`}
+                              >
+                                <Phone className="h-3 w-3" />
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 text-xs text-slate-600 hover:bg-slate-50"
+                              onClick={() => onSelectPatient ? onSelectPatient(alertItem.patientId) : window.location.hash = `patients`}
+                            >
+                              Fiche
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-8 text-center text-slate-500 italic text-sm">
+                        Aucun arrêt de traitement ou séance incomplète à signaler. Tous vos patients poursuivent assidûment leurs séances ! 🎉
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {dashboardData.attendanceAlerts.length > 5 && (
+              <div className="mt-4 text-center">
+                <p className="text-xs text-slate-400 italic">Et {dashboardData.attendanceAlerts.length - 5} autres alertes d'assiduité actives...</p>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
