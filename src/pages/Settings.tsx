@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { Shield, Users, UserPlus, Mail, Lock, AlertCircle, AlertTriangle, CheckCircle, Activity, Save, CheckSquare, Square, Stethoscope, Plus, Trash2, Database, Upload, Phone } from 'lucide-react';
+import { Modal } from '../components/ui/modal';
 import Papa from 'papaparse';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -27,6 +28,11 @@ export function Settings() {
   const [role, setRole] = useState('therapeute');
   const [createLoading, setCreateLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
+
+  // Delete therapist confirmation modal
+  const [isDeleteTherapistModalOpen, setIsDeleteTherapistModalOpen] = useState(false);
+  const [therapistToDelete, setTherapistToDelete] = useState<any | null>(null);
+  const [deleteTherapistLoading, setDeleteTherapistLoading] = useState(false);
 
   // Form state for practitioners
   const [newTherapist, setNewTherapist] = useState({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
@@ -151,10 +157,48 @@ export function Settings() {
     }
   };
 
-  const handleDeleteTherapist = async (id: string) => {
-    if (confirm("Voulez-vous vraiment supprimer ce praticien ?")) {
-      const { error } = await supabase.from('therapists').delete().eq('id', id);
-      if (!error) fetchTherapists();
+  const handleDeleteTherapist = (therapist: any) => {
+    setTherapistToDelete(therapist);
+    setIsDeleteTherapistModalOpen(true);
+  };
+
+  const executeDeleteTherapist = async () => {
+    if (!therapistToDelete) return;
+    setDeleteTherapistLoading(true);
+    setTherapistMessage({ type: '', text: '' });
+    try {
+      const { error } = await supabase
+        .from('therapists')
+        .delete()
+        .eq('id', therapistToDelete.id);
+
+      if (error) {
+        console.error("Error deleting therapist:", error);
+        setTherapistMessage({ 
+          type: 'error', 
+          text: `Impossible de supprimer le praticien (il a possiblement des rendez-vous) : ${error.message}` 
+        });
+        alert(`Erreur de suppression : ${error.message}`);
+      } else {
+        setTherapistMessage({ 
+          type: 'success', 
+          text: `Le praticien ${therapistToDelete.prenom} ${therapistToDelete.nom} a été supprimé avec succès.` 
+        });
+        await fetchTherapists();
+        
+        // Clear message after 4s
+        setTimeout(() => setTherapistMessage(prev => prev.type === 'success' ? { type: '', text: '' } : prev), 4000);
+      }
+    } catch (err: any) {
+      console.error("Delete therapist failed:", err);
+      setTherapistMessage({ 
+        type: 'error', 
+        text: `Erreur inattendue : ${err.message}` 
+      });
+    } finally {
+      setDeleteTherapistLoading(false);
+      setIsDeleteTherapistModalOpen(false);
+      setTherapistToDelete(null);
     }
   };
 
@@ -712,6 +756,18 @@ export function Settings() {
                   <CardTitle className="text-lg">Liste des praticiens</CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
+                  {therapistMessage.text && therapistMessage.type === 'success' && (
+                    <div className="mx-6 mt-4 p-3 rounded-xl flex items-center gap-3 text-sm bg-emerald-50 text-emerald-700 border border-emerald-100">
+                      <CheckCircle className="h-4 w-4 flex-shrink-0" />
+                      <span className="font-medium">{therapistMessage.text}</span>
+                    </div>
+                  )}
+                  {therapistMessage.text && therapistMessage.type === 'error' && (
+                    <div className="mx-6 mt-4 p-3 rounded-xl flex items-center gap-3 text-sm bg-rose-50 text-rose-700 border border-rose-100">
+                      <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                      <span className="font-medium">{therapistMessage.text}</span>
+                    </div>
+                  )}
                   <div className="divide-y divide-slate-100">
                     {therapists.length === 0 ? (
                       <div className="p-8 text-center text-slate-500">Aucun praticien enregistré.</div>
@@ -731,7 +787,7 @@ export function Settings() {
                               </div>
                             </div>
                           </div>
-                          <Button variant="ghost" size="icon" onClick={() => handleDeleteTherapist(t.id)} className="text-rose-500 hover:bg-rose-50 hover:text-rose-600">
+                          <Button variant="ghost" size="icon" onClick={() => handleDeleteTherapist(t)} className="text-rose-500 hover:bg-rose-50 hover:text-rose-600">
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
@@ -937,6 +993,49 @@ export function Settings() {
           )}
         </div>
       </div>
+
+      {/* Delete Therapist Confirmation Modal */}
+      <Modal
+        isOpen={isDeleteTherapistModalOpen}
+        onClose={() => {
+          if (!deleteTherapistLoading) {
+            setIsDeleteTherapistModalOpen(false);
+          }
+        }}
+        title="Supprimer le praticien"
+      >
+        <div className="space-y-4">
+          <p className="text-slate-600 text-sm">
+            Êtes-vous sûr de vouloir supprimer définitivement le praticien{" "}
+            <strong className="text-slate-900 font-semibold">
+              {therapistToDelete?.prenom} {therapistToDelete?.nom}
+            </strong> ?
+          </p>
+          <div className="p-3 bg-amber-50 text-amber-800 rounded-lg text-xs flex gap-2 border border-amber-100">
+            <AlertTriangle className="h-5 w-5 text-amber-500 flex-shrink-0" />
+            <span>
+              <strong>Note importante :</strong> Conformément à la structure de la base de données, l'agenda conservera ses rendez-vous passés et futurs, mais ceux-ci n'auront plus de praticien assigné (ils passeront en non-assignés). Cette opération est immédiate et irréversible.
+            </span>
+          </div>
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <Button
+              variant="outline"
+              onClick={() => setIsDeleteTherapistModalOpen(false)}
+              disabled={deleteTherapistLoading}
+            >
+              Annuler
+            </Button>
+            <Button 
+              className="bg-rose-600 hover:bg-rose-700 text-white font-medium" 
+              onClick={executeDeleteTherapist}
+              disabled={deleteTherapistLoading}
+            >
+              {deleteTherapistLoading ? 'Suppression...' : 'Supprimer définitivement'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
     </div>
   );
 }
