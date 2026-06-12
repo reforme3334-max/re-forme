@@ -6,24 +6,43 @@ import { supabase } from '../lib/supabaseClient';
 import { Button } from '../components/ui/button';
 
 // Components
-const StatCard = ({ title, value, icon: Icon, description, colorClass = "text-indigo-600", bgClass = "bg-indigo-50" }: any) => (
-  <Card className="border-0 shadow-sm">
-    <CardHeader className="flex flex-row items-center justify-between pb-2">
-      <CardTitle className="text-sm font-medium text-slate-500">{title}</CardTitle>
-      <div className={`h-8 w-8 rounded-full flex items-center justify-center ${bgClass}`}>
-        <Icon className={`h-4 w-4 ${colorClass}`} />
-      </div>
-    </CardHeader>
-    <CardContent>
-      <div className="text-2xl font-bold text-slate-900">{value}</div>
-      {description && (
-        <p className="text-xs mt-1 text-slate-500">
-          {description}
-        </p>
-      )}
-    </CardContent>
-  </Card>
-);
+const StatCard = ({ title, value, icon: Icon, description, colorClass = "text-indigo-600", bgClass = "bg-indigo-50", trend, trendType = "positive" }: any) => {
+  const isUp = trend !== undefined && trend > 0;
+  const isDown = trend !== undefined && trend < 0;
+  
+  let isGood = isUp;
+  if (trendType === "negative") isGood = isDown; // for things like unpaid bills where down is good
+  
+  const trendColor = isGood 
+    ? 'bg-emerald-100 text-emerald-700' 
+    : (trend === 0 ? 'bg-slate-100 text-slate-600' : 'bg-rose-100 text-rose-700');
+
+  return (
+    <Card className="border-0 shadow-sm">
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-slate-500">{title}</CardTitle>
+        <div className={`h-8 w-8 rounded-full flex items-center justify-center ${bgClass}`}>
+          <Icon className={`h-4 w-4 ${colorClass}`} />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold text-slate-900">{value}</div>
+        {(description || trend !== undefined) && (
+          <div className="flex items-center gap-2 mt-1 min-h-[20px]">
+            {trend !== undefined && (
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${trendColor}`}>
+                {isUp ? '+' : ''}{typeof trend === 'number' ? trend.toFixed(1) : trend}%
+              </span>
+            )}
+            <span className="text-xs text-slate-500 truncate">
+              {description}
+            </span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
 
 export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) => void }) {
   const [loading, setLoading] = useState(true);
@@ -41,7 +60,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       const { data: patients, error: pErr } = await supabase.from('patients').select('id, nom, prenom, created_at, pathologie');
       if (pErr) console.error('Error fetching patients:', pErr);
 
-      const { data: billings, error: bErr } = await supabase.from('billings').select('*, patients(nom, prenom, email)');
+      const { data: billings, error: bErr } = await supabase.from('billings').select('*, patients(nom, prenom, email), appointments(id, date_heure)');
       if (bErr) console.error('Error fetching billings:', bErr);
 
       // Try to fetch appointments. If the join fails, fallback to simple select
@@ -70,55 +89,113 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
     const now = new Date();
     let startDate = new Date();
     let endDate = new Date();
+    
+    let prevStartDate = new Date();
+    let prevEndDate = new Date();
+    
     let filterLabel = "Ce mois";
-    let isExactDate = false;
     
     if (filter === '7days') {
       startDate.setDate(now.getDate() - 7);
+      startDate.setHours(0, 0, 0, 0);
+      endDate.setHours(23, 59, 59, 999);
+      
       filterLabel = "7 derniers jours";
+      
+      prevEndDate = new Date(startDate);
+      prevEndDate.setMilliseconds(-1);
+      prevStartDate = new Date(prevEndDate);
+      prevStartDate.setDate(prevStartDate.getDate() - 7);
     } else if (filter === 'month') {
       startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
       filterLabel = "Ce mois";
+      
+      prevStartDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      prevEndDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
     } else if (filter === 'year') {
       startDate = new Date(now.getFullYear(), 0, 1);
+      endDate = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
       filterLabel = "Cette année";
+      
+      prevStartDate = new Date(now.getFullYear() - 1, 0, 1);
+      prevEndDate = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999);
     } else if (filter === 'all') {
       filterLabel = "Tout le temps";
     } else if (filter === 'exact') {
-      isExactDate = true;
       startDate = new Date(customDate);
       startDate.setHours(0, 0, 0, 0);
       endDate = new Date(customDate);
       endDate.setHours(23, 59, 59, 999);
       filterLabel = startDate.toLocaleDateString('fr-FR');
+      
+      const diffTime = endDate.getTime() - startDate.getTime();
+      prevEndDate = new Date(startDate.getTime() - 1);
+      prevStartDate = new Date(prevEndDate.getTime() - diffTime);
     }
 
-    const isDateInRange = (dateString: string | Date | undefined) => {
+    const isDateInRange = (dateString: string | Date | undefined, isPrev = false) => {
       if (!dateString) return false;
-      if (filter === 'all') return true;
+      if (filter === 'all') return !isPrev; // No previous period for 'all' time
+      
       const d = new Date(dateString);
-      if (isExactDate) {
-        return d >= startDate && d <= endDate;
-      }
-      return d >= startDate;
+      const start = isPrev ? prevStartDate : startDate;
+      const end = isPrev ? prevEndDate : endDate;
+      
+      return d >= start && d <= end;
+    };
+
+    // Helper for safe percentage
+    const calcTrend = (current: number, prev: number) => {
+      if (filter === 'all') return undefined; // no trend comparing to "before all time"
+      if (prev === 0) return current > 0 ? 100 : 0;
+      return ((current - prev) / prev) * 100;
+    };
+
+    // Helper to get billing date correctly
+    const getBillDate = (b: any) => {
+      if (b.date_facturation) return b.date_facturation;
+      const apptDate = Array.isArray(b.appointments) ? b.appointments[0]?.date_heure : b.appointments?.date_heure;
+      if (apptDate) return apptDate;
+      return b.created_at || new Date();
     };
 
     // 1. CA Mensuel (ou selon filtre)
     const ca = rawData.billings
-      .filter(b => isDateInRange(b.created_at || new Date()) && (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut))
+      .filter(b => isDateInRange(getBillDate(b)) && (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut))
       .reduce((sum, b) => sum + Number(b.montant), 0);
+      
+    const prevCa = rawData.billings
+      .filter(b => isDateInRange(getBillDate(b), true) && (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut))
+      .reduce((sum, b) => sum + Number(b.montant), 0);
+      
+    const caTrend = calcTrend(ca, prevCa);
 
     // 2. Nouveaux Patients
     const nouveauxPatients = rawData.patients
       .filter(p => isDateInRange(p.created_at || new Date())).length;
+      
+    const prevNouveauxPatients = rawData.patients
+      .filter(p => isDateInRange(p.created_at || new Date(), true)).length;
+      
+    const patientsTrend = calcTrend(nouveauxPatients, prevNouveauxPatients);
 
-    // 3. Taux d'Occupation
-    const days = filter === '7days' ? 7 : filter === 'month' ? 30 : filter === 'year' ? 365 : 1;
-    const capacity = days * 15; // Estimation de 15 créneaux par jour
+    // 3. Taux de Présence au lieu de Taux d'Occupation
+    const presentAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure) && a.statut === 'Effectué').length;
+    const pastAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure) && (new Date(a.date_heure) < now)).length;
+    const occupation = pastAppts > 0 ? Math.round((presentAppts / pastAppts) * 100) : 100;
+    
+    // Total Séances (for the 6th card)
     const booked = rawData.appointments.filter(a => isDateInRange(a.date_heure)).length;
-    const occupation = capacity > 0 ? Math.min(Math.round((booked / capacity) * 100), 100) : 0;
+    const prevBooked = rawData.appointments.filter(a => isDateInRange(a.date_heure, true)).length;
+    const seancesTrend = calcTrend(booked, prevBooked);
+    
+    const prevPresentAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, true) && a.statut === 'Effectué').length;
+    const prevPastAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, true) && (new Date(a.date_heure) < now)).length;
+    const prevOccupation = prevPastAppts > 0 ? Math.round((prevPresentAppts / prevPastAppts) * 100) : 100;
+    const occupationTrend = filter === 'all' ? undefined : occupation - prevOccupation;
 
-    // 4. Impayés (Total global)
+    // 4. Impayés (Total global, mostly independent of current date filter)
     const billedAppIds = new Set(rawData.billings.map(b => b.appointment_id).filter(Boolean));
     const extraUnpaidAmount = rawData.appointments
       .filter(a => a.statut === 'Impayé' && !billedAppIds.has(a.id))
@@ -128,8 +205,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       .filter(b => b.statut === 'Impayé' || b.statut === 'En attente' || b.statut === 'Rejeté')
       .reduce((sum, b) => sum + Number(b.montant), 0) + extraUnpaidAmount;
 
-    // 5. Patients sans accès (Simulation basée sur le champ email/tel renseigné et un flag virtuel)
-    // Note: Pour une détection réelle, il faudrait une colonne 'has_access' dans la table patients
+    // 5. Patients sans accès
     const patientsSansAcces = rawData.patients.filter(p => !p.has_access);
 
     // LineChart: 6 months revenue
@@ -145,7 +221,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
     }
     rawData.billings.forEach(b => {
       if (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut) {
-        const d = new Date(b.created_at || new Date());
+        const d = new Date(getBillDate(b));
         const match = last6Months.find(m => m.month === d.getMonth() && m.year === d.getFullYear());
         if (match) match.DH += Number(b.montant);
       }
@@ -229,8 +305,13 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
     return {
       ca,
+      caTrend,
       nouveauxPatients,
+      patientsTrend,
       occupation,
+      occupationTrend,
+      booked,
+      seancesTrend,
       impayesTotal,
       filterLabel,
       last6Months,
@@ -299,36 +380,49 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       </div>
 
       {/* 1. Composants de Statistiques (Top Bar) */}
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard 
           title={`Chiffre d'Affaires (${dashboardData.filterLabel})`}
-          value={`${dashboardData.ca} DH`} 
+          value={`${dashboardData.ca.toLocaleString()} DH`} 
           icon={Wallet} 
           description="Total encaissé"
+          trend={dashboardData.caTrend}
           colorClass="text-indigo-600"
           bgClass="bg-indigo-50"
+        />
+        <StatCard 
+          title={`Séances (${dashboardData.filterLabel})`} 
+          value={dashboardData.booked} 
+          icon={Activity} 
+          description="Séances effectuées ou prévues"
+          trend={dashboardData.seancesTrend}
+          colorClass="text-cyan-600"
+          bgClass="bg-cyan-50"
         />
         <StatCard 
           title="Nouveaux Patients" 
           value={dashboardData.nouveauxPatients} 
           icon={Users} 
           description={dashboardData.filterLabel}
+          trend={dashboardData.patientsTrend}
           colorClass="text-blue-600"
           bgClass="bg-blue-50"
         />
         <StatCard 
-          title="Taux d'Occupation" 
+          title="Taux de Présence" 
           value={`${dashboardData.occupation}%`} 
           icon={Calendar} 
-          description="Créneaux réservés vs libres"
+          description="Séances honorées vs passées"
+          trend={dashboardData.occupationTrend}
           colorClass="text-emerald-600"
           bgClass="bg-emerald-50"
         />
         <StatCard 
-          title="Impayés (Total)" 
-          value={`${dashboardData.impayesTotal} DH`} 
+          title="Impayés (Total global)" 
+          value={`${dashboardData.impayesTotal.toLocaleString()} DH`} 
           icon={AlertCircle} 
-          description="Séances non réglées"
+          description="En attente de paiement"
+          trendType="negative"
           colorClass="text-rose-600"
           bgClass="bg-rose-50"
         />
@@ -336,7 +430,8 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
           title="Patients sans accès" 
           value={dashboardData.patientsSansAccesCount} 
           icon={Lock} 
-          description="Accès portail non généré"
+          description="Portail non généré"
+          trendType="negative"
           colorClass="text-amber-600"
           bgClass="bg-amber-50"
         />

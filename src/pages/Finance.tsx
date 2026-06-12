@@ -121,7 +121,7 @@ export function Finance() {
     });
   };
 
-  const filteredBillings = filterByDate(billings, (b) => b.appointments?.date_heure ? new Date(b.appointments.date_heure) : new Date(b.created_at || new Date()));
+  const filteredBillings = filterByDate(billings, (b) => b.appointments?.date_heure ? new Date(b.appointments.date_heure) : new Date(b.date_facturation || new Date()));
   const filteredExpenses = filterByDate(expenses, (e) => new Date(e.date));
 
   const totalRecettes = filteredBillings.reduce((sum, b) => sum + Number(b.montant), 0);
@@ -145,7 +145,7 @@ export function Finance() {
 
   const exportToExcel = () => {
     const data = filteredBillings.map(bill => {
-      const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.created_at || new Date());
+      const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.date_facturation || new Date());
       return {
         'Date': date.toLocaleDateString('fr-FR'),
         'Référence': `FAC-${date.getFullYear()}-${bill.id.substring(0, 4).toUpperCase()}`,
@@ -426,7 +426,7 @@ export function Finance() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {unpaidBillings.length > 0 ? unpaidBillings.map((bill) => {
-                    const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.created_at || new Date());
+                    const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.date_facturation || new Date());
                     return (
                     <tr key={bill.id} className="hover:bg-rose-50/30 transition-colors">
                       <td className="px-6 py-4 text-slate-600">
@@ -498,7 +498,7 @@ export function Finance() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredBillings.length > 0 ? filteredBillings.map((bill) => {
-                    const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.created_at || new Date());
+                    const date = bill.appointments?.date_heure ? new Date(bill.appointments.date_heure) : new Date(bill.date_facturation || new Date());
                     return (
                     <tr key={bill.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 text-slate-600">
