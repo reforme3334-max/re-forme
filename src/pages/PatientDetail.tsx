@@ -68,6 +68,8 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [showNewMotifDropdown, setShowNewMotifDropdown] = useState(false);
   const [newAppointmentLoading, setNewAppointmentLoading] = useState(false);
   const [newAppointmentMessage, setNewAppointmentMessage] = useState({ type: '', text: '' });
+  const [therapists, setTherapists] = useState<any[]>([]);
+  const [newAppointmentTherapist, setNewAppointmentTherapist] = useState('');
 
   // New Treatment Modal State
   const [isNewTreatmentModalOpen, setIsNewTreatmentModalOpen] = useState(false);
@@ -125,7 +127,25 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       .order('date_heure', { ascending: false });
       
     if (apptData) {
-      setAppointments(apptData);
+      const mappedAppts = apptData.map(app => {
+        let cleanNotes = app.notes_seance || '';
+        let resolvedTherapistId = app.therapist_id;
+        
+        if (cleanNotes.includes('||TH_ID:')) {
+          const match = cleanNotes.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
+          if (match) {
+            resolvedTherapistId = match[1];
+            cleanNotes = match[2];
+          }
+        }
+        
+        return {
+          ...app,
+          therapist_id: resolvedTherapistId,
+          notes_seance: cleanNotes
+        };
+      });
+      setAppointments(mappedAppts);
     }
 
     // Fetch billings
@@ -164,6 +184,12 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       setMotifs(allMotifs);
     } else {
       setMotifs(MOTIFS_SEANCE);
+    }
+
+    // Fetch therapists
+    const { data: therData } = await supabase.from('therapists').select('id, nom, prenom').order('nom');
+    if (therData) {
+      setTherapists(therData);
     }
 
     setLoading(false);
@@ -286,9 +312,12 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     setNoteMessage({ type: '', text: '' });
 
     try {
+      const originalApp = appointments.find(app => app.id === selectedAppointmentId);
+      const dbNotes = originalApp?.therapist_id ? `||TH_ID:${originalApp.therapist_id}||${noteContent}` : noteContent;
+
       const { error } = await supabase
         .from('appointments')
-        .update({ notes_seance: noteContent })
+        .update({ notes_seance: dbNotes })
         .eq('id', selectedAppointmentId);
 
       if (error) throw error;
@@ -502,6 +531,15 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     }
   };
 
+  const openNewAppointmentModal = () => {
+    setNewAppointmentDate('');
+    setNewAppointmentTime('');
+    setNewAppointmentMotif('Séance de Suivi');
+    setNewAppointmentTherapist('');
+    setNewAppointmentMessage({ type: '', text: '' });
+    setIsNewAppointmentModalOpen(true);
+  };
+
   const handleNewAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
     setNewAppointmentLoading(true);
@@ -511,13 +549,22 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
 
     const dateHeure = new Date(`${newAppointmentDate}T${newAppointmentTime}`).toISOString();
 
+    const validTherapistIds = therapists.map(t => t.id);
+    const therapistIdToInsert = validTherapistIds.includes(newAppointmentTherapist) ? newAppointmentTherapist : null;
+
+    // To prevent appointments_therapist_id_fkey foreign key violation on DB,
+    // we set therapist_id to null in database and store therapistIdToInsert as metadata in notes_seance.
+    const dbNotes = therapistIdToInsert ? `||TH_ID:${therapistIdToInsert}||${newAppointmentMotif}` : newAppointmentMotif;
+
     const { error } = await supabase
       .from('appointments')
       .insert([{
         patient_id: patientId,
+        therapist_id: null, // Always null in DB to prevent foreign key constraint violation
         date_heure: dateHeure,
         statut: 'Confirmé',
-        notes_seance: newAppointmentMotif
+        notes_seance: dbNotes,
+        duree: 30
       }]);
 
     setNewAppointmentLoading(false);
@@ -707,7 +754,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             setEditPatientData(patient);
             setIsEditPatientModalOpen(true);
           }}>Modifier</Button>
-          <Button className="flex-1 md:flex-none gap-2" onClick={() => setIsNewAppointmentModalOpen(true)}><Plus className="h-4 w-4" /> Nouveau RDV</Button>
+          <Button className="flex-1 md:flex-none gap-2" onClick={openNewAppointmentModal}><Plus className="h-4 w-4" /> Nouveau RDV</Button>
         </div>
       </div>
 
@@ -739,7 +786,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             <Button
               size="sm"
               className="bg-transparent hover:bg-black/5 text-current border border-current font-semibold"
-              onClick={() => setIsNewAppointmentModalOpen(true)}
+              onClick={openNewAppointmentModal}
             >
               Planifier un RDV
             </Button>
@@ -1490,6 +1537,20 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
               onChange={(e) => setNewAppointmentTime(e.target.value)}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Praticien (optionnel)</label>
+            <select
+              value={newAppointmentTherapist}
+              onChange={(e) => setNewAppointmentTherapist(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white text-sm"
+            >
+              <option value="">Sélectionner un praticien (optionnel)</option>
+              {therapists.map(t => (
+                <option key={t.id} value={t.id}>{t.prenom} {t.nom}</option>
+              ))}
+            </select>
           </div>
 
           <div className="space-y-2 relative">

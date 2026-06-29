@@ -48,7 +48,13 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('month');
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
-  const [rawData, setRawData] = useState({ billings: [] as any[], patients: [] as any[], appointments: [] as any[], treatments: [] as any[] });
+  const [rawData, setRawData] = useState({ 
+    billings: [] as any[], 
+    patients: [] as any[], 
+    appointments: [] as any[], 
+    treatments: [] as any[],
+    therapists: [] as any[]
+  });
 
   useEffect(() => {
     fetchData();
@@ -64,24 +70,56 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       if (bErr) console.error('Error fetching billings:', bErr);
 
       // Try to fetch appointments. If the join fails, fallback to simple select
-      let { data: appointments, error: aErr } = await supabase.from('appointments').select('*, treatments(motif)');
+      let { data: appointments, error: aErr } = await supabase
+        .from('appointments')
+        .select('*, treatments(motif)')
+        .order('date_heure', { ascending: false });
       
       if (aErr) {
         console.warn('Join with treatments failed, falling back to simple appointments select:', aErr.message);
-        const { data: simpleAppts, error: simpleErr } = await supabase.from('appointments').select('*');
+        const { data: simpleAppts, error: simpleErr } = await supabase
+          .from('appointments')
+          .select('*')
+          .order('date_heure', { ascending: false });
         if (simpleErr) console.error('Error fetching simple appointments:', simpleErr);
         appointments = simpleAppts;
+      }
+
+      if (appointments) {
+        appointments = appointments.map(app => {
+          let cleanNotes = app.notes_seance || '';
+          let resolvedTherapistId = app.therapist_id;
+          
+          if (cleanNotes.includes('||TH_ID:')) {
+            const match = cleanNotes.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
+            if (match) {
+              resolvedTherapistId = match[1];
+              cleanNotes = match[2];
+            }
+          }
+          
+          return {
+            ...app,
+            therapist_id: resolvedTherapistId,
+            notes_seance: cleanNotes
+          };
+        });
       }
 
       // Fetch treatments for tracking patient progress
       const { data: treatments, error: tErr } = await supabase.from('treatments').select('*');
       if (tErr) console.error('Error fetching treatments:', tErr);
+
+      // Fetch therapists list
+      const { data: therapists, error: thErr } = await supabase.from('therapists').select('id, nom, prenom, specialite');
+      if (thErr) console.error('Error fetching therapists:', thErr);
       
       setRawData({
         patients: patients || [],
         billings: billings || [],
         appointments: appointments || [],
-        treatments: treatments || []
+        treatments: treatments || [],
+        therapists: therapists || []
       });
     } catch (err) {
       console.error('Unexpected error in fetchData:', err);
@@ -234,12 +272,29 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
     // BarChart: Team workload
     const teamMap = new Map();
+    // Pre-populate all therapists from the DB so they all exist in the chart
+    if (rawData.therapists && rawData.therapists.length > 0) {
+      rawData.therapists.forEach(t => {
+        const fullName = `${t.prenom} ${t.nom}`;
+        teamMap.set(fullName, 0);
+      });
+    } else {
+      teamMap.set('Mr HADDAOUI Younes', 0);
+    }
+
+    // Map of therapist ID to full name
+    const therapistsMap = new Map<string, string>(
+      rawData.therapists ? rawData.therapists.map(t => [t.id, `${t.prenom} ${t.nom}`]) : []
+    );
+
     rawData.appointments.filter(a => isDateInRange(a.date_heure)).forEach(a => {
-      const therapist = a.therapist_id ? `Thérapeute ${a.therapist_id.substring(0,4)}` : 'Mr HADDAOUI Younes';
-      teamMap.set(therapist, (teamMap.get(therapist) || 0) + 1);
+      let therapistName = 'Mr HADDAOUI Younes';
+      if (a.therapist_id) {
+        therapistName = therapistsMap.get(a.therapist_id) || `Thérapeute ${a.therapist_id.substring(0,4)}`;
+      }
+      teamMap.set(therapistName, (teamMap.get(therapistName) || 0) + 1);
     });
     const teamChartData = Array.from(teamMap, ([name, seances]) => ({ name, seances }));
-    if (teamChartData.length === 0) teamChartData.push({ name: 'Mr HADDAOUI Younes', seances: 0 });
 
     // PieChart: Care types (Motifs)
     const actsMap = new Map();
@@ -628,7 +683,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                 <BarChart data={dashboardData.teamChartData} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
                   <XAxis type="number" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                  <YAxis dataKey="name" type="category" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} width={100} />
+                  <YAxis dataKey="name" type="category" stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} width={130} />
                   <Tooltip 
                     cursor={{fill: '#f8fafc'}} 
                     contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} 

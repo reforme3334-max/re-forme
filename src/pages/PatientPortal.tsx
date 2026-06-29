@@ -67,7 +67,27 @@ export function PatientPortal() {
         .eq('patient_id', patientData.id)
         .order('date_heure', { ascending: true });
 
-      if (appts) setAppointments(appts);
+      if (appts) {
+        const mappedAppts = appts.map(app => {
+          let cleanNotes = app.notes_seance || '';
+          let resolvedTherapistId = app.therapist_id;
+          
+          if (cleanNotes.includes('||TH_ID:')) {
+            const match = cleanNotes.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
+            if (match) {
+              resolvedTherapistId = match[1];
+              cleanNotes = match[2];
+            }
+          }
+          
+          return {
+            ...app,
+            therapist_id: resolvedTherapistId,
+            notes_seance: cleanNotes
+          };
+        });
+        setAppointments(mappedAppts);
+      }
 
       // Fetch billings
       const { data: bills } = await supabase

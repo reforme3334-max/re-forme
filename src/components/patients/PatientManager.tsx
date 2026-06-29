@@ -85,7 +85,8 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
       const { data: appData, error: appError } = await supabase
         .from('appointments')
-        .select('patient_id, statut, date_heure');
+        .select('patient_id, statut, date_heure')
+        .order('date_heure', { ascending: false });
       if (appError) console.error("Error fetching appointments:", appError);
 
       const { data: treatData, error: treatError } = await supabase

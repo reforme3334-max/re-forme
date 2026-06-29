@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Shield, Users, UserPlus, Mail, Lock, AlertCircle, AlertTriangle, CheckCircle, Activity, Save, CheckSquare, Square, Stethoscope, Plus, Trash2, Database, Upload, Phone } from 'lucide-react';
+import { Shield, Users, UserPlus, Mail, Lock, AlertCircle, AlertTriangle, CheckCircle, Activity, Save, CheckSquare, Square, Stethoscope, Plus, Trash2, Database, Upload, Phone, Pencil } from 'lucide-react';
 import { Modal } from '../components/ui/modal';
 import Papa from 'papaparse';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -38,6 +38,12 @@ export function Settings() {
   const [newTherapist, setNewTherapist] = useState({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
   const [therapistLoading, setTherapistLoading] = useState(false);
   const [therapistMessage, setTherapistMessage] = useState({ type: '', text: '' });
+
+  // Edit therapist states
+  const [isEditTherapistModalOpen, setIsEditTherapistModalOpen] = useState(false);
+  const [therapistToEdit, setTherapistToEdit] = useState<any | null>(null);
+  const [editTherapistData, setEditTherapistData] = useState({ nom: '', prenom: '', specialite: '', email: '', tel: '' });
+  const [editTherapistLoading, setEditTherapistLoading] = useState(false);
 
   // Form state for import
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -199,6 +205,65 @@ export function Settings() {
       setDeleteTherapistLoading(false);
       setIsDeleteTherapistModalOpen(false);
       setTherapistToDelete(null);
+    }
+  };
+
+  const handleEditTherapist = (therapist: any) => {
+    setTherapistToEdit(therapist);
+    setEditTherapistData({
+      nom: therapist.nom || '',
+      prenom: therapist.prenom || '',
+      specialite: therapist.specialite || '',
+      email: therapist.email || '',
+      tel: therapist.tel || ''
+    });
+    setIsEditTherapistModalOpen(true);
+  };
+
+  const executeEditTherapist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!therapistToEdit) return;
+
+    const nom = editTherapistData.nom.trim();
+    const prenom = editTherapistData.prenom.trim();
+
+    if (!nom || !prenom) {
+      setTherapistMessage({ type: 'error', text: 'Le nom et le prénom sont obligatoires.' });
+      return;
+    }
+
+    setEditTherapistLoading(true);
+    setTherapistMessage({ type: '', text: '' });
+
+    try {
+      const { error } = await supabase
+        .from('therapists')
+        .update({
+          nom,
+          prenom,
+          specialite: editTherapistData.specialite.trim(),
+          email: editTherapistData.email.trim(),
+          tel: editTherapistData.tel.trim()
+        })
+        .eq('id', therapistToEdit.id);
+
+      if (error) throw error;
+
+      await fetchTherapists();
+      setTherapistMessage({ type: 'success', text: 'Informations du praticien mises à jour avec succès !' });
+      setIsEditTherapistModalOpen(false);
+      setTherapistToEdit(null);
+
+      setTimeout(() => setTherapistMessage(prev => prev.type === 'success' ? { type: '', text: '' } : prev), 4000);
+    } catch (err: any) {
+      console.error("Error editing therapist:", err);
+      setTherapistMessage({ 
+        type: 'error', 
+        text: `Échec de la modification : ${err.message}` 
+      });
+      alert(`Erreur de modification : ${err.message}`);
+    } finally {
+      setEditTherapistLoading(false);
     }
   };
 
@@ -787,9 +852,14 @@ export function Settings() {
                               </div>
                             </div>
                           </div>
-                          <Button variant="ghost" size="icon" onClick={() => handleDeleteTherapist(t)} className="text-rose-500 hover:bg-rose-50 hover:text-rose-600">
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex items-center gap-1">
+                            <Button variant="ghost" size="icon" onClick={() => handleEditTherapist(t)} className="text-slate-500 hover:bg-slate-100 hover:text-indigo-600" title="Modifier">
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => handleDeleteTherapist(t)} className="text-rose-500 hover:bg-rose-50 hover:text-rose-600" title="Supprimer">
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
                       ))
                     )}
@@ -1019,6 +1089,7 @@ export function Settings() {
           </div>
           <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
             <Button
+              type="button"
               variant="outline"
               onClick={() => setIsDeleteTherapistModalOpen(false)}
               disabled={deleteTherapistLoading}
@@ -1034,6 +1105,86 @@ export function Settings() {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* Edit Therapist Modal */}
+      <Modal
+        isOpen={isEditTherapistModalOpen}
+        onClose={() => {
+          if (!editTherapistLoading) {
+            setIsEditTherapistModalOpen(false);
+          }
+        }}
+        title="Modifier le praticien"
+      >
+        <form onSubmit={executeEditTherapist} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-sm font-semibold text-slate-700">Nom</label>
+              <input
+                type="text"
+                required
+                value={editTherapistData.nom}
+                onChange={(e) => setEditTherapistData({...editTherapistData, nom: e.target.value})}
+                className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-semibold text-slate-700">Prénom</label>
+              <input
+                type="text"
+                required
+                value={editTherapistData.prenom}
+                onChange={(e) => setEditTherapistData({...editTherapistData, prenom: e.target.value})}
+                className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-semibold text-slate-700">Spécialité</label>
+            <input
+              type="text"
+              value={editTherapistData.specialite}
+              onChange={(e) => setEditTherapistData({...editTherapistData, specialite: e.target.value})}
+              className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-semibold text-slate-700">Téléphone</label>
+            <input
+              type="tel"
+              value={editTherapistData.tel}
+              onChange={(e) => setEditTherapistData({...editTherapistData, tel: e.target.value})}
+              className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-semibold text-slate-700">Email</label>
+            <input
+              type="email"
+              value={editTherapistData.email}
+              onChange={(e) => setEditTherapistData({...editTherapistData, email: e.target.value})}
+              className="block w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsEditTherapistModalOpen(false)}
+              disabled={editTherapistLoading}
+            >
+              Annuler
+            </Button>
+            <Button 
+              type="submit"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium" 
+              disabled={editTherapistLoading}
+            >
+              {editTherapistLoading ? 'Enregistrement...' : 'Enregistrer'}
+            </Button>
+          </div>
+        </form>
       </Modal>
 
     </div>

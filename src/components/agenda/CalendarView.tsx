@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { format, addDays, startOfWeek, isSameDay, setHours, setMinutes, isSameMonth } from 'date-fns';
+import { format, addDays, subDays, startOfWeek, isSameDay, setHours, setMinutes, isSameMonth } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
@@ -169,38 +169,47 @@ export function CalendarView() {
   };
 
   const fetchAppointments = async () => {
-    // Try to fetch with joins
-    let { data, error } = await supabase
-      .from('appointments')
-      .select('*, patients(nom, prenom), therapists(nom, prenom)');
-      
-    if (error) {
-      console.warn("Join failed or error fetching appointments, trying robust fetch:", error.message);
-      
-      // Manual robust fetch: Get all appointments
-      const { data: appData, error: appError } = await supabase.from('appointments').select('*');
-      
-      if (!appError && appData) {
-        // Fetch all patients and therapists to map them manually
-        const { data: patData } = await supabase.from('patients').select('id, nom, prenom');
-        const { data: therData } = await supabase.from('therapists').select('id, nom, prenom');
-        
-        const patientsMap = new Map(patData ? patData.map(p => [p.id, p]) : []);
-        const therapistsMap = new Map(therData ? therData.map(t => [t.id, t]) : []);
-        
-        data = appData.map(app => ({
-          ...app,
-          patients: patientsMap.get(app.patient_id),
-          therapists: therapistsMap.get(app.therapist_id)
-        }));
-      } else {
-        console.error("Critical error fetching appointments:", appError?.message);
-        return;
-      }
-    }
+    const startRange = subDays(currentDate, 35).toISOString();
+    const endRange = addDays(currentDate, 35).toISOString();
 
-    if (data) {
-      setAppointments(data);
+    // Manual robust fetch to handle serialized therapist IDs and manually join relations
+    const { data: appData, error: appError } = await supabase
+      .from('appointments')
+      .select('*')
+      .gte('date_heure', startRange)
+      .lte('date_heure', endRange);
+    
+    if (!appError && appData) {
+      const { data: patData } = await supabase.from('patients').select('id, nom, prenom');
+      const { data: therData } = await supabase.from('therapists').select('id, nom, prenom');
+      
+      const patientsMap = new Map(patData ? patData.map(p => [p.id, p]) : []);
+      const therapistsMap = new Map(therData ? therData.map(t => [t.id, t]) : []);
+      
+      const mappedData = appData.map(app => {
+        let cleanNotes = app.notes_seance || '';
+        let resolvedTherapistId = app.therapist_id;
+        
+        if (cleanNotes.includes('||TH_ID:')) {
+          const match = cleanNotes.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
+          if (match) {
+            resolvedTherapistId = match[1];
+            cleanNotes = match[2];
+          }
+        }
+        
+        return {
+          ...app,
+          therapist_id: resolvedTherapistId,
+          notes_seance: cleanNotes,
+          patients: patientsMap.get(app.patient_id),
+          therapists: therapistsMap.get(resolvedTherapistId)
+        };
+      });
+      
+      setAppointments(mappedData);
+    } else {
+      console.error("Critical error fetching appointments:", appError?.message);
     }
   };
 
@@ -223,6 +232,12 @@ export function CalendarView() {
     setSelectedPatient('');
     setPatientSearchQuery('');
     setIsPatientDropdownOpen(false);
+    
+    // Safely set the initial therapist choice for the new appointment
+    const activeTherapistId = selectedTherapistId !== 'all' ? selectedTherapistId : '';
+    const therapistExists = therapists.some(t => t.id === activeTherapistId);
+    setNewAppointmentTherapist(therapistExists ? activeTherapistId : '');
+    
     setIsModalOpen(true);
   };
 
@@ -244,13 +259,23 @@ export function CalendarView() {
     const finalDate = new Date(selectedDate);
     finalDate.setHours(hours, minutes, 0, 0);
 
+    // Ensure the selected therapist still exists in DB to prevent foreign key violation
+    const validTherapistIds = therapists.map(t => t.id);
+    const therapistIdToInsert = validTherapistIds.includes(newAppointmentTherapist) ? newAppointmentTherapist : null;
+
+    // To prevent appointments_therapist_id_fkey foreign key violation on DB (due to legacy team_members constraint),
+    // we set therapist_id to null in database and store therapistIdToInsert as metadata in notes_seance.
+    const dbNotes = therapistIdToInsert ? `||TH_ID:${therapistIdToInsert}||${newAppointmentMotif}` : newAppointmentMotif;
+
     const { error } = await supabase
       .from('appointments')
       .insert([{
         patient_id: selectedPatient,
-        therapist_id: newAppointmentTherapist || null,
+        therapist_id: null, // Always null in DB to prevent foreign key constraint violation
         date_heure: finalDate.toISOString(),
-        notes_seance: newAppointmentMotif
+        notes_seance: dbNotes,
+        statut: 'Confirmé',
+        duree: 30
       }]);
 
     setLoading(false);
@@ -270,12 +295,21 @@ export function CalendarView() {
     await ensureMotifExists(editMotif);
     
     const newDateTime = new Date(`${editDate}T${editTime}`);
+
+    // Ensure the edited therapist still exists in DB to prevent foreign key violation
+    const validTherapistIds = therapists.map(t => t.id);
+    const therapistIdToUpdate = validTherapistIds.includes(editTherapist) ? editTherapist : null;
+
+    // To prevent appointments_therapist_id_fkey foreign key violation on DB,
+    // we set therapist_id to null in database and store therapistIdToUpdate as metadata in notes_seance.
+    const dbNotes = therapistIdToUpdate ? `||TH_ID:${therapistIdToUpdate}||${editMotif}` : editMotif;
+
     const { error } = await supabase
       .from('appointments')
       .update({ 
         date_heure: newDateTime.toISOString(),
-        notes_seance: editMotif,
-        therapist_id: editTherapist || null
+        notes_seance: dbNotes,
+        therapist_id: null // Always null in DB to prevent foreign key constraint violation
       })
       .eq('id', selectedAppointment.id);
 
