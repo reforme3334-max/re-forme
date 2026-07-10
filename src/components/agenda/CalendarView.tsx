@@ -345,12 +345,30 @@ export function CalendarView() {
     if (!selectedAppointment) return;
 
     setLoading(true);
+
+    await ensureMotifExists(editMotif);
+
+    const newDateTime = new Date(`${editDate}T${editTime}`);
+    const validTherapistIds = therapists.map(t => t.id);
+    const therapistIdToUpdate = validTherapistIds.includes(editTherapist) ? editTherapist : null;
+    const dbNotes = therapistIdToUpdate ? `||TH_ID:${therapistIdToUpdate}||${editMotif}` : editMotif;
     
-    // 1. Mettre à jour le statut du rendez-vous
-    await supabase
+    // 1. Mettre à jour le statut, la date, le praticien et le motif du rendez-vous
+    const { error: apptUpdateError } = await supabase
       .from('appointments')
-      .update({ statut: 'Effectué' })
+      .update({ 
+        statut: 'Effectué',
+        date_heure: newDateTime.toISOString(),
+        notes_seance: dbNotes,
+        therapist_id: null // Always null in DB to prevent foreign key constraint violation
+      })
       .eq('id', selectedAppointment.id);
+
+    if (apptUpdateError) {
+      setLoading(false);
+      setErrorMsg("Erreur de mise à jour du rendez-vous : " + apptUpdateError.message);
+      return;
+    }
 
     // 2. Vérifier si une facture existe déjà
     const { data: existingBill } = await supabase
@@ -406,11 +424,23 @@ export function CalendarView() {
     }
 
     setLoading(true);
+
+    await ensureMotifExists(editMotif);
+
+    const newDateTime = new Date(`${editDate}T${editTime}`);
+    const validTherapistIds = therapists.map(t => t.id);
+    const therapistIdToUpdate = validTherapistIds.includes(editTherapist) ? editTherapist : null;
+    const dbNotes = therapistIdToUpdate ? `||TH_ID:${therapistIdToUpdate}||${editMotif}` : editMotif;
     
-    // 1. Mark appointment as Impayé
+    // 1. Mark appointment as Impayé and save details
     const { error: apptError } = await supabase
       .from('appointments')
-      .update({ statut: 'Impayé' })
+      .update({ 
+        statut: 'Impayé',
+        date_heure: newDateTime.toISOString(),
+        notes_seance: dbNotes,
+        therapist_id: null // Always null in DB to prevent foreign key constraint violation
+      })
       .eq('id', selectedAppointment.id);
 
     if (apptError) {
