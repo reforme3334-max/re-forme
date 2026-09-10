@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -42,7 +42,14 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [forfait, setForfait] = useState(0);
 
   // Access Modal State
-  const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
+  
+  // Exercises/Videos State
+  const [exercises, setExercises] = useState<any[]>([]);
+  const [isNewVideoModalOpen, setIsNewVideoModalOpen] = useState(false);
+  const [newVideoUrl, setNewVideoUrl] = useState('');
+  const [newVideoTitle, setNewVideoTitle] = useState('');
+  const videoInputRef = React.useRef<HTMLInputElement>(null);
+const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
   const [accessPassword, setAccessPassword] = useState('');
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessMessage, setAccessMessage] = useState({ type: '', text: '' });
@@ -116,7 +123,17 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
 
     if (!patientError && patientData) {
       setPatient(patientData);
-      setForfait(patientData.forfait_seances || 0);
+      
+      // Load local exercises
+      try {
+        const storedEx = localStorage.getItem(`reforme_exercises_${patientData.id}`);
+        if (storedEx) {
+          setExercises(JSON.parse(storedEx));
+        } else {
+          setExercises([]);
+        }
+      } catch(e) { console.error('Error loading exercises', e); }
+setForfait(patientData.forfait_seances || 0);
     }
 
     // Fetch appointments
@@ -238,7 +255,67 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     ? Math.min(100, (activeTreatment.seances_effectuees / activeTreatment.seances_prescrites) * 100) 
     : 0;
 
-  if (loading) {
+  
+  
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const newEx = {
+        id: Date.now().toString(),
+        title: file.name || 'Vidéo enregistrée',
+        url: reader.result as string,
+        type: 'video',
+        date: new Date().toISOString()
+      };
+      const updated = [newEx, ...exercises];
+      setExercises(updated);
+      try {
+        localStorage.setItem(`reforme_exercises_${patient.id}`, JSON.stringify(updated));
+      } catch(err) {
+        alert('Stockage local saturé. La vidéo est trop volumineuse pour être sauvegardée de manière permanente, mais elle est ajoutée temporairement.');
+      }
+      if (videoInputRef.current) videoInputRef.current.value = '';
+    };
+    reader.readAsDataURL(file);
+  };
+const handleAddVideo = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newVideoUrl || !newVideoTitle) return;
+    
+    let embedUrl = newVideoUrl;
+    // Basic conversion from regular youtube URL to embed URL
+    if (newVideoUrl.includes('youtube.com/watch?v=')) {
+        const videoId = newVideoUrl.split('v=')[1].split('&')[0];
+        embedUrl = `https://www.youtube.com/embed/${videoId}`;
+    } else if (newVideoUrl.includes('youtu.be/')) {
+        const videoId = newVideoUrl.split('youtu.be/')[1].split('?')[0];
+        embedUrl = `https://www.youtube.com/embed/${videoId}`;
+    }
+
+    const newEx = {
+      id: Date.now().toString(),
+      title: newVideoTitle,
+      url: embedUrl,
+      type: 'video',
+      date: new Date().toISOString()
+    };
+    const updated = [newEx, ...exercises];
+    setExercises(updated);
+    localStorage.setItem(`reforme_exercises_${patient.id}`, JSON.stringify(updated));
+    setNewVideoUrl('');
+    setNewVideoTitle('');
+    setIsNewVideoModalOpen(false);
+  };
+
+  const handleDeleteExercise = (id: string) => {
+    if (!confirm('Supprimer cette vidéo ?')) return;
+    const updated = exercises.filter(e => e.id !== id);
+    setExercises(updated);
+    localStorage.setItem(`reforme_exercises_${patient.id}`, JSON.stringify(updated));
+  };
+if (loading) {
     return <div className="p-8 text-center text-slate-500">Chargement des détails du patient...</div>;
   }
 
@@ -820,6 +897,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
         >
           Facturation
         </button>
+        <button 
+          onClick={() => setActiveTab('exercices')}
+          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'exercices' ? 'border-primary-500 text-primary-600' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'}`}
+        >
+          Vidéos & Exercices
+        </button>
+
       </div>
 
       {/* Tab Content */}
@@ -1241,7 +1325,9 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                     ) : (
                       billings.map((bill) => {
                         const isUnpaid = bill.statut === 'En attente' || bill.statut === 'Impayé';
-                        return (
+                        
+  
+return (
                         <tr key={bill.id} className={`bg-white hover:bg-slate-50 transition-colors ${isUnpaid ? 'bg-rose-50/20' : ''}`}>
                           <td className="px-6 py-4 font-medium text-slate-900">
                             {bill.appointments?.date_heure ? new Date(bill.appointments.date_heure).toLocaleDateString('fr-FR') : 'N/A'}
@@ -1292,6 +1378,66 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           </Card>
         </div>
       )}
+
+      {activeTab === 'exercices' && (
+        <div className="space-y-6">
+          <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">Programme d'exercices</h3>
+              <p className="text-sm text-slate-500">Partagez des vidéos YouTube ou des liens avec le patient.</p>
+            </div>
+            
+            <div className="flex gap-2">
+              <Button onClick={() => setIsNewVideoModalOpen(true)} className="gap-2">
+                <Plus className="h-4 w-4" /> Lien YouTube
+              </Button>
+              <Button onClick={() => videoInputRef.current?.click()} className="gap-2 bg-slate-800 hover:bg-slate-900 text-white">
+                <Camera className="h-4 w-4" /> Vidéo (Fichier / Caméra)
+              </Button>
+              <input type="file" accept="video/*" ref={videoInputRef} onChange={handleVideoUpload} className="hidden" />
+            </div>
+
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {exercises.length === 0 ? (
+              <div className="col-span-full p-8 text-center text-slate-500 bg-white rounded-xl border border-dashed border-slate-300">
+                Aucune vidéo assignée à ce patient pour le moment.
+              </div>
+            ) : (
+              exercises.map(ex => (
+                <Card key={ex.id} className="overflow-hidden shadow-sm border-0 ring-1 ring-slate-100">
+                  <div className="aspect-video bg-slate-900 relative">
+                    
+                    {ex.url.startsWith('data:video') ? (
+                      <video src={ex.url} controls className="w-full h-full object-cover"></video>
+                    ) : (
+                      <iframe 
+                        src={ex.url} 
+                        className="w-full h-full border-0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                        allowFullScreen
+                      ></iframe>
+                    )}
+
+                  </div>
+                  <CardContent className="p-4 flex justify-between items-center">
+                    <h4 className="font-semibold text-slate-900 truncate" title={ex.title}>{ex.title}</h4>
+                    <button 
+                      onClick={() => handleDeleteExercise(ex.id)}
+                      className="p-2 text-red-500 hover:bg-red-50 rounded-full transition-colors flex-shrink-0"
+                      title="Supprimer la vidéo"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
 
       {/* Access Modal */}
       <Modal
@@ -1765,6 +1911,46 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
         </div>
       </Modal>
 
-    </div>
+    
+      {/* Modal Nouvelle Vidéo */}
+      <Modal
+        isOpen={isNewVideoModalOpen}
+        onClose={() => setIsNewVideoModalOpen(false)}
+        title="Ajouter une vidéo d'exercice"
+      >
+        <form onSubmit={handleAddVideo} className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Titre de l'exercice *</label>
+            <input
+              type="text"
+              required
+              value={newVideoTitle}
+              onChange={e => setNewVideoTitle(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500"
+              placeholder="Ex: Étirements lombaires"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-700">Lien de la vidéo (YouTube) *</label>
+            <input
+              type="url"
+              required
+              value={newVideoUrl}
+              onChange={e => setNewVideoUrl(e.target.value)}
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500"
+              placeholder="https://www.youtube.com/watch?v=..."
+            />
+          </div>
+          <div className="pt-4 flex justify-end gap-3">
+            <Button type="button" variant="outline" onClick={() => setIsNewVideoModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit">
+              Ajouter
+            </Button>
+          </div>
+        </form>
+      </Modal>
+</div>
   );
 }

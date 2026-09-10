@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download } from 'lucide-react';
+import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download, Camera, Upload, Trash2, Image as ImageIcon, Play } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ReviewSection } from '../components/reviews/ReviewSection';
@@ -43,7 +43,13 @@ export function PatientPortal() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileMessage, setProfileMessage] = useState({ type: '', text: '' });
 
-  useEffect(() => {
+ 
+  // Local Documents State (simulated)
+  
+  const [exercises, setExercises] = useState<any[]>([]);
+const [localDocs, setLocalDocs] = useState<any[]>([]);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+ useEffect(() => {
     fetchPatientData();
   }, []);
 
@@ -76,6 +82,18 @@ export function PatientPortal() {
 
       const patientData = patientDataList[0];
       setPatient(patientData);
+      try {
+        const storedDocs = localStorage.getItem(`reforme_docs_${patientData.id}`);
+        if (storedDocs) {
+          setLocalDocs(JSON.parse(storedDocs));
+ 
+        const storedEx = localStorage.getItem(`reforme_exercises_${patientData.id}`);
+        if (storedEx) {
+          setExercises(JSON.parse(storedEx));
+        }
+       }
+      } catch(e) { console.error('Erreur lecture docs', e); }
+
       setProfileForm({
         telephone: patientData.telephone || '',
         email: patientData.email || '',
@@ -191,7 +209,39 @@ export function PatientPortal() {
     }
   };
 
-  const handleUpdateProfile = async (e: React.FormEvent) => {
+  
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !patient) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const newDoc = {
+        id: Date.now().toString(),
+        name: file.name,
+        type: file.type,
+        date: new Date().toISOString(),
+        dataUrl: reader.result as string
+      };
+      
+      const updatedDocs = [newDoc, ...localDocs];
+      setLocalDocs(updatedDocs);
+      try {
+        localStorage.setItem(`reforme_docs_${patient.id}`, JSON.stringify(updatedDocs));
+      } catch(err) {
+        alert('Stockage local saturé. Veuillez libérer de la mémoire.');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+  
+  const handleDeleteDoc = (id: string) => {
+    if (!confirm('Supprimer ce document ?')) return;
+    const updatedDocs = localDocs.filter(d => d.id !== id);
+    setLocalDocs(updatedDocs);
+    localStorage.setItem(`reforme_docs_${patient.id}`, JSON.stringify(updatedDocs));
+  };
+const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setProfileLoading(true);
     try {
@@ -330,7 +380,7 @@ export function PatientPortal() {
             onClick={() => setActiveTab('documents')}
             className={`pb-2 ${activeTab === 'documents' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}`}
           >
-            Documents
+            Documents & Vidéos
           </button>
           <button 
             onClick={() => setActiveTab('profil')}
@@ -445,13 +495,99 @@ export function PatientPortal() {
 
         {activeTab === 'documents' && (
           <div className="space-y-4">
-            <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center shadow-sm">
+            
+            <div className="flex gap-3">
+              <Button onClick={() => fileInputRef.current?.click()} className="flex-1 bg-mint-600 hover:bg-mint-700 text-white shadow-sm flex items-center justify-center gap-2">
+                <Upload className="h-4 w-4" /> Importer un document
+              </Button>
+              <Button onClick={() => {
+                  if (fileInputRef.current) {
+                    fileInputRef.current.capture = "environment";
+                    fileInputRef.current.click();
+                  }
+                }} 
+                className="bg-slate-800 hover:bg-slate-900 text-white shadow-sm flex items-center justify-center gap-2"
+              >
+                <Camera className="h-4 w-4" />
+              </Button>
+            </div>
+            
+            <input 
+              type="file" 
+              accept="image/*,application/pdf"
+              ref={fileInputRef} 
+              className="hidden" 
+              onChange={handleFileUpload}
+            />
+
+            {localDocs.length > 0 ? (
+              <div className="space-y-3">
+                <h3 className="text-sm font-bold text-slate-900 mb-2 px-1">Mes documents envoyés</h3>
+                {localDocs.map(doc => (
+                  <div key={doc.id} className="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                    <div className="h-12 w-12 bg-slate-50 rounded-lg flex items-center justify-center flex-shrink-0 border border-slate-100 overflow-hidden">
+                      {doc.type.startsWith('image/') ? (
+                        <img src={doc.dataUrl} alt={doc.name} className="h-full w-full object-cover" />
+                      ) : (
+                        <FileText className="h-5 w-5 text-slate-400" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-slate-900 truncate">{doc.name}</p>
+                      <p className="text-xs text-slate-500">
+                        {new Date(doc.date).toLocaleDateString('fr-FR')} • {doc.type.startsWith('image/') ? 'Image' : 'Document'}
+                      </p>
+                    </div>
+                    <button 
+                      onClick={() => handleDeleteDoc(doc.id)}
+                      className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            
+            {exercises.length > 0 && (
+              <div className="space-y-3 mt-8">
+                <h3 className="text-sm font-bold text-slate-900 mb-2 px-1 flex items-center gap-2">
+                  <Play className="h-4 w-4 text-mint-500" /> Programme d'exercices vidéo
+                </h3>
+                <div className="space-y-4">
+                  {exercises.map(ex => (
+                    <div key={ex.id} className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                      <div className="aspect-video bg-slate-900">
+                        
+                        {ex.url.startsWith('data:video') ? (
+                          <video src={ex.url} controls className="w-full h-full object-cover"></video>
+                        ) : (
+                          <iframe 
+                            src={ex.url} 
+                            className="w-full h-full border-0"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                            allowFullScreen
+                          ></iframe>
+                        )}
+
+                      </div>
+                      <div className="p-4">
+                        <h4 className="font-bold text-slate-900">{ex.title}</h4>
+                        <p className="text-xs text-slate-500 mt-1">Ajouté le {new Date(ex.date).toLocaleDateString('fr-FR')}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+<div className="bg-white border border-slate-200 rounded-2xl p-6 text-center shadow-sm mt-4">
               <div className="h-12 w-12 bg-mint-50 rounded-full flex items-center justify-center mx-auto mb-3">
                 <FileText className="h-6 w-6 text-mint-500" />
               </div>
-              <h3 className="text-lg font-bold text-slate-900 mb-2">Mes Documents & Exercices</h3>
-              <p className="text-sm text-slate-600 leading-relaxed">
-                Aucun document partagé pour le moment. Vos bilans, ordonnances et exercices prescrits par votre thérapeute apparaîtront ici prochainement.
+              <h3 className="text-lg font-bold text-slate-900 mb-2">Prescriptions & Bilans</h3>
+              <p className="text-sm text-slate-600 leading-relaxed mb-4">
+                Prenez en photo vos ordonnances ou examens médicaux pour les partager avec votre thérapeute.
               </p>
             </div>
           </div>
