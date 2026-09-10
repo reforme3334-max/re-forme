@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+const fs = require('fs');
+const content = `import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
@@ -61,7 +62,7 @@ export function PatientPortal() {
 
       if (userEmail.endsWith('@patient.reforme.center')) {
         const phone = userEmail.replace('@patient.reforme.center', '');
-        query = query.ilike('telephone', `%${phone}%`);
+        query = query.ilike('telephone', \`%\${phone}%\`);
       } else {
         query = query.eq('email', userEmail);
       }
@@ -96,7 +97,7 @@ export function PatientPortal() {
           let resolvedTherapistId = app.therapist_id;
           
           if (cleanNotes.includes('||TH_ID:')) {
-            const match = cleanNotes.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
+            const match = cleanNotes.match(/\\|\\|TH_ID:([a-f0-9-]+)\\|\\|(.*)/s);
             if (match) {
               resolvedTherapistId = match[1];
               cleanNotes = match[2];
@@ -171,10 +172,10 @@ export function PatientPortal() {
       // Create a pending appointment request. We use 'Programmé' but mark it clearly in notes.
       const { error } = await supabase.from('appointments').insert({
         patient_id: patient.id,
-        date_heure: `${apptDate}T${apptTime}:00`,
+        date_heure: \`\${apptDate}T\${apptTime}:00\`,
         statut: 'Programmé',
         duree: 30, // Default duration
-        notes_seance: `[DEMANDE EN LIGNE] Motif: ${apptMotif || 'Non précisé'}`
+        notes_seance: \`[DEMANDE EN LIGNE] Motif: \${apptMotif || 'Non précisé'}\`
       });
       if (error) throw error;
       
@@ -210,10 +211,10 @@ export function PatientPortal() {
   const downloadReceipt = (billing: any, appt: any) => {
     // Generate a simple text-based receipt or trigger print.
     // A robust app would generate a PDF, but here we can open a styled print window.
-    const receiptContent = `
+    const receiptContent = \`
       <html>
         <head>
-          <title>Reçu de Paiement - ${billing.id}</title>
+          <title>Reçu de Paiement - \${billing.id}</title>
           <style>
             body { font-family: system-ui, sans-serif; padding: 40px; color: #1e293b; max-width: 600px; margin: 0 auto; }
             h1 { color: #0d9488; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
@@ -231,19 +232,19 @@ export function PatientPortal() {
             </div>
             <div style="text-align: right;">
               <h2>REÇU</h2>
-              <p>Date: ${new Date(billing.date_facturation).toLocaleDateString('fr-FR')}</p>
+              <p>Date: \${new Date(billing.date_facturation).toLocaleDateString('fr-FR')}</p>
             </div>
           </div>
           <div class="details">
-            <div class="row"><span>Patient:</span> <strong>${patient.nom} ${patient.prenom}</strong></div>
-            <div class="row"><span>Séance du:</span> <strong>${new Date(appt.date_heure).toLocaleDateString('fr-FR')}</strong></div>
-            <div class="row"><span>Motif:</span> <strong>${appt.notes_seance || 'Soins de kinésithérapie'}</strong></div>
-            <div class="row total"><span>Montant Réglé:</span> <span>${billing.montant} DH</span></div>
+            <div class="row"><span>Patient:</span> <strong>\${patient.nom} \${patient.prenom}</strong></div>
+            <div class="row"><span>Séance du:</span> <strong>\${new Date(appt.date_heure).toLocaleDateString('fr-FR')}</strong></div>
+            <div class="row"><span>Motif:</span> <strong>\${appt.notes_seance || 'Soins de kinésithérapie'}</strong></div>
+            <div class="row total"><span>Montant Réglé:</span> <span>\${billing.montant} DH</span></div>
           </div>
           <p style="text-align: center; color: #64748b; font-size: 0.875rem;">Ce document tient lieu de reçu pour le paiement des soins dispensés.</p>
         </body>
       </html>
-    `;
+    \`;
     const printWindow = window.open('', '_blank');
     if (printWindow) {
       printWindow.document.write(receiptContent);
@@ -322,19 +323,19 @@ export function PatientPortal() {
         <div className="flex space-x-6 text-sm font-medium border-t border-slate-100 pt-2 px-1">
           <button 
             onClick={() => setActiveTab('accueil')}
-            className={`pb-2 ${activeTab === 'accueil' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}`}
+            className={\`pb-2 \${activeTab === 'accueil' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}\`}
           >
             Accueil
           </button>
           <button 
             onClick={() => setActiveTab('documents')}
-            className={`pb-2 ${activeTab === 'documents' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}`}
+            className={\`pb-2 \${activeTab === 'documents' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}\`}
           >
             Documents
           </button>
           <button 
             onClick={() => setActiveTab('profil')}
-            className={`pb-2 ${activeTab === 'profil' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}`}
+            className={\`pb-2 \${activeTab === 'profil' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}\`}
           >
             Mon Profil
           </button>
@@ -407,7 +408,7 @@ export function PatientPortal() {
                             {new Date(app.date_heure).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })} à {new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                           </p>
                           <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                            <Activity className="h-3 w-3" /> {app.notes_seance?.replace('\[DEMANDE EN LIGNE\]', '') || 'Séance de suivi'}
+                            <Activity className="h-3 w-3" /> {app.notes_seance?.replace('\\[DEMANDE EN LIGNE\\]', '') || 'Séance de suivi'}
                           </p>
                         </div>
                         <div className="flex items-center justify-between sm:flex-col sm:items-end gap-2">
@@ -438,7 +439,7 @@ export function PatientPortal() {
 
             {/* Section Avis */}
             <div className="pt-2">
-              <ReviewSection patientName={`${patient.prenom} ${patient.nom}`} />
+              <ReviewSection patientName={\`\${patient.prenom} \${patient.nom}\`} />
             </div>
           </>
         )}
@@ -508,7 +509,7 @@ export function PatientPortal() {
       {/* Floating Contact Buttons (visible on all tabs) */}
       <div className="fixed bottom-6 right-6 flex flex-col gap-3 z-30">
         <a 
-          href={`https://wa.me/212678646401`} 
+          href={\`https://wa.me/212600000000\`} 
           target="_blank" 
           rel="noopener noreferrer"
           className="h-12 w-12 bg-green-500 hover:bg-green-600 text-white rounded-full flex items-center justify-center shadow-lg transition-transform hover:scale-110"
@@ -517,7 +518,7 @@ export function PatientPortal() {
           <MessageCircle className="h-6 w-6" />
         </a>
         <a 
-          href="tel:+212678646401"
+          href="tel:+212600000000"
           className="h-12 w-12 bg-slate-800 hover:bg-slate-900 text-white rounded-full flex items-center justify-center shadow-lg transition-transform hover:scale-110"
           title="Appeler le centre"
         >
@@ -531,7 +532,7 @@ export function PatientPortal() {
       <Modal isOpen={isApptModalOpen} onClose={() => setIsApptModalOpen(false)} title="Demander un rendez-vous">
         <form onSubmit={handleRequestAppointment} className="space-y-4">
           {apptMessage.text && (
-            <div className={`p-3 rounded-lg text-sm ${apptMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            <div className={\`p-3 rounded-lg text-sm \${apptMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}\`}>
               {apptMessage.text}
             </div>
           )}
@@ -583,7 +584,7 @@ export function PatientPortal() {
       <Modal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} title="Modifier mon profil">
         <form onSubmit={handleUpdateProfile} className="space-y-4">
           {profileMessage.text && (
-            <div className={`p-3 rounded-lg text-sm ${profileMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            <div className={\`p-3 rounded-lg text-sm \${profileMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}\`}>
               {profileMessage.text}
             </div>
           )}
@@ -651,7 +652,7 @@ export function PatientPortal() {
       <Modal isOpen={isPasswordModalOpen} onClose={() => setIsPasswordModalOpen(false)} title="Changer mon mot de passe">
         <form onSubmit={handleChangePassword} className="space-y-4">
           {passwordMessage.text && (
-            <div className={`p-3 rounded-lg text-sm ${passwordMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            <div className={\`p-3 rounded-lg text-sm \${passwordMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}\`}>
               {passwordMessage.text}
             </div>
           )}
@@ -691,3 +692,5 @@ export function PatientPortal() {
     </div>
   );
 }
+`
+fs.writeFileSync('src/pages/PatientPortal.tsx', content);
