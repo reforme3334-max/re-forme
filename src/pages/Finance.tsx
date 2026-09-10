@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button';
 import { Modal } from '../components/ui/modal';
 import * as XLSX from 'xlsx';
+import { fetchAllRows, getBillDate, getDateRange, isDateInRange } from '../lib/financeUtils';
 
 export function Finance() {
   const [activeTab, setActiveTab] = useState('recettes');
@@ -13,7 +14,7 @@ export function Finance() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
-  const [dateFilter, setDateFilter] = useState('month'); // 'day', 'exact', 'week', 'month', 'all'
+  const [dateFilter, setDateFilter] = useState('month'); // 'day', 'exact', '7days', 'week', 'month', 'year', 'all'
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
   
   // Modal state
@@ -29,59 +30,57 @@ export function Finance() {
   const fetchFinancialData = async () => {
     setLoading(true);
     
-    // Fetch user profile for permissions
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
-      if (profile) {
-        setUserProfile(profile);
-        // Set default tab based on permissions
-        const hasRecettes = profile.role === 'admin' || profile.permissions?.includes('finance_recettes');
-        if (!hasRecettes) {
-          setActiveTab('depenses');
+    try {
+      // Fetch user profile for permissions
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+        if (profile) {
+          setUserProfile(profile);
+          // Set default tab based on permissions
+          const hasRecettes = profile.role === 'admin' || profile.permissions?.includes('finance_recettes');
+          if (!hasRecettes) {
+            setActiveTab('depenses');
+          }
         }
       }
-    }
 
-    // Fetch billings (Recettes)
-    const { data: billingData, error: bErr } = await supabase
-      .from('billings')
-      .select('*, patients(nom, prenom), appointments(id, date_heure)')
-      .order('date_facturation', { ascending: false });
-      
-    if (bErr) console.error('Error fetching billings:', bErr);
-      
-    if (billingData) {
-      // payment_status enum is 'En attente', 'Payé', 'Rejeté'
-      setBillings(billingData.filter(b => b.statut === 'Payé'));
-      setUnpaidBillings(billingData.filter(b => b.statut === 'En attente' || b.statut === 'Impayé' || b.statut === 'Rejeté'));
-    } else {
-      setBillings([]);
-      setUnpaidBillings([]);
-    }
+      // Fetch all billings (Recettes) using paginated fetchAllRows to exceed 1000 limit
+      const billingData = await fetchAllRows(
+        'billings',
+        '*, patients(nom, prenom)',
+        { column: 'date_facturation', ascending: false }
+      );
+        
+      if (billingData && billingData.length > 0) {
+        setBillings(billingData.filter(b => b.statut === 'Payé'));
+        setUnpaidBillings(billingData.filter(b => b.statut === 'En attente' || b.statut === 'Impayé' || b.statut === 'Rejeté'));
+      } else {
+        setBillings([]);
+        setUnpaidBillings([]);
+      }
 
-    // Fetch expenses (Dépenses)
-    const { data: expenseData, error: expenseError } = await supabase
-      .from('expenses')
-      .select('*')
-      .order('date', { ascending: false });
-      
-    if (expenseData && !expenseError) {
-      setExpenses(expenseData);
-    } else {
-      // Mock data if table doesn't exist yet
-      setExpenses([
-        { id: '1', amount: 150, category: 'Matériel', date: new Date().toISOString(), description: 'Bandes élastiques' },
-        { id: '2', amount: 1200, category: 'Loyer', date: new Date(Date.now() - 86400000 * 2).toISOString(), description: 'Loyer cabinet' },
-        { id: '3', amount: 80, category: 'Logiciel', date: new Date(Date.now() - 86400000 * 5).toISOString(), description: 'Abonnement Doctolib' },
-      ]);
+      // Fetch expenses (Dépenses)
+      const expenseData = await fetchAllRows('expenses', '*', { column: 'date', ascending: false });
+      if (expenseData && expenseData.length > 0) {
+        setExpenses(expenseData);
+      } else {
+        // Fallback default sample expenses if empty
+        setExpenses([
+          { id: '1', amount: 150, category: 'Matériel', date: new Date().toISOString(), description: 'Bandes élastiques' },
+          { id: '2', amount: 1200, category: 'Loyer', date: new Date(Date.now() - 86400000 * 2).toISOString(), description: 'Loyer cabinet' },
+          { id: '3', amount: 80, category: 'Logiciel', date: new Date(Date.now() - 86400000 * 5).toISOString(), description: 'Abonnement Doctolib' },
+        ]);
+      }
+    } catch (err) {
+      console.error('Error fetching financial data:', err);
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   const hasPermission = (permission: string) => {
@@ -90,58 +89,21 @@ export function Finance() {
     return userProfile.permissions?.includes(permission);
   };
 
-  // Calculate metrics based on filter
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  
-  const startOfWeek = new Date(today);
-  startOfWeek.setDate(today.getDate() - today.getDay() + (today.getDay() === 0 ? -6 : 1)); // Monday
-  
-  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  // Calculate metrics based on centralized dateRange
+  const dateRange = getDateRange(dateFilter, customDate);
+  const filterLabel = dateRange.label;
 
-  const filterByDate = (items: any[], dateExtractor: (item: any) => Date) => {
-    if (dateFilter === 'all') return items;
-    
-    return items.filter(item => {
-      const itemDate = dateExtractor(item);
-      if (dateFilter === 'day') {
-        return itemDate >= today;
-      } else if (dateFilter === 'week') {
-        return itemDate >= startOfWeek;
-      } else if (dateFilter === 'month') {
-        return itemDate >= startOfMonth;
-      } else if (dateFilter === 'exact') {
-        const year = itemDate.getFullYear();
-        const month = String(itemDate.getMonth() + 1).padStart(2, '0');
-        const day = String(itemDate.getDate()).padStart(2, '0');
-        const localDateString = `${year}-${month}-${day}`;
-        return localDateString === customDate;
-      }
-      return true;
-    });
-  };
+  const filteredBillings = billings.filter(b => isDateInRange(getBillDate(b), dateRange));
+  const filteredExpenses = expenses.filter(e => isDateInRange(e.date, dateRange));
+  const filteredUnpaid = unpaidBillings.filter(b => isDateInRange(getBillDate(b), dateRange));
 
-  const filteredBillings = filterByDate(billings, (b) => b.appointments?.date_heure ? new Date(b.appointments.date_heure) : new Date(b.date_facturation || new Date()));
-  const filteredExpenses = filterByDate(expenses, (e) => new Date(e.date));
-
-  const totalRecettes = filteredBillings.reduce((sum, b) => sum + Number(b.montant), 0);
-  const totalUnpaid = unpaidBillings.reduce((sum, b) => sum + Number(b.montant), 0);
-  const totalDepenses = filteredExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
+  const totalRecettes = filteredBillings.reduce((sum, b) => sum + (Number(b.montant) || 0), 0);
+  const totalDepenses = filteredExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
   const caNet = totalRecettes - totalDepenses;
   const totalTransactions = filteredBillings.length;
-
-  const getFilterLabel = () => {
-    switch (dateFilter) {
-      case 'day': return "Aujourd'hui";
-      case 'exact': return new Date(customDate).toLocaleDateString('fr-FR');
-      case 'week': return "Cette semaine";
-      case 'month': return "Ce mois";
-      case 'all': return "Global";
-      default: return "";
-    }
-  };
-
-  const filterLabel = getFilterLabel();
+  
+  const totalUnpaidGlobal = unpaidBillings.reduce((sum, b) => sum + (Number(b.montant) || 0), 0);
+  const totalUnpaidPeriod = filteredUnpaid.reduce((sum, b) => sum + (Number(b.montant) || 0), 0);
 
   const exportToExcel = () => {
     const data = filteredBillings.map(bill => {
@@ -274,8 +236,10 @@ export function Finance() {
             >
               <option value="day">Aujourd'hui</option>
               <option value="exact">Date exacte</option>
+              <option value="7days">7 derniers jours</option>
               <option value="week">Cette semaine</option>
               <option value="month">Ce mois</option>
+              <option value="year">Cette année</option>
               <option value="all">Tout le temps</option>
             </select>
           </div>
@@ -284,7 +248,7 @@ export function Finance() {
 
       {/* KPI Cards */}
       {hasPermission('finance_stats') && (
-        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 mb-8">
           <Card className="border-0 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-slate-500">CA Net ({filterLabel})</CardTitle>
@@ -293,7 +257,7 @@ export function Finance() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className={`text-2xl font-bold ${caNet >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{caNet} DH</div>
+              <div className={`text-2xl font-bold ${caNet >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{caNet.toLocaleString()} DH</div>
               <p className="text-xs mt-1 text-slate-500">Recettes - Dépenses</p>
             </CardContent>
           </Card>
@@ -306,8 +270,8 @@ export function Finance() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{totalRecettes} DH</div>
-              <p className="text-xs mt-1 text-slate-500">Entrées brutes</p>
+              <div className="text-2xl font-bold text-slate-900">{totalRecettes.toLocaleString()} DH</div>
+              <p className="text-xs mt-1 text-slate-500">Entrées encaissées</p>
             </CardContent>
           </Card>
 
@@ -319,7 +283,7 @@ export function Finance() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{totalDepenses} DH</div>
+              <div className="text-2xl font-bold text-slate-900">{totalDepenses.toLocaleString()} DH</div>
               <p className="text-xs mt-1 text-slate-500">Sorties brutes</p>
             </CardContent>
           </Card>
@@ -332,8 +296,12 @@ export function Finance() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-rose-600">{totalUnpaid} DH</div>
-              <p className="text-xs mt-1 text-slate-500">À recouvrer</p>
+              <div className="text-2xl font-bold text-rose-600">
+                {dateFilter === 'all' ? `${totalUnpaidGlobal.toLocaleString()} DH` : `${totalUnpaidPeriod.toLocaleString()} DH`}
+              </div>
+              <p className="text-xs mt-1 text-slate-500">
+                {dateFilter === 'all' ? "Total global à recouvrer" : `Période (${totalUnpaidGlobal.toLocaleString()} DH global)`}
+              </p>
             </CardContent>
           </Card>
 
@@ -345,7 +313,7 @@ export function Finance() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{totalTransactions}</div>
+              <div className="text-2xl font-bold text-slate-900">{totalTransactions.toLocaleString()}</div>
               <p className="text-xs mt-1 text-slate-500">Nombre de paiements</p>
             </CardContent>
           </Card>

@@ -4,6 +4,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { LineChart, Line, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { supabase } from '../lib/supabaseClient';
 import { Button } from '../components/ui/button';
+import { 
+  fetchAllRows, 
+  getBillDate, 
+  getDateRange, 
+  getPreviousDateRange, 
+  isDateInRange, 
+  calcTrend 
+} from '../lib/financeUtils';
 
 // Components
 const StatCard = ({ title, value, icon: Icon, description, colorClass = "text-indigo-600", bgClass = "bg-indigo-50", trend, trendType = "positive" }: any) => {
@@ -63,57 +71,33 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const { data: patients, error: pErr } = await supabase.from('patients').select('id, nom, prenom, created_at, pathologie, telephone, email, nombre_seances');
-      if (pErr) console.error('Error fetching patients:', pErr);
+      const [patients, billings, rawAppointments, treatments, therapists] = await Promise.all([
+        fetchAllRows('patients', 'id, nom, prenom, created_at, pathologie, telephone, email, nombre_seances'),
+        fetchAllRows('billings', 'id, patient_id, appointment_id, montant, statut, date_facturation', { column: 'date_facturation', ascending: false }),
+        fetchAllRows('appointments', 'id, patient_id, therapist_id, date_heure, statut, notes_seance', { column: 'date_heure', ascending: false }),
+        fetchAllRows('treatments', '*'),
+        fetchAllRows('therapists', 'id, nom, prenom, specialite')
+      ]);
 
-      const { data: billings, error: bErr } = await supabase.from('billings').select('*, patients(nom, prenom, email), appointments(id, date_heure)');
-      if (bErr) console.error('Error fetching billings:', bErr);
-
-      // Try to fetch appointments. If the join fails, fallback to simple select
-      let { data: appointments, error: aErr } = await supabase
-        .from('appointments')
-        .select('*, treatments(motif)')
-        .order('date_heure', { ascending: false });
-      
-      if (aErr) {
-        console.warn('Join with treatments failed, falling back to simple appointments select:', aErr.message);
-        const { data: simpleAppts, error: simpleErr } = await supabase
-          .from('appointments')
-          .select('*')
-          .order('date_heure', { ascending: false });
-        if (simpleErr) console.error('Error fetching simple appointments:', simpleErr);
-        appointments = simpleAppts;
-      }
-
-      if (appointments) {
-        appointments = appointments.map(app => {
-          let cleanNotes = app.notes_seance || '';
-          let resolvedTherapistId = app.therapist_id;
-          
-          if (cleanNotes.includes('||TH_ID:')) {
-            const match = cleanNotes.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
-            if (match) {
-              resolvedTherapistId = match[1];
-              cleanNotes = match[2];
-            }
+      const appointments = (rawAppointments || []).map(app => {
+        let cleanNotes = app.notes_seance || '';
+        let resolvedTherapistId = app.therapist_id;
+        
+        if (cleanNotes.includes('||TH_ID:')) {
+          const match = cleanNotes.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
+          if (match) {
+            resolvedTherapistId = match[1];
+            cleanNotes = match[2];
           }
-          
-          return {
-            ...app,
-            therapist_id: resolvedTherapistId,
-            notes_seance: cleanNotes
-          };
-        });
-      }
+        }
+        
+        return {
+          ...app,
+          therapist_id: resolvedTherapistId,
+          notes_seance: cleanNotes
+        };
+      });
 
-      // Fetch treatments for tracking patient progress
-      const { data: treatments, error: tErr } = await supabase.from('treatments').select('*');
-      if (tErr) console.error('Error fetching treatments:', tErr);
-
-      // Fetch therapists list
-      const { data: therapists, error: thErr } = await supabase.from('therapists').select('id, nom, prenom, specialite');
-      if (thErr) console.error('Error fetching therapists:', thErr);
-      
       setRawData({
         patients: patients || [],
         billings: billings || [],
@@ -130,128 +114,68 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
   const dashboardData = useMemo(() => {
     const now = new Date();
-    let startDate = new Date();
-    let endDate = new Date();
+    const dateRange = getDateRange(filter, customDate);
+    const prevDateRange = getPreviousDateRange(filter, customDate);
+    const filterLabel = dateRange.label;
+
+    // 1. CA (selon filtre et période précédente)
+    const paidBillings = rawData.billings.filter(b => b.statut === 'Payé');
     
-    let prevStartDate = new Date();
-    let prevEndDate = new Date();
-    
-    let filterLabel = "Ce mois";
-    
-    if (filter === '7days') {
-      startDate.setDate(now.getDate() - 7);
-      startDate.setHours(0, 0, 0, 0);
-      endDate.setHours(23, 59, 59, 999);
+    const ca = paidBillings
+      .filter(b => isDateInRange(getBillDate(b), dateRange))
+      .reduce((sum, b) => sum + (Number(b.montant) || 0), 0);
       
-      filterLabel = "7 derniers jours";
-      
-      prevEndDate = new Date(startDate);
-      prevEndDate.setMilliseconds(-1);
-      prevStartDate = new Date(prevEndDate);
-      prevStartDate.setDate(prevStartDate.getDate() - 7);
-    } else if (filter === 'month') {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-      endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-      filterLabel = "Ce mois";
-      
-      prevStartDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      prevEndDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-    } else if (filter === 'year') {
-      startDate = new Date(now.getFullYear(), 0, 1);
-      endDate = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
-      filterLabel = "Cette année";
-      
-      prevStartDate = new Date(now.getFullYear() - 1, 0, 1);
-      prevEndDate = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999);
-    } else if (filter === 'all') {
-      filterLabel = "Tout le temps";
-    } else if (filter === 'exact') {
-      startDate = new Date(customDate);
-      startDate.setHours(0, 0, 0, 0);
-      endDate = new Date(customDate);
-      endDate.setHours(23, 59, 59, 999);
-      filterLabel = startDate.toLocaleDateString('fr-FR');
-      
-      const diffTime = endDate.getTime() - startDate.getTime();
-      prevEndDate = new Date(startDate.getTime() - 1);
-      prevStartDate = new Date(prevEndDate.getTime() - diffTime);
-    }
-
-    const isDateInRange = (dateString: string | Date | undefined, isPrev = false) => {
-      if (!dateString) return false;
-      if (filter === 'all') return !isPrev; // No previous period for 'all' time
-      
-      const d = new Date(dateString);
-      const start = isPrev ? prevStartDate : startDate;
-      const end = isPrev ? prevEndDate : endDate;
-      
-      return d >= start && d <= end;
-    };
-
-    // Helper for safe percentage
-    const calcTrend = (current: number, prev: number) => {
-      if (filter === 'all') return undefined; // no trend comparing to "before all time"
-      if (prev === 0) return current > 0 ? 100 : 0;
-      return ((current - prev) / prev) * 100;
-    };
-
-    // Helper to get billing date correctly
-    const getBillDate = (b: any) => {
-      if (b.date_facturation) return b.date_facturation;
-      const apptDate = Array.isArray(b.appointments) ? b.appointments[0]?.date_heure : b.appointments?.date_heure;
-      if (apptDate) return apptDate;
-      return b.created_at || new Date();
-    };
-
-    // 1. CA Mensuel (ou selon filtre)
-    const ca = rawData.billings
-      .filter(b => isDateInRange(getBillDate(b)) && (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut))
-      .reduce((sum, b) => sum + Number(b.montant), 0);
-      
-    const prevCa = rawData.billings
-      .filter(b => isDateInRange(getBillDate(b), true) && (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut))
-      .reduce((sum, b) => sum + Number(b.montant), 0);
+    const prevCa = prevDateRange.startDate 
+      ? paidBillings
+          .filter(b => isDateInRange(getBillDate(b), prevDateRange))
+          .reduce((sum, b) => sum + (Number(b.montant) || 0), 0)
+      : undefined;
       
     const caTrend = calcTrend(ca, prevCa);
 
     // 2. Nouveaux Patients
     const nouveauxPatients = rawData.patients
-      .filter(p => isDateInRange(p.created_at || new Date())).length;
+      .filter(p => isDateInRange(p.created_at || new Date(), dateRange)).length;
       
-    const prevNouveauxPatients = rawData.patients
-      .filter(p => isDateInRange(p.created_at || new Date(), true)).length;
+    const prevNouveauxPatients = prevDateRange.startDate
+      ? rawData.patients.filter(p => isDateInRange(p.created_at || new Date(), prevDateRange)).length
+      : undefined;
       
     const patientsTrend = calcTrend(nouveauxPatients, prevNouveauxPatients);
 
     // 3. Taux de Présence au lieu de Taux d'Occupation
-    const presentAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure) && a.statut === 'Effectué').length;
-    const pastAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure) && (new Date(a.date_heure) < now)).length;
+    const presentAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange) && a.statut === 'Effectué').length;
+    const pastAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange) && (new Date(a.date_heure) < now)).length;
     const occupation = pastAppts > 0 ? Math.round((presentAppts / pastAppts) * 100) : 100;
     
     // Total Séances (for the 6th card)
-    const booked = rawData.appointments.filter(a => isDateInRange(a.date_heure)).length;
-    const prevBooked = rawData.appointments.filter(a => isDateInRange(a.date_heure, true)).length;
+    const booked = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange)).length;
+    const prevBooked = prevDateRange.startDate
+      ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange)).length
+      : undefined;
     const seancesTrend = calcTrend(booked, prevBooked);
     
-    const prevPresentAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, true) && a.statut === 'Effectué').length;
-    const prevPastAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, true) && (new Date(a.date_heure) < now)).length;
+    const prevPresentAppts = prevDateRange.startDate
+      ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && a.statut === 'Effectué').length
+      : 0;
+    const prevPastAppts = prevDateRange.startDate
+      ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && (new Date(a.date_heure) < now)).length
+      : 0;
     const prevOccupation = prevPastAppts > 0 ? Math.round((prevPresentAppts / prevPastAppts) * 100) : 100;
-    const occupationTrend = filter === 'all' ? undefined : occupation - prevOccupation;
+    const occupationTrend = prevDateRange.startDate ? occupation - prevOccupation : undefined;
 
-    // 4. Impayés (Total global, mostly independent of current date filter)
+    // 4. Impayés (Total global)
+    const unpaidBillings = rawData.billings.filter(b => b.statut === 'Impayé' || b.statut === 'En attente' || b.statut === 'Rejeté');
     const billedAppIds = new Set(rawData.billings.map(b => b.appointment_id).filter(Boolean));
-    const extraUnpaidAmount = rawData.appointments
-      .filter(a => a.statut === 'Impayé' && !billedAppIds.has(a.id))
-      .length * 50;
+    const extraUnpaidAppts = rawData.appointments.filter(a => a.statut === 'Impayé' && !billedAppIds.has(a.id));
+    const extraUnpaidAmount = extraUnpaidAppts.length * 200;
 
-    const impayesTotal = rawData.billings
-      .filter(b => b.statut === 'Impayé' || b.statut === 'En attente' || b.statut === 'Rejeté')
-      .reduce((sum, b) => sum + Number(b.montant), 0) + extraUnpaidAmount;
+    const impayesTotal = unpaidBillings.reduce((sum, b) => sum + (Number(b.montant) || 0), 0) + extraUnpaidAmount;
 
     // 5. Patients sans accès
     const patientsSansAcces = rawData.patients.filter(p => !p.has_access);
 
-    // LineChart: 6 months revenue
+    // LineChart: 6 derniers mois de chiffre d'affaires
     const last6Months = [];
     for (let i = 5; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -262,17 +186,14 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
         DH: 0
       });
     }
-    rawData.billings.forEach(b => {
-      if (b.statut === 'Payé' || b.statut === 'Effectué' || !b.statut) {
-        const d = new Date(getBillDate(b));
-        const match = last6Months.find(m => m.month === d.getMonth() && m.year === d.getFullYear());
-        if (match) match.DH += Number(b.montant);
-      }
+    paidBillings.forEach(b => {
+      const d = getBillDate(b);
+      const match = last6Months.find(m => m.month === d.getMonth() && m.year === d.getFullYear());
+      if (match) match.DH += Number(b.montant) || 0;
     });
 
     // BarChart: Team workload
     const teamMap = new Map();
-    // Pre-populate all therapists from the DB so they all exist in the chart
     if (rawData.therapists && rawData.therapists.length > 0) {
       rawData.therapists.forEach(t => {
         const fullName = `${t.prenom} ${t.nom}`;
@@ -282,12 +203,11 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       teamMap.set('Mr HADDAOUI Younes', 0);
     }
 
-    // Map of therapist ID to full name
     const therapistsMap = new Map<string, string>(
       rawData.therapists ? rawData.therapists.map(t => [t.id, `${t.prenom} ${t.nom}`]) : []
     );
 
-    rawData.appointments.filter(a => isDateInRange(a.date_heure)).forEach(a => {
+    rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange)).forEach(a => {
       let therapistName = 'Mr HADDAOUI Younes';
       if (a.therapist_id) {
         therapistName = therapistsMap.get(a.therapist_id) || `Thérapeute ${a.therapist_id.substring(0,4)}`;
@@ -298,7 +218,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
     // PieChart: Care types (Motifs)
     const actsMap = new Map();
-    rawData.appointments.filter(a => isDateInRange(a.date_heure)).forEach(a => {
+    rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange)).forEach(a => {
       const act = a.treatments?.motif || a.notes_seance || a.motif || 'Général';
       actsMap.set(act, (actsMap.get(act) || 0) + 1);
     });
@@ -307,10 +227,9 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
     // PieChart: Pathologies
     const pathologyMap = new Map();
-    // We count pathologies from patients who had appointments in the range
     const patientIdsWithAppointments = new Set(
       rawData.appointments
-        .filter(a => isDateInRange(a.date_heure))
+        .filter(a => isDateInRange(a.date_heure, dateRange))
         .map(a => a.patient_id)
         .filter(Boolean)
     );
@@ -318,7 +237,6 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
     rawData.patients.forEach(p => {
       if (patientIdsWithAppointments.has(p.id)) {
         let patho = p.pathologie ? p.pathologie.trim() : 'Non renseignée';
-        // Normalize: Capitalize first letter
         patho = patho.charAt(0).toUpperCase() + patho.slice(1);
         pathologyMap.set(patho, (pathologyMap.get(patho) || 0) + 1);
       }
@@ -333,29 +251,25 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
     // Top 5 Impayés
     const unpaidMap = new Map();
+    const patientsMap = new Map(rawData.patients.map(p => [p.id, p]));
     
-    // 1. Check billings (En attente or Impayé if it exists)
-    rawData.billings.filter(b => b.statut === 'Impayé' || b.statut === 'En attente' || b.statut === 'Rejeté').forEach(b => {
-      const p = b.patients as any;
+    unpaidBillings.forEach(b => {
+      const p = (b.patients as any) || patientsMap.get(b.patient_id);
       if (p) {
         const pName = `${p.prenom} ${p.nom}`;
         const current = unpaidMap.get(p.id) || { name: pName, amount: 0, sessions: 0, email: p.email };
-        current.amount += Number(b.montant);
+        current.amount += Number(b.montant) || 0;
         current.sessions += 1;
         unpaidMap.set(p.id, current);
       }
     });
 
-    // 2. Check appointments marked as 'Impayé' that might not have a billing yet
-    const billedAppointmentIds = new Set(rawData.billings.map(b => b.appointment_id).filter(Boolean));
-    const patientsMap = new Map(rawData.patients.map(p => [p.id, p]));
-
-    rawData.appointments.filter(a => a.statut === 'Impayé' && !billedAppointmentIds.has(a.id)).forEach(a => {
+    extraUnpaidAppts.forEach(a => {
       const p = patientsMap.get(a.patient_id) as any;
       if (p) {
         const pName = `${p.prenom} ${p.nom}`;
         const current = unpaidMap.get(p.id) || { name: pName, amount: 0, sessions: 0, email: p.email };
-        current.amount += 50; // Assume 50 DH per unpaid appointment if no billing exists
+        current.amount += 200;
         current.sessions += 1;
         unpaidMap.set(p.id, current);
       }
@@ -530,7 +444,9 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
             >
               <option value="all">Tout le temps</option>
               <option value="exact">Date exacte</option>
+              <option value="today">Aujourd'hui</option>
               <option value="7days">7 derniers jours</option>
+              <option value="week">Cette semaine</option>
               <option value="month">Ce mois</option>
               <option value="year">Cette année</option>
             </select>
