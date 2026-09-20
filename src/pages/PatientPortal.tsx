@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download, Camera, Upload, Trash2, Image as ImageIcon, Play } from 'lucide-react';
+import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download, Camera, Upload, Trash2, Image as ImageIcon, Play, HeartPulse } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ReviewSection } from '../components/reviews/ReviewSection';
 import { Modal } from '../components/ui/modal';
+import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 
 export function PatientPortal() {
   const [patient, setPatient] = useState<any>(null);
@@ -46,6 +47,16 @@ export function PatientPortal() {
  
   // Local Documents State (simulated)
   
+  
+  // Daily Pain Evaluation State (Échelle EVA 1-10)
+  const [painLevel, setPainLevel] = useState<number>(3);
+  const [painNote, setPainNote] = useState<string>('');
+  const [painLogs, setPainLogs] = useState<Array<{ id: string; score: number; note: string; date: string }>>([]);
+  const [painSaving, setPainSaving] = useState(false);
+  const [painSuccessMsg, setPainSuccessMsg] = useState('');
+  const [showPainHistory, setShowPainHistory] = useState(false);
+  const [painViewMode, setPainViewMode] = useState<'chart' | 'list'>('chart');
+
   const [exercises, setExercises] = useState<any[]>([]);
 const [localDocs, setLocalDocs] = useState<any[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -128,6 +139,40 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
           };
         });
         setAppointments(mappedAppts);
+
+      // Load pain evaluations
+      try {
+        const storedPain = localStorage.getItem(`reforme_pain_${patientData.id}`);
+        let parsedPain: any[] = [];
+        if (storedPain) {
+          parsedPain = JSON.parse(storedPain);
+        }
+        if (patientData.follow_up_status && patientData.follow_up_status.startsWith('PAIN:')) {
+          const parts = patientData.follow_up_status.replace('PAIN:', '').split('|');
+          const dbScore = parseInt(parts[0], 10);
+          const dbDate = parts[1] || new Date().toISOString();
+          const dbNote = parts[2] || '';
+          if (!parsedPain.some((p: any) => p.date && p.date.startsWith(dbDate.split('T')[0]))) {
+            parsedPain.unshift({
+              id: 'db-' + Date.now(),
+              score: dbScore,
+              date: dbDate,
+              note: dbNote
+            });
+          }
+        }
+        setPainLogs(parsedPain);
+
+        const todayStr = new Date().toISOString().split('T')[0];
+        const todayLog = parsedPain.find((p: any) => p.date && p.date.startsWith(todayStr));
+        if (todayLog) {
+          setPainLevel(todayLog.score);
+          setPainNote(todayLog.note || '');
+        }
+      } catch (err) {
+        console.error('Erreur chargement douleur:', err);
+      }
+
       }
 
       const { data: bills } = await supabase
@@ -145,7 +190,93 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
     }
   };
 
-  const handleLogout = async () => {
+  
+  const getPainDetails = (score: number) => {
+    if (score <= 2) return { 
+      label: 'Douleur très légère', 
+      desc: 'Inconfort minime ou quasi inexistant, aucune gêne dans vos gestes.', 
+      badgeBg: 'bg-emerald-50 text-emerald-700 border-emerald-200', 
+      btnActive: 'bg-emerald-500 text-white shadow-md shadow-emerald-500/20 border-emerald-500', 
+      dotColor: 'bg-emerald-500',
+      emoji: '😊' 
+    };
+    if (score <= 4) return { 
+      label: 'Douleur légère à modérée', 
+      desc: 'Supportable, sensation présente lors de certains mouvements.', 
+      badgeBg: 'bg-lime-50 text-lime-800 border-lime-200', 
+      btnActive: 'bg-lime-500 text-white shadow-md shadow-lime-500/20 border-lime-500', 
+      dotColor: 'bg-lime-500',
+      emoji: '🙂' 
+    };
+    if (score <= 6) return { 
+      label: 'Douleur modérée', 
+      desc: 'Gêne sensible au quotidien et fatigue musculaire associée.', 
+      badgeBg: 'bg-amber-50 text-amber-800 border-amber-200', 
+      btnActive: 'bg-amber-500 text-white shadow-md shadow-amber-500/20 border-amber-500', 
+      dotColor: 'bg-amber-500',
+      emoji: '😐' 
+    };
+    if (score <= 8) return { 
+      label: 'Douleur intense', 
+      desc: 'Forte intensité, mouvements limités, nécessite du repos.', 
+      badgeBg: 'bg-orange-50 text-orange-800 border-orange-200', 
+      btnActive: 'bg-orange-600 text-white shadow-md shadow-orange-600/20 border-orange-600', 
+      dotColor: 'bg-orange-600',
+      emoji: '😣' 
+    };
+    return { 
+      label: 'Douleur insupportable', 
+      desc: 'Douleur très aiguë invalidante, contactez votre praticien si besoin.', 
+      badgeBg: 'bg-rose-50 text-rose-800 border-rose-200', 
+      btnActive: 'bg-rose-600 text-white shadow-md shadow-rose-600/20 border-rose-600', 
+      dotColor: 'bg-rose-600',
+      emoji: '😫' 
+    };
+  };
+
+  const handleSavePain = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!patient) return;
+    setPainSaving(true);
+    setPainSuccessMsg('');
+    try {
+      const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
+      
+      const newEntry = {
+        id: Date.now().toString(),
+        score: painLevel,
+        note: painNote.trim(),
+        date: now.toISOString()
+      };
+
+      const filtered = painLogs.filter(p => !(p.date && p.date.startsWith(todayStr)));
+      const updated = [newEntry, ...filtered];
+      setPainLogs(updated);
+
+      try {
+        localStorage.setItem(`reforme_pain_${patient.id}`, JSON.stringify(updated));
+      } catch (err) {
+        console.error('LocalStorage write error', err);
+      }
+
+      const cleanNote = painNote.trim().slice(0, 20);
+      const dbVal = `PAIN:${painLevel}|${todayStr}${cleanNote ? '|' + cleanNote : ''}`;
+      await supabase.from('patients').update({
+        follow_up_status: dbVal,
+        last_follow_up_date: now.toISOString()
+      }).eq('id', patient.id);
+
+      setPainSuccessMsg("Votre niveau de douleur a été enregistré avec succès !");
+      setTimeout(() => setPainSuccessMsg(''), 4000);
+    } catch (err: any) {
+      console.error('Erreur sauvegarde douleur:', err);
+    } finally {
+      setPainSaving(false);
+    }
+  };
+
+const handleLogout = async () => {
     await supabase.auth.signOut();
     window.location.hash = 'login';
   };
@@ -435,6 +566,192 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                 </div>
               )}
             </div>
+
+            
+            {/* Suivi Quotidien de la Douleur (Échelle EVA 1 à 10) */}
+            <section className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+              <div className="p-4 border-b border-slate-50 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8 w-8 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center font-bold">
+                    <HeartPulse className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">Mon niveau de douleur aujourd'hui</h2>
+                    <p className="text-[11px] text-slate-500">Échelle EVA de 1 (très faible) à 10 (insupportable)</p>
+                  </div>
+                </div>
+                {painLogs.find(p => p.date && p.date.startsWith(new Date().toISOString().split('T')[0])) && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
+                    <CheckCircle className="h-3 w-3" /> Noté
+                  </span>
+                )}
+              </div>
+
+              <div className="p-4 space-y-4">
+                {/* 10-point Scale Buttons */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-[11px] font-semibold text-slate-400 px-0.5">
+                    <span>1 (Minimale)</span>
+                    <span>5 (Modérée)</span>
+                    <span>10 (Insupportable)</span>
+                  </div>
+                  <div className="grid grid-cols-10 gap-1 sm:gap-1.5">
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => {
+                      const isSelected = painLevel === num;
+                      const details = getPainDetails(num);
+                      return (
+                        <button
+                          key={num}
+                          type="button"
+                          onClick={() => setPainLevel(num)}
+                          className={`h-10 rounded-xl font-bold text-sm transition-all duration-150 flex flex-col items-center justify-center border ${
+                            isSelected
+                              ? details.btnActive + ' scale-105 z-10'
+                              : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/80 hover:border-slate-300'
+                          }`}
+                        >
+                          <span>{num}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Score Meaning & Feedback Display */}
+                {(() => {
+                  const details = getPainDetails(painLevel);
+                  return (
+                    <div className={`p-3 rounded-xl border flex items-start gap-3 transition-all ${details.badgeBg}`}>
+                      <span className="text-2xl flex-shrink-0">{details.emoji}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm">Score : {painLevel} / 10</span>
+                          <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-white/70 border border-current">
+                            {details.label}
+                          </span>
+                        </div>
+                        <p className="text-xs mt-1 opacity-90 leading-relaxed">
+                          {details.desc}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Note/Context Input */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-600 flex items-center justify-between">
+                    <span>Précision / Moment (facultatif)</span>
+                    <span className="text-[10px] text-slate-400">Ex: au réveil, genou droit...</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={painNote}
+                    onChange={(e) => setPainNote(e.target.value)}
+                    placeholder="Ex: Douleur au bas du dos après la marche..."
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl bg-slate-50/50 focus:bg-white focus:ring-2 focus:ring-mint-500 focus:border-mint-500 transition-colors"
+                  />
+                </div>
+
+                {/* Success Message */}
+                {painSuccessMsg && (
+                  <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium flex items-center gap-2 animate-in fade-in">
+                    <CheckCircle className="h-4 w-4 text-emerald-600 flex-shrink-0" />
+                    <span>{painSuccessMsg}</span>
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    onClick={() => handleSavePain()}
+                    disabled={painSaving}
+                    className="flex-1 bg-mint-600 hover:bg-mint-700 text-white font-medium text-xs py-2 h-9 rounded-xl shadow-sm"
+                  >
+                    {painSaving ? 'Enregistrement...' : painLogs.some(p => p.date && p.date.startsWith(new Date().toISOString().split('T')[0])) ? "Mettre à jour l'évaluation du jour" : "Valider mon niveau de douleur"}
+                  </Button>
+
+                  {painLogs.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setShowPainHistory(!showPainHistory)}
+                      className="text-xs text-slate-600 border-slate-200 h-9 px-3 rounded-xl hover:bg-slate-50"
+                    >
+                      {showPainHistory ? 'Masquer le suivi' : `Graphique & Suivi (${painLogs.length})`}
+                    </Button>
+                  )}
+                </div>
+
+                {/* 30-Day Evolution Chart & Pain History */}
+                {showPainHistory && painLogs.length > 0 && (
+                  <div className="pt-3 border-t border-slate-100 space-y-3 animate-in fade-in duration-200">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-bold text-slate-700">
+                        {painViewMode === 'chart' ? "Courbe d'évolution (30 jours)" : "Historique des évaluations"}
+                      </h3>
+                      <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => setPainViewMode('chart')}
+                          className={`px-2 py-0.5 rounded-md font-medium transition-all ${
+                            painViewMode === 'chart'
+                              ? 'bg-white text-slate-900 shadow-xs font-bold'
+                              : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          Graphique
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPainViewMode('list')}
+                          className={`px-2 py-0.5 rounded-md font-medium transition-all ${
+                            painViewMode === 'list'
+                              ? 'bg-white text-slate-900 shadow-xs font-bold'
+                              : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          Liste
+                        </button>
+                      </div>
+                    </div>
+
+                    {painViewMode === 'chart' ? (
+                      <PainEvolutionChart logs={painLogs} daysCount={30} />
+                    ) : (
+                      <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                        {painLogs.slice(0, 14).map((log) => {
+                          const logDetails = getPainDetails(log.score);
+                          return (
+                            <div
+                              key={log.id}
+                              className="p-2.5 bg-slate-50/70 border border-slate-100 rounded-xl flex items-center justify-between text-xs"
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <span className={`h-6 w-6 rounded-lg flex items-center justify-center font-bold text-xs ${logDetails.btnActive}`}>
+                                  {log.score}
+                                </span>
+                                <div>
+                                  <p className="font-semibold text-slate-800">
+                                    {new Date(log.date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
+                                    {log.note && <span className="font-normal text-slate-500 ml-1.5">— {log.note}</span>}
+                                  </p>
+                                  <p className="text-[10px] text-slate-400">
+                                    {new Date(log.date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })} • {logDetails.label}
+                                  </p>
+                                </div>
+                              </div>
+                              <span className="text-base">{logDetails.emoji}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+
 
             {/* Suivi des Règlements */}
             <section>
