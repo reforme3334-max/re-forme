@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Users, Wallet, Activity, AlertCircle, Send, Calendar, Lock, Mail, AlertTriangle, Phone, Clock } from 'lucide-react';
+import { Users, Wallet, Activity, AlertCircle, Send, Calendar, Lock, Mail, AlertTriangle, Phone, Clock, Bell, ArrowRight, Check } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { LineChart, Line, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { supabase } from '../lib/supabaseClient';
 import { Button } from '../components/ui/button';
+import { useAppointmentNotifications } from '../contexts/AppointmentNotificationsContext';
 import { 
   fetchAllRows, 
   getBillDate, 
@@ -53,6 +54,7 @@ const StatCard = ({ title, value, icon: Icon, description, colorClass = "text-in
 };
 
 export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) => void }) {
+  const { requests, pendingCount, approveRequest } = useAppointmentNotifications();
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('month');
   const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
@@ -453,6 +455,78 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
           </div>
         </div>
       </div>
+
+      {/* Alerte Demandes de RDV & Reports en attente */}
+      {pendingCount > 0 && (
+        <div className="bg-gradient-to-r from-amber-500/10 via-purple-500/10 to-amber-500/10 border-2 border-amber-300 rounded-2xl p-4 md:p-5 shadow-sm">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold flex-shrink-0 shadow-md">
+                <Bell className="h-5 w-5 animate-wiggle" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-black text-slate-900 text-base">
+                    {pendingCount} demande{pendingCount > 1 ? 's' : ''} de rendez-vous ou de reports en attente
+                  </h3>
+                  <span className="bg-amber-500 text-white text-[11px] font-black px-2 py-0.5 rounded-full">
+                    Action requise
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 mt-1">
+                  Des patients ont formulé une demande de rendez-vous ou de report d'horaire depuis leur espace.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2.5 self-end md:self-auto">
+              <a
+                href="#agenda"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-slate-900 text-white hover:bg-slate-800 transition-colors shadow-sm"
+              >
+                Ouvrir l'Agenda <ArrowRight className="h-3.5 w-3.5" />
+              </a>
+            </div>
+          </div>
+
+          {/* Quick preview list of up to 2 items */}
+          <div className="mt-3.5 grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-3 border-t border-amber-200/60">
+            {requests.slice(0, 2).map((req) => (
+              <div
+                key={req.id}
+                className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-amber-200/80 flex items-center justify-between gap-3 text-xs"
+              >
+                <div>
+                  <div className="flex items-center gap-1.5 font-bold text-slate-900">
+                    <span className={`w-2 h-2 rounded-full ${req.type === 'changement_rdv' ? 'bg-purple-500' : 'bg-amber-500'}`} />
+                    <span>{req.patient_name}</span>
+                    <span className="text-[10px] text-slate-400 font-normal">({req.patient_phone || 'Sans tel'})</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    {req.type === 'changement_rdv' ? (
+                      <span className="text-purple-700 font-medium">
+                        Report souhaité : {req.requested_date ? new Date(req.requested_date).toLocaleDateString('fr-FR') : ''} {req.requested_time}
+                      </span>
+                    ) : (
+                      <span className="text-amber-700 font-medium">
+                        RDV souhaité : {new Date(req.date_heure).toLocaleDateString('fr-FR')} à {new Date(req.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </p>
+                </div>
+
+                <Button
+                  size="sm"
+                  onClick={() => approveRequest(req)}
+                  className="h-7 px-3 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+                >
+                  <Check className="h-3 w-3 mr-1" /> Valider
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 1. Composants de Statistiques (Top Bar) */}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">

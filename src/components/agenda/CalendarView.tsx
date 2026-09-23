@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { format, addDays, subDays, startOfWeek, isSameDay, setHours, setMinutes, isSameMonth } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight, Bell } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Modal } from '@/components/ui/modal';
 import { motion, AnimatePresence } from 'motion/react';
+import { useAppointmentNotifications } from '@/contexts/AppointmentNotificationsContext';
 
 interface Patient {
   id: string;
@@ -52,6 +53,7 @@ const MOTIFS_SEANCE = [
 ];
 
 export function CalendarView() {
+  const { requests, pendingCount, approveRequest } = useAppointmentNotifications();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -339,6 +341,39 @@ export function CalendarView() {
     }
   };
 
+  const handleValidatePendingDemand = async () => {
+    if (!selectedAppointment) return;
+    setLoading(true);
+    try {
+      const isReport = selectedAppointment.notes_seance?.includes('REPORT');
+      let updatePayload: any = {
+        statut: 'Programmé'
+      };
+
+      if (isReport) {
+        const dateMatch = selectedAppointment.notes_seance.match(/Date souhaitée:\s*([^\s|]+)\s*(?:à|a)?\s*([^\s|]+)?/i);
+        if (dateMatch && dateMatch[1]) {
+          const reqDate = dateMatch[1];
+          const reqTime = dateMatch[2] || '10:00';
+          updatePayload.date_heure = `${reqDate}T${reqTime.length === 5 ? reqTime + ':00' : reqTime}`;
+        }
+        updatePayload.notes_seance = `Report validé (${selectedAppointment.notes_seance.replace(/\[DEMANDE_REPORT\]/g, '').trim()})`;
+      } else {
+        updatePayload.notes_seance = selectedAppointment.notes_seance?.replace(/\[DEMANDE.*?\]/g, '').trim() || 'Séance confirmée';
+      }
+
+      const { error } = await supabase.from('appointments').update(updatePayload).eq('id', selectedAppointment.id);
+      if (error) throw error;
+
+      await fetchAppointments();
+      setIsBillingModalOpen(false);
+    } catch (err: any) {
+      setErrorMsg("Erreur lors de la validation: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSaveBilling = async () => {
     setErrorMsg(null);
 
@@ -568,6 +603,54 @@ export function CalendarView() {
         </div>
       </div>
 
+      {/* Banner des demandes en attente */}
+      {pendingCount > 0 && (
+        <div className="bg-gradient-to-r from-amber-50 via-purple-50 to-amber-50 border border-amber-200 rounded-2xl p-3 px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <div className="h-8 w-8 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold flex-shrink-0">
+              <Bell className="h-4 w-4 animate-wiggle" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-slate-800">
+                {pendingCount} demande{pendingCount > 1 ? 's' : ''} de rendez-vous ou de reports en attente de traitement
+              </p>
+              <p className="text-[11px] text-slate-500">
+                Traitables via la cloche de notification en haut ou directement ci-dessous.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0">
+            {requests.map(r => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => {
+                  const appt = appointments.find(a => a.id === r.id);
+                  if (appt) {
+                    setSelectedAppointment(appt);
+                    const appDate = new Date(appt.date_heure);
+                    setEditDate(format(appDate, 'yyyy-MM-dd'));
+                    setEditTime(format(appDate, 'HH:mm'));
+                    setEditMotif(appt.notes_seance || '');
+                    setEditTherapist(appt.therapist_id || '');
+                    setIsBillingModalOpen(true);
+                  }
+                }}
+                className={`text-[11px] font-bold px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1.5 whitespace-nowrap shadow-2xs ${
+                  r.type === 'changement_rdv'
+                    ? 'bg-purple-100/80 text-purple-900 border-purple-300 hover:bg-purple-200'
+                    : 'bg-amber-100/80 text-amber-900 border-amber-300 hover:bg-amber-200'
+                }`}
+              >
+                <span>{r.type === 'changement_rdv' ? '🔄' : '✨'}</span>
+                <span>{r.patient_name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Calendar Grid */}
       <Card className="flex-1 overflow-hidden flex flex-col shadow-xl border-slate-200/60 rounded-2xl bg-white">
         <div className="overflow-x-auto flex-1 scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent" ref={scrollContainerRef}>
@@ -663,6 +746,9 @@ export function CalendarView() {
                             let statusStyles = 'bg-white border-primary-200 text-primary-900 shadow-primary-100/50 hover:shadow-primary-200/60'; // Confirmé
                             let accentColor = 'bg-primary-500';
                             
+                            const isPending = app.statut === 'En attente' || (app.notes_seance && app.notes_seance.includes('[DEMANDE'));
+                            const isReport = app.notes_seance && app.notes_seance.includes('REPORT');
+
                             if (app.statut === 'Effectué') {
                               statusStyles = 'bg-emerald-50/50 border-emerald-200 text-emerald-900 shadow-emerald-100/50 hover:bg-emerald-50';
                               accentColor = 'bg-emerald-500';
@@ -672,6 +758,11 @@ export function CalendarView() {
                             } else if (app.statut === 'Impayé') {
                               statusStyles = 'bg-rose-50 border-rose-200 text-rose-900 shadow-rose-100/50 hover:bg-rose-100/50';
                               accentColor = 'bg-rose-500';
+                            } else if (isPending) {
+                              statusStyles = isReport 
+                                ? 'bg-purple-50/90 border-purple-300 text-purple-900 shadow-purple-100/50 hover:bg-purple-100 ring-2 ring-purple-400/40' 
+                                : 'bg-amber-50/90 border-amber-300 text-amber-900 shadow-amber-100/50 hover:bg-amber-100 ring-2 ring-amber-400/40';
+                              accentColor = isReport ? 'bg-purple-500' : 'bg-amber-500';
                             } else if (isBilan) {
                               statusStyles = 'bg-indigo-50 border-indigo-200 text-indigo-900 shadow-indigo-100/50 hover:bg-indigo-100/50';
                               accentColor = 'bg-indigo-500';
@@ -710,9 +801,10 @@ export function CalendarView() {
                                   <span className={`${isNarrow ? 'line-clamp-2 text-[10px] leading-tight break-words group-hover/app:line-clamp-none group-hover/app:text-[11px]' : 'truncate'}`}>
                                     {app.patients ? `${app.patients.prenom} ${app.patients.nom}` : (app.patient_id ? `Chargement...` : 'Patient inconnu')}
                                   </span>
-                                  <div className={`flex shrink-0 ${isNarrow ? 'hidden group-hover/app:flex' : ''}`}>
+                                  <div className={`flex shrink-0 gap-1 ${isNarrow ? 'hidden group-hover/app:flex' : ''}`}>
                                     {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-emerald-500" />}
                                     {app.statut === 'Impayé' && <AlertCircle className="h-3 w-3 text-rose-500 animate-pulse" />}
+                                    {isPending && <Bell className="h-3 w-3 text-amber-600 animate-bounce" />}
                                   </div>
                                 </div>
                                 {app.therapists && (
@@ -950,6 +1042,55 @@ export function CalendarView() {
           {selectedAppointment?.statut === 'Annulé' && (
             <div className="p-4 text-sm text-slate-500 bg-slate-50 rounded-2xl border border-slate-200 flex items-center gap-3 font-bold italic">
               Rendez-vous annulé.
+            </div>
+          )}
+
+          {/* Banner Demande en attente (RDV ou Report) */}
+          {(selectedAppointment?.statut === 'En attente' || selectedAppointment?.notes_seance?.includes('[DEMANDE')) && (
+            <div className={`p-4 rounded-2xl border flex flex-col gap-3 font-medium text-xs ${
+              selectedAppointment.notes_seance?.includes('REPORT')
+                ? 'bg-purple-50 border-purple-200 text-purple-900'
+                : 'bg-amber-50 border-amber-200 text-amber-900'
+            }`}>
+              <div className="flex items-center gap-2 font-bold text-sm">
+                <Bell className="h-4 w-4" />
+                <span>
+                  {selectedAppointment.notes_seance?.includes('REPORT')
+                    ? 'Demande de report formulée par le patient'
+                    : 'Nouveau rendez-vous demandé par le patient'}
+                </span>
+                <span className="ml-auto text-[10px] uppercase font-black px-2 py-0.5 rounded-full bg-white/80">
+                  En attente
+                </span>
+              </div>
+              
+              <div className="bg-white/80 rounded-xl p-3 border border-slate-200/60 text-slate-700">
+                <p className="font-semibold text-xs text-slate-800">Détails de la demande :</p>
+                <p className="text-xs mt-1 text-slate-600">{selectedAppointment.notes_seance}</p>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleValidatePendingDemand}
+                  disabled={loading}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-9 px-4 shadow-sm"
+                >
+                  <CheckCircle className="h-3.5 w-3.5 mr-1.5" />
+                  {selectedAppointment.notes_seance?.includes('REPORT') ? 'Appliquer le report et valider' : 'Valider ce rendez-vous'}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCancelAppointment}
+                  disabled={loading}
+                  className="border-red-200 text-red-600 hover:bg-red-50 text-xs h-9"
+                >
+                  Refuser la demande
+                </Button>
+              </div>
             </div>
           )}
           

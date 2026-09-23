@@ -32,6 +32,15 @@ export function PatientPortal() {
   const [apptLoading, setApptLoading] = useState(false);
   const [apptMessage, setApptMessage] = useState({ type: '', text: '' });
 
+  // Reschedule / Change Appointment State
+  const [rescheduleModalOpen, setRescheduleModalOpen] = useState(false);
+  const [selectedApptToReschedule, setSelectedApptToReschedule] = useState<any>(null);
+  const [newRescheduleDate, setNewRescheduleDate] = useState('');
+  const [newRescheduleTime, setNewRescheduleTime] = useState('');
+  const [rescheduleMotif, setRescheduleMotif] = useState('');
+  const [rescheduleLoading, setRescheduleLoading] = useState(false);
+  const [rescheduleMessage, setRescheduleMessage] = useState({ type: '', text: '' });
+
   // Profile Edit State
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [profileForm, setProfileForm] = useState({
@@ -317,26 +326,70 @@ const handleLogout = async () => {
     }
     setApptLoading(true);
     try {
-      // Create a pending appointment request. We use 'Programmé' but mark it clearly in notes.
+      // Create a pending appointment request with statut: 'En attente'
       const { error } = await supabase.from('appointments').insert({
         patient_id: patient.id,
         date_heure: `${apptDate}T${apptTime}:00`,
-        statut: 'Programmé',
+        statut: 'En attente',
         duree: 30, // Default duration
-        notes_seance: `[DEMANDE EN LIGNE] Motif: ${apptMotif || 'Non précisé'}`
+        notes_seance: `[DEMANDE_RDV] Motif: ${apptMotif || 'Séance de kinésithérapie'}`
       });
       if (error) throw error;
       
-      setApptMessage({ type: 'success', text: 'Demande envoyée avec succès !' });
+      setApptMessage({ type: 'success', text: 'Demande envoyée ! Le secrétariat a été notifié et va valider votre créneau.' });
       setApptDate('');
       setApptTime('');
       setApptMotif('');
       fetchPatientData();
-      setTimeout(() => setIsApptModalOpen(false), 2000);
+      setTimeout(() => {
+        setIsApptModalOpen(false);
+        setApptMessage({ type: '', text: '' });
+      }, 2000);
     } catch (err: any) {
       setApptMessage({ type: 'error', text: err.message || 'Erreur lors de la demande.' });
     } finally {
       setApptLoading(false);
+    }
+  };
+
+  const handleRequestReschedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRescheduleDate || !newRescheduleTime || !selectedApptToReschedule) {
+      setRescheduleMessage({ type: 'error', text: 'Veuillez choisir la nouvelle date et heure souhaitées.' });
+      return;
+    }
+    setRescheduleLoading(true);
+    try {
+      const origDateStr = selectedApptToReschedule.date_heure;
+      const notesFormatted = `[DEMANDE_REPORT] Date souhaitée: ${newRescheduleDate} à ${newRescheduleTime} | Motif: ${rescheduleMotif || 'Empêchement'} || Initial: ${origDateStr}`;
+
+      const { error } = await supabase
+        .from('appointments')
+        .update({
+          statut: 'En attente',
+          notes_seance: notesFormatted
+        })
+        .eq('id', selectedApptToReschedule.id);
+
+      if (error) throw error;
+
+      setRescheduleMessage({ 
+        type: 'success', 
+        text: 'Votre demande de changement a été notifiée au secrétariat avec succès ! Vous recevrez une confirmation.' 
+      });
+      fetchPatientData();
+      setTimeout(() => {
+        setRescheduleModalOpen(false);
+        setSelectedApptToReschedule(null);
+        setNewRescheduleDate('');
+        setNewRescheduleTime('');
+        setRescheduleMotif('');
+        setRescheduleMessage({ type: '', text: '' });
+      }, 2000);
+    } catch (err: any) {
+      setRescheduleMessage({ type: 'error', text: err.message || 'Erreur lors de l’envoi de la demande.' });
+    } finally {
+      setRescheduleLoading(false);
     }
   };
 
@@ -462,7 +515,17 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
 
   const now = new Date();
   
-  const nextAppointment = appointments.find(a => new Date(a.date_heure) > now && a.statut !== 'Annulé');
+  // Pending Requests (Appointments in 'En attente' or notes containing [DEMANDE])
+  const pendingRequests = appointments.filter(
+    a => a.statut === 'En attente' || (a.notes_seance && a.notes_seance.includes('[DEMANDE'))
+  );
+
+  // Scheduled Upcoming Appointments (confirmed or planned)
+  const upcomingAppointments = appointments
+    .filter(a => new Date(a.date_heure) > now && a.statut !== 'Annulé' && a.statut !== 'En attente' && !a.notes_seance?.includes('[DEMANDE'))
+    .sort((a, b) => new Date(a.date_heure).getTime() - new Date(b.date_heure).getTime());
+
+  const nextAppointment = upcomingAppointments[0] || null;
   
   const pastAppointments = appointments
     .filter(a => new Date(a.date_heure) <= now || a.statut === 'Effectué')
@@ -528,13 +591,49 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
           <>
             {/* Quick Actions */}
             <div className="flex gap-3">
-              <Button onClick={() => setIsApptModalOpen(true)} className="flex-1 bg-mint-600 hover:bg-mint-700 text-white shadow-sm flex items-center justify-center gap-2">
-                <Plus className="h-4 w-4" /> Demander un RDV
+              <Button onClick={() => setIsApptModalOpen(true)} className="flex-1 bg-mint-600 hover:bg-mint-700 text-white shadow-sm flex items-center justify-center gap-2 font-bold py-2.5">
+                <Plus className="h-4 w-4" /> Demander un nouveau RDV
               </Button>
             </div>
 
-            {/* Notifications Prioritaires */}
+            {/* Notifications & Demandes en attente */}
             <div className="space-y-3">
+              {/* Demandes en cours de traitement par le secrétariat */}
+              {pendingRequests.map((req) => {
+                const isReport = req.notes_seance?.includes('REPORT');
+                return (
+                  <div 
+                    key={req.id} 
+                    className={`rounded-2xl p-4 border shadow-xs flex items-start gap-3 ${
+                      isReport ? 'bg-purple-50/90 border-purple-200' : 'bg-amber-50/90 border-amber-200'
+                    }`}
+                  >
+                    <Clock className={`h-5 w-5 flex-shrink-0 mt-0.5 ${isReport ? 'text-purple-600' : 'text-amber-600'}`} />
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <h3 className={`font-bold text-xs uppercase tracking-wider ${isReport ? 'text-purple-900' : 'text-amber-900'}`}>
+                          {isReport ? 'Demande de report en attente' : 'Demande de rendez-vous reçue'}
+                        </h3>
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                          isReport ? 'bg-purple-200 text-purple-800' : 'bg-amber-200 text-amber-800'
+                        }`}>
+                          En cours de validation
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-700 mt-1 font-medium">
+                        {isReport 
+                          ? req.notes_seance?.replace(/\|\|Initial:.*?$/, '')
+                          : `Créneau souhaité : ${new Date(req.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à ${new Date(req.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+                        }
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-1 italic">
+                        Le secrétariat du cabinet a été notifié et valide votre créneau dans les plus brefs délais.
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+
               {unpaidAppointments.length > 0 && (
                 <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4 flex items-start gap-3 shadow-sm">
                   <AlertCircle className="h-6 w-6 text-orange-500 flex-shrink-0 mt-0.5" />
@@ -547,24 +646,56 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                 </div>
               )}
 
+              {/* Prochaine séance planifiée */}
               {nextAppointment ? (
-                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex items-start gap-3 shadow-sm">
-                  <Calendar className="h-6 w-6 text-blue-500 flex-shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-blue-800 text-base">Prochaine séance</h3>
-                    <p className="text-sm text-blue-700 mt-1 capitalize font-medium">
-                      {new Date(nextAppointment.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à {new Date(nextAppointment.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                    </p>
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm hover:border-slate-300 transition-all">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0 font-bold">
+                        <Calendar className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                          Prochaine séance confirmée
+                        </span>
+                        <p className="text-sm font-black text-slate-900 mt-0.5 capitalize">
+                          {new Date(nextAppointment.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à {new Date(nextAppointment.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {nextAppointment.notes_seance?.replace(/\[DEMANDE.*?\]/g, '') || 'Séance de kinésithérapie'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bouton pour demander le report / changement */}
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex justify-end">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedApptToReschedule(nextAppointment);
+                        setNewRescheduleDate('');
+                        setNewRescheduleTime('');
+                        setRescheduleMotif('');
+                        setRescheduleModalOpen(true);
+                      }}
+                      className="text-xs font-bold text-slate-700 hover:text-purple-700 hover:bg-purple-50 hover:border-purple-200 h-8 rounded-xl flex items-center gap-1.5"
+                    >
+                      <Clock className="h-3.5 w-3.5 text-purple-600" />
+                      Demander un report / changer de date
+                    </Button>
                   </div>
                 </div>
-              ) : (
+              ) : pendingRequests.length === 0 ? (
                 <div className="bg-white border border-slate-200 rounded-2xl p-5 text-center shadow-sm">
                   <div className="h-10 w-10 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-2">
                     <Calendar className="h-5 w-5 text-slate-400" />
                   </div>
                   <p className="text-sm font-medium text-slate-600">Aucune séance prévue prochainement.</p>
                 </div>
-              )}
+              ) : null}
             </div>
 
             
@@ -1027,6 +1158,85 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
             <Button type="button" variant="outline" onClick={() => setIsApptModalOpen(false)}>Annuler</Button>
             <Button type="submit" disabled={apptLoading} className="bg-mint-600 hover:bg-mint-700 text-white">
               {apptLoading ? 'Envoi...' : 'Envoyer la demande'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Modal Demande de Changement / Report de RDV */}
+      <Modal 
+        isOpen={rescheduleModalOpen} 
+        onClose={() => { setRescheduleModalOpen(false); setSelectedApptToReschedule(null); }} 
+        title="Demande de report / changement de rendez-vous"
+      >
+        <form onSubmit={handleRequestReschedule} className="space-y-4">
+          {rescheduleMessage.text && (
+            <div className={`p-3 rounded-xl text-xs font-semibold ${
+              rescheduleMessage.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'
+            }`}>
+              {rescheduleMessage.text}
+            </div>
+          )}
+
+          {selectedApptToReschedule && (
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+              <p className="text-slate-500 font-medium">Séance actuelle programmée le :</p>
+              <p className="font-bold text-slate-800 text-sm mt-0.5 capitalize">
+                {new Date(selectedApptToReschedule.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} à {new Date(selectedApptToReschedule.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              </p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700">Nouvelle date souhaitée</label>
+              <input
+                type="date"
+                required
+                min={new Date().toISOString().split('T')[0]}
+                value={newRescheduleDate}
+                onChange={(e) => setNewRescheduleDate(e.target.value)}
+                className="w-full p-2.5 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-mint-500 outline-none"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700">Nouvelle heure souhaitée</label>
+              <input
+                type="time"
+                required
+                value={newRescheduleTime}
+                onChange={(e) => setNewRescheduleTime(e.target.value)}
+                className="w-full p-2.5 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-mint-500 outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-slate-700">Précision ou motif du report (optionnel)</label>
+            <textarea
+              rows={2}
+              value={rescheduleMotif}
+              onChange={(e) => setRescheduleMotif(e.target.value)}
+              placeholder="Ex: Empêchement professionnel, imprévu familial..."
+              className="w-full p-2.5 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-mint-500 outline-none resize-none"
+            />
+          </div>
+
+          <div className="pt-2 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => { setRescheduleModalOpen(false); setSelectedApptToReschedule(null); }}
+              className="h-9 text-xs"
+            >
+              Annuler
+            </Button>
+            <Button
+              type="submit"
+              disabled={rescheduleLoading}
+              className="h-9 text-xs bg-purple-600 hover:bg-purple-700 text-white font-bold"
+            >
+              {rescheduleLoading ? 'Transmission...' : 'Envoyer la demande au secrétariat'}
             </Button>
           </div>
         </form>

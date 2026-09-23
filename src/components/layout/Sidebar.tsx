@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { LayoutDashboard, CalendarDays, Users, FileText, Settings, X, User, Activity } from 'lucide-react';
 import { Button } from '../ui/button';
 import { supabase } from '../../lib/supabaseClient';
+import { useAppointmentNotifications } from '../../contexts/AppointmentNotificationsContext';
 
 interface SidebarProps {
   onClose: () => void;
@@ -10,6 +11,7 @@ interface SidebarProps {
 export function Sidebar({ onClose }: SidebarProps) {
   const [currentHash, setCurrentHash] = useState(window.location.hash || '#dashboard');
   const [userProfile, setUserProfile] = useState<any>(null);
+  const { pendingCount } = useAppointmentNotifications();
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -73,14 +75,21 @@ export function Sidebar({ onClose }: SidebarProps) {
               <a
                 key={item.label}
                 href={item.href}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+                className={`flex items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
                   isActive 
                     ? 'bg-primary-50 text-primary-700' 
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
-                <Icon className={`h-5 w-5 ${isActive ? 'text-primary-600' : 'text-slate-400'}`} />
-                {item.label}
+                <div className="flex items-center gap-3">
+                  <Icon className={`h-5 w-5 ${isActive ? 'text-primary-600' : 'text-slate-400'}`} />
+                  <span>{item.label}</span>
+                </div>
+                {item.label === 'Agenda' && pendingCount > 0 && (
+                  <span className="bg-amber-500 text-white text-[11px] font-black px-2 py-0.5 rounded-full shadow-xs animate-pulse">
+                    {pendingCount}
+                  </span>
+                )}
               </a>
             );
           })}

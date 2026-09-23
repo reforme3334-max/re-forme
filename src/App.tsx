@@ -9,6 +9,7 @@ import { LoginPage } from './pages/LoginPage';
 import { Settings } from './pages/Settings';
 import { Finance } from './pages/Finance';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
+import { AppointmentNotificationsProvider } from './contexts/AppointmentNotificationsContext';
 
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState('login');
@@ -88,14 +89,16 @@ export default function App() {
   }
 
   return (
-    currentRoute === 'espace-patient' ? (
-      <ProtectedRoute allowedRoles={['patient']}>
-        <PatientPortal />
-      </ProtectedRoute>
-    ) : (
-      <Layout>
-        {renderContent()}
-      </Layout>
-    )
+    <AppointmentNotificationsProvider>
+      {currentRoute === 'espace-patient' ? (
+        <ProtectedRoute allowedRoles={['patient']}>
+          <PatientPortal />
+        </ProtectedRoute>
+      ) : (
+        <Layout>
+          {renderContent()}
+        </Layout>
+      )}
+    </AppointmentNotificationsProvider>
   );
 }
