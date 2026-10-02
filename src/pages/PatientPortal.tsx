@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download, Camera, Upload, Trash2, Image as ImageIcon, Play, HeartPulse } from 'lucide-react';
+import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download, Camera, Upload, Trash2, Image as ImageIcon, Play, HeartPulse, ExternalLink, CheckCircle2, ChevronRight } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ReviewSection } from '../components/reviews/ReviewSection';
 import { Modal } from '../components/ui/modal';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
+import { parseExercisesFromPatient, ExerciseItem } from '../lib/exercisesService';
 
 export function PatientPortal() {
   const [patient, setPatient] = useState<any>(null);
@@ -48,7 +49,7 @@ export function PatientPortal() {
     email: '',
     adresse: '',
     pathologie: '',
-    notes_antecedents: ''
+    atcd: ''
   });
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileMessage, setProfileMessage] = useState({ type: '', text: '' });
@@ -66,11 +67,26 @@ export function PatientPortal() {
   const [showPainHistory, setShowPainHistory] = useState(false);
   const [painViewMode, setPainViewMode] = useState<'chart' | 'list'>('chart');
 
-  const [exercises, setExercises] = useState<any[]>([]);
+  const [exercises, setExercises] = useState<ExerciseItem[]>([]);
 const [localDocs, setLocalDocs] = useState<any[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
- useEffect(() => {
+
+  useEffect(() => {
     fetchPatientData();
+
+    // Auto-refresh when tab gains focus so new exercises added by the kiné appear immediately
+    const handleFocus = () => fetchPatientData();
+    window.addEventListener('focus', handleFocus);
+
+    // Background sync every 20 seconds
+    const interval = setInterval(() => {
+      fetchPatientData();
+    }, 20000);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      clearInterval(interval);
+    };
   }, []);
 
   const fetchPatientData = async () => {
@@ -102,24 +118,27 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
 
       const patientData = patientDataList[0];
       setPatient(patientData);
+
+      // 1. Load documents
       try {
         const storedDocs = localStorage.getItem(`reforme_docs_${patientData.id}`);
         if (storedDocs) {
           setLocalDocs(JSON.parse(storedDocs));
- 
-        const storedEx = localStorage.getItem(`reforme_exercises_${patientData.id}`);
-        if (storedEx) {
-          setExercises(JSON.parse(storedEx));
         }
-       }
       } catch(e) { console.error('Erreur lecture docs', e); }
+
+      // 2. Load exercises from Supabase notes_antecedents (with localStorage fallback)
+      try {
+        const loadedExercises = parseExercisesFromPatient(patientData.notes_antecedents, patientData.id);
+        setExercises(loadedExercises);
+      } catch(e) { console.error('Erreur lecture exercices', e); }
 
       setProfileForm({
         telephone: patientData.telephone || '',
         email: patientData.email || '',
         adresse: patientData.adresse || '',
         pathologie: patientData.pathologie || '',
-        notes_antecedents: patientData.notes_antecedents || ''
+        atcd: patientData.atcd || ''
       });
       
       const { data: appts } = await supabase
@@ -563,22 +582,34 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
         </div>
 
         {/* Tabs */}
-        <div className="flex space-x-6 text-sm font-medium border-t border-slate-100 pt-2 px-1">
+        <div className="flex space-x-3 overflow-x-auto no-scrollbar text-sm font-medium border-t border-slate-100 pt-2 px-1">
           <button 
             onClick={() => setActiveTab('accueil')}
-            className={`pb-2 ${activeTab === 'accueil' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}`}
+            className={`pb-2 whitespace-nowrap flex items-center gap-1.5 ${activeTab === 'accueil' ? 'border-b-2 border-mint-500 text-mint-700 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
           >
             Accueil
           </button>
           <button 
-            onClick={() => setActiveTab('documents')}
-            className={`pb-2 ${activeTab === 'documents' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}`}
+            onClick={() => setActiveTab('exercices')}
+            className={`pb-2 whitespace-nowrap flex items-center gap-1.5 ${activeTab === 'exercices' ? 'border-b-2 border-red-500 text-red-600 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
           >
-            Documents & Vidéos
+            <Play className="h-3.5 w-3.5 text-red-500 fill-current" />
+            Vidéos & Exercices
+            {exercises.length > 0 && (
+              <span className="ml-0.5 px-1.5 py-0.2 text-[10px] font-bold rounded-full bg-red-100 text-red-700">
+                {exercises.length}
+              </span>
+            )}
+          </button>
+          <button 
+            onClick={() => setActiveTab('documents')}
+            className={`pb-2 whitespace-nowrap flex items-center gap-1.5 ${activeTab === 'documents' ? 'border-b-2 border-mint-500 text-mint-700 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
+          >
+            Documents
           </button>
           <button 
             onClick={() => setActiveTab('profil')}
-            className={`pb-2 ${activeTab === 'profil' ? 'border-b-2 border-mint-500 text-mint-700' : 'text-slate-500'}`}
+            className={`pb-2 whitespace-nowrap flex items-center gap-1.5 ${activeTab === 'profil' ? 'border-b-2 border-mint-500 text-mint-700 font-bold' : 'text-slate-500 hover:text-slate-800'}`}
           >
             Mon Profil
           </button>
@@ -697,6 +728,86 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                 </div>
               ) : null}
             </div>
+
+            {/* Section Exercices Recommandés directement sur l'Accueil */}
+            {exercises.length > 0 && (
+              <section className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white rounded-2xl p-5 shadow-sm space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-9 w-9 bg-red-600 rounded-xl flex items-center justify-center text-white shadow-sm flex-shrink-0">
+                      <Play className="h-5 w-5 fill-current" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                        Programme d'exercices vidéo
+                        <span className="px-1.5 py-0.5 text-[10px] bg-red-500/20 text-red-300 font-bold rounded border border-red-500/30">
+                          {exercises.length} vidéo{exercises.length > 1 ? 's' : ''}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-300">Prescrit par votre kinésithérapeute</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setActiveTab('exercices')}
+                    className="text-xs font-semibold text-mint-400 hover:text-mint-300 underline underline-offset-2 flex items-center gap-0.5"
+                  >
+                    Voir tout ({exercises.length})
+                  </button>
+                </div>
+
+                {/* Dernier exercice en aperçu interactif */}
+                {exercises[0] && (
+                  <div className="bg-slate-950/70 rounded-xl overflow-hidden border border-slate-700/60">
+                    <div className="aspect-video w-full bg-black relative">
+                      {exercises[0].url.startsWith('data:video') ? (
+                        <video src={exercises[0].url} controls className="w-full h-full object-cover" />
+                      ) : (
+                        <iframe 
+                          src={exercises[0].url}
+                          title={exercises[0].title}
+                          className="w-full h-full border-0"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                          allowFullScreen
+                        />
+                      )}
+                    </div>
+                    <div className="p-3.5 space-y-2">
+                      <h4 className="font-bold text-sm text-white line-clamp-1">{exercises[0].title}</h4>
+                      {exercises[0].instructions && (
+                        <div className="text-xs text-amber-200 bg-amber-950/50 border border-amber-800/40 p-2 rounded-lg">
+                          <span className="font-semibold text-amber-100">Consigne :</span> {exercises[0].instructions}
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-[11px] text-slate-400">
+                          Ajouté le {new Date(exercises[0].date).toLocaleDateString('fr-FR')}
+                        </span>
+                        {exercises[0].originalUrl && (
+                          <a 
+                            href={exercises[0].originalUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-red-400 hover:text-red-300 font-medium"
+                          >
+                            <ExternalLink className="h-3 w-3" /> Ouvrir sur YouTube
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {exercises.length > 1 && (
+                  <Button 
+                    onClick={() => setActiveTab('exercices')}
+                    variant="outline"
+                    className="w-full text-xs font-semibold bg-slate-800/80 hover:bg-slate-700 text-white border-slate-700 py-2"
+                  >
+                    Consulter les {exercises.length} exercices prescrits
+                  </Button>
+                )}
+              </section>
+            )}
 
             
             {/* Suivi Quotidien de la Douleur (Échelle EVA 1 à 10) */}
@@ -941,6 +1052,108 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
           </>
         )}
 
+        {/* Tab Vidéos & Exercices */}
+        {activeTab === 'exercices' && (
+          <div className="space-y-4">
+            <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-2xl p-5 shadow-sm space-y-2">
+              <div className="flex items-center gap-2.5">
+                <div className="h-9 w-9 bg-red-600 rounded-xl flex items-center justify-center text-white shadow-sm flex-shrink-0">
+                  <Play className="h-5 w-5 fill-current" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white">Programme d'exercices à domicile</h3>
+                  <p className="text-xs text-slate-300">Exercices personnalisés prescrits par votre kinésithérapeute</p>
+                </div>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed pt-1">
+                Visionnez les vidéos d'exercices recommandées pour accompagner vos séances et favoriser votre récupération.
+              </p>
+            </div>
+
+            {exercises.length === 0 ? (
+              <div className="bg-white rounded-2xl p-8 text-center border border-dashed border-slate-300 space-y-3 shadow-sm">
+                <div className="h-12 w-12 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto">
+                  <Play className="h-6 w-6" />
+                </div>
+                <h4 className="font-bold text-slate-800 text-base">Aucun exercice prescrit pour l'instant</h4>
+                <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+                  Votre kinésithérapeute n'a pas encore assigné d'exercices vidéo à votre dossier. Dès qu'un exercice vous sera attribué en séance, il apparaîtra automatiquement ici.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {exercises.map((ex, idx) => (
+                  <div key={ex.id || idx} className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+                    <div className="aspect-video bg-black relative">
+                      {ex.url.startsWith('data:video') ? (
+                        <video src={ex.url} controls className="w-full h-full object-cover" />
+                      ) : (
+                        <iframe 
+                          src={ex.url} 
+                          title={ex.title}
+                          className="w-full h-full border-0"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                          allowFullScreen
+                        />
+                      )}
+                    </div>
+                    <div className="p-4 space-y-3">
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-md uppercase tracking-wider">
+                            Exercice {idx + 1}
+                          </span>
+                          <span className="text-xs text-slate-400">
+                            Ajouté le {new Date(ex.date).toLocaleDateString('fr-FR')}
+                          </span>
+                        </div>
+                        <h4 className="font-bold text-slate-900 text-base mt-1.5">{ex.title}</h4>
+                      </div>
+
+                      {ex.instructions && (
+                        <div className="bg-amber-50/90 border border-amber-200/80 rounded-xl p-3 text-xs text-slate-800 space-y-1">
+                          <p className="font-bold text-amber-900 flex items-center gap-1.5">
+                            📌 Consignes du kiné :
+                          </p>
+                          <p className="text-slate-700 leading-relaxed pl-5">
+                            {ex.instructions}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                        {ex.originalUrl ? (
+                          <a 
+                            href={ex.originalUrl} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-lg transition-colors"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" /> Ouvrir sur YouTube
+                          </a>
+                        ) : <div />}
+
+                        <span className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1">
+                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Prescrit pour votre traitement
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                <div className="bg-blue-50 border border-blue-200/80 rounded-2xl p-4 text-xs text-blue-900 space-y-1">
+                  <p className="font-bold flex items-center gap-1.5">
+                    💡 Conseils pour votre rééducation :
+                  </p>
+                  <p className="text-blue-800 leading-relaxed">
+                    Effectuez ces mouvements lentement et en respirant calmement. En cas de douleur aiguë ou anormale, stoppez l'exercice et signalez-le à votre kinésithérapeute lors de votre prochaine séance.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'documents' && (
           <div className="space-y-4">
             
@@ -999,34 +1212,21 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
 
             
             {exercises.length > 0 && (
-              <div className="space-y-3 mt-8">
-                <h3 className="text-sm font-bold text-slate-900 mb-2 px-1 flex items-center gap-2">
-                  <Play className="h-4 w-4 text-mint-500" /> Programme d'exercices vidéo
-                </h3>
-                <div className="space-y-4">
-                  {exercises.map(ex => (
-                    <div key={ex.id} className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-                      <div className="aspect-video bg-slate-900">
-                        
-                        {ex.url.startsWith('data:video') ? (
-                          <video src={ex.url} controls className="w-full h-full object-cover"></video>
-                        ) : (
-                          <iframe 
-                            src={ex.url} 
-                            className="w-full h-full border-0"
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                            allowFullScreen
-                          ></iframe>
-                        )}
-
-                      </div>
-                      <div className="p-4">
-                        <h4 className="font-bold text-slate-900">{ex.title}</h4>
-                        <p className="text-xs text-slate-500 mt-1">Ajouté le {new Date(ex.date).toLocaleDateString('fr-FR')}</p>
-                      </div>
-                    </div>
-                  ))}
+              <div className="space-y-3 mt-6 bg-slate-50 border border-slate-200 p-4 rounded-2xl">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <Play className="h-4 w-4 text-red-600 fill-current" /> Vidéos & Exercices prescrits ({exercises.length})
+                  </h3>
+                  <button 
+                    onClick={() => setActiveTab('exercices')}
+                    className="text-xs font-bold text-red-600 hover:text-red-700 underline"
+                  >
+                    Voir dans l'espace Exercices →
+                  </button>
                 </div>
+                <p className="text-xs text-slate-500">
+                  Votre kiné vous a prescrit {exercises.length} exercice{exercises.length > 1 ? 's' : ''} en vidéo.
+                </p>
               </div>
             )}
 <div className="bg-white border border-slate-200 rounded-2xl p-6 text-center shadow-sm mt-4">
@@ -1072,7 +1272,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                       <span className="font-medium text-slate-600">Pathologie :</span> {patient.pathologie || 'Non renseignée'}
                     </p>
                     <p className="text-sm text-slate-800">
-                      <span className="font-medium text-slate-600">Antécédents :</span> {patient.notes_antecedents || 'Aucun antécédent particulier'}
+                      <span className="font-medium text-slate-600">Antécédents :</span> {patient.atcd || patient.notes_antecedents || 'Aucun antécédent particulier'}
                     </p>
                   </div>
                 </div>
@@ -1293,8 +1493,8 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
             <div>
               <label className="text-sm font-medium text-slate-700">Antécédents & Remarques médicales</label>
               <textarea
-                value={profileForm.notes_antecedents}
-                onChange={(e) => setProfileForm({...profileForm, notes_antecedents: e.target.value})}
+                value={profileForm.atcd}
+                onChange={(e) => setProfileForm({...profileForm, atcd: e.target.value})}
                 placeholder="Allergies, opérations précédentes..."
                 className="w-full p-2 mt-1 border border-slate-200 rounded-lg h-24 resize-none"
               />
