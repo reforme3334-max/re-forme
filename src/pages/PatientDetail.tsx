@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -109,6 +109,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [appointmentToDelete, setAppointmentToDelete] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // Edit Appointment Time/Date Modal State
+  const [isEditAppointmentModalOpen, setIsEditAppointmentModalOpen] = useState(false);
+  const [appointmentToEdit, setAppointmentToEdit] = useState<any>(null);
+  const [editAppDate, setEditAppDate] = useState('');
+  const [editAppTime, setEditAppTime] = useState('');
+  const [editAppLoading, setEditAppLoading] = useState(false);
 
   // Delete Billing Modal State
   const [isDeleteBillingModalOpen, setIsDeleteBillingModalOpen] = useState(false);
@@ -605,6 +612,38 @@ setForfait(patientData.forfait_seances || 0);
         });
         setNewTreatmentMessage({ type: '', text: '' });
       }, 1500);
+    }
+  };
+
+  const openEditAppointmentModal = (app: any) => {
+    const parsed = parseClinicDate(app.date_heure);
+    const yyyy = parsed.getFullYear();
+    const mm = String(parsed.getMonth() + 1).padStart(2, '0');
+    const dd = String(parsed.getDate()).padStart(2, '0');
+    const hh = String(parsed.getHours()).padStart(2, '0');
+    const min = String(parsed.getMinutes()).padStart(2, '0');
+    setAppointmentToEdit(app);
+    setEditAppDate(`${yyyy}-${mm}-${dd}`);
+    setEditAppTime(`${hh}:${min}`);
+    setIsEditAppointmentModalOpen(true);
+  };
+
+  const handleSaveAppointmentTime = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!appointmentToEdit || !editAppDate || !editAppTime) return;
+    setEditAppLoading(true);
+    const newIso = toClinicIsoString(editAppDate, editAppTime);
+    const { error } = await supabase
+      .from('appointments')
+      .update({ date_heure: newIso })
+      .eq('id', appointmentToEdit.id);
+    setEditAppLoading(false);
+    if (!error) {
+      setAppointments(prev =>
+        prev.map(a => (a.id === appointmentToEdit.id ? { ...a, date_heure: newIso } : a))
+      );
+      setIsEditAppointmentModalOpen(false);
+      setAppointmentToEdit(null);
     }
   };
 
@@ -1354,12 +1393,26 @@ setForfait(patientData.forfait_seances || 0);
                     const next = appointments.filter(a => parseClinicDate(a.date_heure) > getMoroccoNow()).sort((a,b) => parseClinicDate(a.date_heure).getTime() - parseClinicDate(b.date_heure).getTime())[0];
                     return (
                       <div className="p-4 bg-white rounded-xl border border-indigo-100 shadow-sm">
-                        <p className="font-black text-indigo-900 text-base">
-                          {parseClinicDate(next.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
-                        </p>
-                        <p className="text-sm text-indigo-600 mt-1 font-bold">
-                          à {parseClinicDate(next.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                        </p>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-black text-indigo-900 text-base">
+                              {parseClinicDate(next.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
+                            </p>
+                            <p className="text-sm text-indigo-600 mt-1 font-bold">
+                              à {parseClinicDate(next.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openEditAppointmentModal(next)}
+                            className="h-8 px-2.5 text-xs font-bold text-indigo-700 border-indigo-200 hover:bg-indigo-50 gap-1"
+                          >
+                            <Edit2 className="h-3 w-3" />
+                            Modifier l'heure
+                          </Button>
+                        </div>
                         <div className="mt-3 pt-3 border-t border-indigo-50 flex items-center justify-between">
                           <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Durée : 30 min</span>
                           <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Kiné : Younes</span>
@@ -1537,15 +1590,27 @@ setForfait(patientData.forfait_seances || 0);
                             </Badge>
                           </td>
                           <td className="px-6 py-4 text-right">
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              onClick={() => confirmDeleteAppointment(app.id)}
-                              className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
-                              title="Supprimer la séance"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                            <div className="flex items-center justify-end gap-1">
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                onClick={() => openEditAppointmentModal(app)}
+                                className="text-primary-600 hover:text-primary-700 hover:bg-primary-50 gap-1 text-xs font-semibold"
+                                title="Modifier l'heure ou la date"
+                              >
+                                <Clock className="h-3.5 w-3.5" />
+                                Modifier l'heure
+                              </Button>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                onClick={() => confirmDeleteAppointment(app.id)}
+                                className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                                title="Supprimer la séance"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -2379,6 +2444,46 @@ return (
             </Button>
             <Button type="submit" disabled={practitionerPainLoading}>
               {practitionerPainLoading ? 'Enregistrement...' : 'Enregistrer'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Modal Modification Date / Heure de Rendez-vous */}
+      <Modal
+        isOpen={isEditAppointmentModalOpen}
+        onClose={() => setIsEditAppointmentModalOpen(false)}
+        title="Modifier la date et l'heure du rendez-vous"
+      >
+        <form onSubmit={handleSaveAppointmentTime} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Date de la séance</label>
+              <input
+                type="date"
+                required
+                value={editAppDate}
+                onChange={(e) => setEditAppDate(e.target.value)}
+                className="w-full p-2.5 border border-slate-200 rounded-lg text-sm font-semibold focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Heure de la séance</label>
+              <input
+                type="time"
+                required
+                value={editAppTime}
+                onChange={(e) => setEditAppTime(e.target.value)}
+                className="w-full p-2.5 border border-slate-200 rounded-lg text-sm font-semibold focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+          </div>
+          <div className="pt-3 flex justify-end gap-3">
+            <Button type="button" variant="outline" onClick={() => setIsEditAppointmentModalOpen(false)}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={editAppLoading}>
+              {editAppLoading ? 'Enregistrement...' : 'Enregistrer la nouvelle heure'}
             </Button>
           </div>
         </form>

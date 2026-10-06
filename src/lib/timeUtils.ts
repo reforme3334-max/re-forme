@@ -1,20 +1,90 @@
 /**
- * Utilitaires de gestion du fuseau horaire Maroc (GMT+1 / Africa/Casablanca).
- * Garantit que l'heure actuelle dans l'application web correspond toujours
- * à l'heure officielle du Maroc (UTC+1), même si l'ordinateur ou le navigateur
- * a son système réglé sur UTC+0 (cas fréquent sous Windows au Maroc).
+ * Utilitaires de gestion du fuseau horaire Maroc (GMT+1 / Africa/Casablanca)
+ * avec possibilité de modifier manuellement l'heure actuelle ou le fuseau (GMT+1, GMT+0 Ramadan, ou heure personnalisée).
  */
+
+const STORAGE_MODE_KEY = 'reforme_time_mode'; // 'GMT+1' | 'GMT+0' | 'SYSTEM' | 'CUSTOM'
+const STORAGE_OFFSET_KEY = 'reforme_custom_offset_min'; // décalage supplémentaire en minutes par rapport à UTC
+
+export type ClinicTimeMode = 'GMT+1' | 'GMT+0' | 'SYSTEM' | 'CUSTOM';
+
+export function getClinicTimeMode(): ClinicTimeMode {
+  try {
+    const saved = localStorage.getItem(STORAGE_MODE_KEY) as ClinicTimeMode | null;
+    if (saved === 'GMT+1' || saved === 'GMT+0' || saved === 'SYSTEM' || saved === 'CUSTOM') {
+      return saved;
+    }
+  } catch {}
+  return 'GMT+1';
+}
+
+export function getClinicOffsetMinutes(): number {
+  try {
+    const mode = getClinicTimeMode();
+    if (mode === 'GMT+1') return 60;
+    if (mode === 'GMT+0') return 0;
+    if (mode === 'SYSTEM') {
+      return -new Date().getTimezoneOffset();
+    }
+    if (mode === 'CUSTOM') {
+      const raw = localStorage.getItem(STORAGE_OFFSET_KEY);
+      if (raw !== null && !isNaN(Number(raw))) {
+        return Number(raw);
+      }
+    }
+  } catch {}
+  return 60; // Par défaut GMT+1 (Maroc)
+}
+
+/**
+ * Permet de choisir un mode de fuseau ('GMT+1', 'GMT+0', 'SYSTEM')
+ */
+export function setClinicTimeMode(mode: ClinicTimeMode, customOffsetMin?: number): void {
+  try {
+    localStorage.setItem(STORAGE_MODE_KEY, mode);
+    if (typeof customOffsetMin === 'number') {
+      localStorage.setItem(STORAGE_OFFSET_KEY, String(customOffsetMin));
+    }
+    window.dispatchEvent(new CustomEvent('reforme-time-updated'));
+  } catch (e) {
+    console.warn('Impossible de sauvegarder le réglage horaire', e);
+  }
+}
+
+/**
+ * Permet à l'utilisateur de saisir directement l'heure actuelle souhaitée (ex: "16:58")
+ * et calcule automatiquement le décalage exact par rapport à l'horloge système.
+ */
+export function setClinicCustomTime(targetHHmm: string): void {
+  const parts = targetHHmm.trim().split(':');
+  if (parts.length < 2) return;
+  const targetH = parseInt(parts[0], 10);
+  const targetM = parseInt(parts[1], 10);
+  if (isNaN(targetH) || isNaN(targetM)) return;
+
+  const now = new Date();
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+  const utcDate = new Date(utcMs);
+  const utcTotalMinutes = utcDate.getHours() * 60 + utcDate.getMinutes();
+  const targetTotalMinutes = targetH * 60 + targetM;
+
+  let diffMinutes = targetTotalMinutes - utcTotalMinutes;
+  // Normaliser entre -720 et +720 minutes (-12h à +12h)
+  if (diffMinutes > 720) diffMinutes -= 1440;
+  if (diffMinutes < -720) diffMinutes += 1440;
+
+  setClinicTimeMode('CUSTOM', diffMinutes);
+}
 
 /**
  * Retourne un objet Date dont les méthodes locales (.getHours(), .getMinutes(), format(), etc.)
- * reflètent exactement l'heure actuelle au Maroc (GMT+1 / UTC+1), quel que soit le réglage
- * de fuseau horaire du système d'exploitation.
+ * reflètent exactement l'heure configurée du cabinet au Maroc.
  */
 export function getMoroccoNow(): Date {
   const now = new Date();
   const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-  // Heure officielle du Maroc : GMT+1 (UTC + 60 minutes)
-  return new Date(utcMs + 60 * 60000);
+  const offsetMin = getClinicOffsetMinutes();
+  return new Date(utcMs + offsetMin * 60000);
 }
 
 /**
@@ -39,14 +109,15 @@ export function getMoroccoTimeStr(): string {
 }
 
 /**
- * Convertit un timestamp système UTC (ex: created_at de Supabase) en heure du Maroc (GMT+1) au format 'HH:mm'
+ * Convertit un timestamp système UTC (ex: created_at de Supabase) en heure du cabinet au format 'HH:mm'
  */
 export function formatUtcToMoroccoTime(utcInput: string | Date | null | undefined): string {
   if (!utcInput) return getMoroccoTimeStr();
   const d = utcInput instanceof Date ? utcInput : new Date(utcInput);
   if (isNaN(d.getTime())) return getMoroccoTimeStr();
   const utcMs = d.getTime() + d.getTimezoneOffset() * 60000;
-  const moroccoDate = new Date(utcMs + 60 * 60000);
+  const offsetMin = getClinicOffsetMinutes();
+  const moroccoDate = new Date(utcMs + offsetMin * 60000);
   const hours = String(moroccoDate.getHours()).padStart(2, '0');
   const minutes = String(moroccoDate.getMinutes()).padStart(2, '0');
   return `${hours}:${minutes}`;

@@ -106,11 +106,14 @@ export function CalendarView() {
   }, []);
 
   useEffect(() => {
-    setCurrentTime(getMoroccoNow());
-    const timer = setInterval(() => {
-      setCurrentTime(getMoroccoNow());
-    }, 15000); // Update every 15 seconds (Moroccan time GMT+1)
-    return () => clearInterval(timer);
+    const updateNow = () => setCurrentTime(getMoroccoNow());
+    updateNow();
+    const timer = setInterval(updateNow, 15000);
+    window.addEventListener('reforme-time-updated', updateNow);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('reforme-time-updated', updateNow);
+    };
   }, []);
 
   useEffect(() => {
@@ -1125,8 +1128,7 @@ export function CalendarView() {
                   type="date"
                   value={editDate}
                   onChange={(e) => setEditDate(e.target.value)}
-                  disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
-                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400"
+                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all"
                 />
               </div>
               <div className="space-y-1.5">
@@ -1135,8 +1137,7 @@ export function CalendarView() {
                   type="time"
                   value={editTime}
                   onChange={(e) => setEditTime(e.target.value)}
-                  disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
-                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400"
+                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all"
                 />
               </div>
               <div className="space-y-1.5 col-span-2 relative">
@@ -1144,8 +1145,7 @@ export function CalendarView() {
                 <select
                   value={editTherapist}
                   onChange={(e) => setEditTherapist(e.target.value)}
-                  disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
-                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400 bg-slate-50/30 outline-none"
+                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all bg-slate-50/30 outline-none"
                 >
                   <option value="">Non assigné</option>
                   {therapists.map(t => (
@@ -1164,11 +1164,10 @@ export function CalendarView() {
                   }}
                   onFocus={() => setShowEditMotifDropdown(true)}
                   onBlur={() => setTimeout(() => setShowEditMotifDropdown(false), 200)}
-                  disabled={selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé'}
                   placeholder="Sélectionner ou écrire un motif..."
-                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400 bg-slate-50/30"
+                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all bg-slate-50/30"
                 />
-                {showEditMotifDropdown && !(selectedAppointment?.statut === 'Effectué' || selectedAppointment?.statut === 'Annulé') && (
+                {showEditMotifDropdown && (
                   <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
                     {motifs.filter(m => m.toLowerCase().includes(editMotif.toLowerCase())).map(m => (
                       <div 
@@ -1187,18 +1186,16 @@ export function CalendarView() {
                 )}
               </div>
             </div>
-            {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (
-              <Button 
-                type="button" 
-                variant="secondary" 
-                size="sm" 
-                onClick={handleUpdateAppointment} 
-                disabled={loading} 
-                className="w-full mt-2 rounded-xl h-10 font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all"
-              >
-                Mettre à jour
-              </Button>
-            )}
+            <Button 
+              type="button" 
+              variant="secondary" 
+              size="sm" 
+              onClick={handleUpdateAppointment} 
+              disabled={loading} 
+              className="w-full mt-2 rounded-xl h-10 font-bold bg-primary-50 hover:bg-primary-100 text-primary-700 border border-primary-200 transition-all"
+            >
+              Enregistrer la modification d'heure / date
+            </Button>
           </div>
 
           {/* Billing Section */}
