@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { fetchAllRows } from '@/lib/financeUtils';
+import { getMoroccoNow, parseClinicDate } from '@/lib/timeUtils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { RefreshCw, CheckCircle2, AlertCircle, UserPlus, Users, Phone, Mail, Search, Filter, Upload, Lock, Trash2 } from 'lucide-react';
@@ -76,25 +78,29 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     setError(null);
     
     try {
-      const { data: pData, error: fetchError } = await supabase
+      const patientColumns = 'id, nom, prenom, telephone, email, date_naissance, cin, adresse, pathologie, nombre_seances, atcd, forfait_seances, has_access, last_follow_up_date, follow_up_status, created_at';
+
+      let { data: pData, error: fetchError } = await supabase
         .from('patients')
-        .select('*')
+        .select(patientColumns)
         .order('created_at', { ascending: false });
 
-      if (fetchError) throw fetchError;
+      if (fetchError) {
+        // Fallback without server-side sort if statement timeout occurs
+        const fallback = await supabase.from('patients').select(patientColumns);
+        if (fallback.error) throw fallback.error;
+        pData = (fallback.data || []).sort(
+          (a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+        );
+      }
 
-      const { data: appData, error: appError } = await supabase
-        .from('appointments')
-        .select('patient_id, statut, date_heure')
-        .order('date_heure', { ascending: false });
-      if (appError) console.error("Error fetching appointments:", appError);
+      setPatients((pData as Patient[]) || []);
 
-      const { data: treatData, error: treatError } = await supabase
-        .from('treatments')
-        .select('patient_id, statut, nombre_seances_prescrites');
-      if (treatError) console.error("Error fetching treatments:", treatError);
+      const [appData, treatData] = await Promise.all([
+        fetchAllRows('appointments', 'patient_id, statut, date_heure', { column: 'date_heure', ascending: false }),
+        fetchAllRows('treatments', 'patient_id, statut, nombre_seances_prescrites')
+      ]);
 
-      setPatients(pData || []);
       setAppointments(appData || []);
       setTreatments(treatData || []);
     } catch (err: any) {
@@ -272,9 +278,9 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     const pAppts = appointments.filter(a => a.patient_id === patientItem.id);
     const completedAppts = pAppts.filter(a => a.statut === 'Effectué');
     
-    const nowLocalDate = new Date();
+    const nowLocalDate = getMoroccoNow();
     const upcomingAppts = pAppts.filter(a => {
-      const apptDate = new Date(a.date_heure);
+      const apptDate = parseClinicDate(a.date_heure);
       return apptDate >= nowLocalDate;
     });
 
@@ -283,13 +289,13 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
     let lastApptDate: Date | null = null;
     if (completedAppts.length > 0) {
-      const sortedCompleted = [...completedAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
-      lastApptDate = new Date(sortedCompleted[0].date_heure);
+      const sortedCompleted = [...completedAppts].sort((a, b) => parseClinicDate(b.date_heure).getTime() - parseClinicDate(a.date_heure).getTime());
+      lastApptDate = parseClinicDate(sortedCompleted[0].date_heure);
     } else if (pAppts.length > 0) {
-      const pastAppts = pAppts.filter(a => new Date(a.date_heure) < nowLocalDate);
+      const pastAppts = pAppts.filter(a => parseClinicDate(a.date_heure) < nowLocalDate);
       if (pastAppts.length > 0) {
-        const sortedPast = [...pastAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
-        lastApptDate = new Date(sortedPast[0].date_heure);
+        const sortedPast = [...pastAppts].sort((a, b) => parseClinicDate(b.date_heure).getTime() - parseClinicDate(a.date_heure).getTime());
+        lastApptDate = parseClinicDate(sortedPast[0].date_heure);
       }
     }
 
@@ -321,11 +327,20 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   };
 
   const filteredPatients = patients.filter(p => {
-    const matchQuery = (p.nom + ' ' + p.prenom).toLowerCase().includes(searchQuery.toLowerCase()) || 
-                       (p.prenom + ' ' + p.nom).toLowerCase().includes(searchQuery.toLowerCase());
+    const nomStr = (p.nom || '').toLowerCase();
+    const prenomStr = (p.prenom || '').toLowerCase();
+    const telStr = (p.telephone || '').toLowerCase();
+    const cinStr = (p.cin || '').toLowerCase();
+    const queryStr = searchQuery.trim().toLowerCase();
+
+    const matchQuery = !queryStr ||
+                       `${nomStr} ${prenomStr}`.includes(queryStr) || 
+                       `${prenomStr} ${nomStr}`.includes(queryStr) ||
+                       telStr.includes(queryStr) ||
+                       cinStr.includes(queryStr);
     const matchDate = searchDateNaissance ? p.date_naissance === searchDateNaissance : true;
-    const matchTel = searchTelephone ? p.telephone?.includes(searchTelephone) : true;
-    const matchPatho = searchPathologie ? p.pathologie?.toLowerCase().includes(searchPathologie.toLowerCase()) : true;
+    const matchTel = searchTelephone ? Boolean(p.telephone?.includes(searchTelephone)) : true;
+    const matchPatho = searchPathologie ? Boolean(p.pathologie?.toLowerCase().includes(searchPathologie.toLowerCase())) : true;
 
     return matchQuery && matchDate && matchTel && matchPatho;
   });

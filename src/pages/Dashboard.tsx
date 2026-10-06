@@ -13,6 +13,7 @@ import {
   isDateInRange, 
   calcTrend 
 } from '../lib/financeUtils';
+import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate } from '../lib/timeUtils';
 
 // Components
 const StatCard = ({ title, value, icon: Icon, description, colorClass = "text-indigo-600", bgClass = "bg-indigo-50", trend, trendType = "positive" }: any) => {
@@ -57,7 +58,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
   const { requests, pendingCount, approveRequest } = useAppointmentNotifications();
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('month');
-  const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
+  const [customDate, setCustomDate] = useState(() => getMoroccoTodayStr());
   const [rawData, setRawData] = useState({ 
     billings: [] as any[], 
     patients: [] as any[], 
@@ -115,7 +116,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
   };
 
   const dashboardData = useMemo(() => {
-    const now = new Date();
+    const now = getMoroccoNow();
     const dateRange = getDateRange(filter, customDate);
     const prevDateRange = getPreviousDateRange(filter, customDate);
     const filterLabel = dateRange.label;
@@ -147,7 +148,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
     // 3. Taux de Présence au lieu de Taux d'Occupation
     const presentAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange) && a.statut === 'Effectué').length;
-    const pastAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange) && (new Date(a.date_heure) < now)).length;
+    const pastAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange) && (parseClinicDate(a.date_heure) < now)).length;
     const occupation = pastAppts > 0 ? Math.round((presentAppts / pastAppts) * 100) : 100;
     
     // Total Séances (for the 6th card)
@@ -161,7 +162,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && a.statut === 'Effectué').length
       : 0;
     const prevPastAppts = prevDateRange.startDate
-      ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && (new Date(a.date_heure) < now)).length
+      ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && (parseClinicDate(a.date_heure) < now)).length
       : 0;
     const prevOccupation = prevPastAppts > 0 ? Math.round((prevPresentAppts / prevPastAppts) * 100) : 100;
     const occupationTrend = prevDateRange.startDate ? occupation - prevOccupation : undefined;

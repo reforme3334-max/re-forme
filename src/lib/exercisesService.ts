@@ -152,8 +152,19 @@ export async function saveExercisesForPatient(
       console.warn('LocalStorage save warning', e);
     }
 
-    // 2. Persist in Supabase so that patient sees it on ANY device/phone
-    const payload = JSON.stringify(exercises);
+    // 2. Persist in Supabase so that patient sees it on ANY device/phone.
+    // Guard against huge base64 video data URLs that would bloat the patients table and cause SQL timeouts.
+    const cloudSafeExercises = exercises.filter(
+      item => !(item.url && item.url.startsWith('data:') && item.url.length > 40000)
+    );
+    const payload = JSON.stringify(cloudSafeExercises);
+    if (payload.length > 60000) {
+      return {
+        success: false,
+        error: 'Le volume de données est trop important pour la base de données. Privilégiez les liens YouTube.'
+      };
+    }
+
     const { error } = await supabase
       .from('patients')
       .update({ notes_antecedents: payload })

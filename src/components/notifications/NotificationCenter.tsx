@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useAppointmentNotifications, AppointmentRequest } from '../../contexts/AppointmentNotificationsContext';
 import { Button } from '../ui/button';
+import { parseClinicDate, formatUtcToMoroccoTime } from '../../lib/timeUtils';
 
 export function NotificationCenter() {
   const {
@@ -214,12 +215,12 @@ export function NotificationCenter() {
               filteredRequests.map(req => {
                 const isChange = req.type === 'changement_rdv';
                 const isBusy = actionLoadingId === req.id;
-                const formattedDate = new Date(req.date_heure).toLocaleDateString('fr-FR', {
+                const formattedDate = parseClinicDate(req.date_heure).toLocaleDateString('fr-FR', {
                   weekday: 'short',
                   day: 'numeric',
                   month: 'short'
                 });
-                const formattedTime = new Date(req.date_heure).toLocaleTimeString('fr-FR', {
+                const formattedTime = parseClinicDate(req.date_heure).toLocaleTimeString('fr-FR', {
                   hour: '2-digit',
                   minute: '2-digit'
                 });
@@ -244,7 +245,7 @@ export function NotificationCenter() {
                       </span>
                       <span className="text-[10px] text-slate-400 flex items-center gap-1">
                         <Clock className="h-3 w-3" />
-                        {new Date(req.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                        {formatUtcToMoroccoTime(req.created_at)}
                       </span>
                     </div>
 
@@ -300,7 +301,7 @@ export function NotificationCenter() {
                             <ArrowRight className="h-3.5 w-3.5 text-purple-600" />
                             <span>Souhaité :</span>
                             <span className="bg-purple-50 px-1.5 py-0.5 rounded text-purple-700">
-                              {req.requested_date ? new Date(req.requested_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' }) : 'Date à convenir'}
+                              {req.requested_date ? parseClinicDate(req.requested_date).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' }) : 'Date à convenir'}
                               {req.requested_time ? ` à ${req.requested_time}` : ''}
                             </span>
                           </div>
@@ -397,7 +398,7 @@ export function NotificationCenter() {
                 <p className="text-xs text-slate-300 mt-0.5">
                   {latestNotification.type === 'changement_rdv'
                     ? `Souhaite reporter au ${latestNotification.requested_date || 'prochain créneau'}`
-                    : `Pour le ${new Date(latestNotification.date_heure).toLocaleDateString('fr-FR')} à ${new Date(latestNotification.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`}
+                    : `Pour le ${parseClinicDate(latestNotification.date_heure).toLocaleDateString('fr-FR')} à ${parseClinicDate(latestNotification.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`}
                 </p>
               </div>
             </div>

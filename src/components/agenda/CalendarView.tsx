@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/card';
 import { Modal } from '@/components/ui/modal';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAppointmentNotifications } from '@/contexts/AppointmentNotificationsContext';
+import { getMoroccoNow, parseClinicDate, toClinicIsoString } from '@/lib/timeUtils';
 
 interface Patient {
   id: string;
@@ -54,7 +55,7 @@ const MOTIFS_SEANCE = [
 
 export function CalendarView() {
   const { requests, pendingCount, approveRequest } = useAppointmentNotifications();
-  const [currentDate, setCurrentDate] = useState(new Date());
+  const [currentDate, setCurrentDate] = useState(() => getMoroccoNow());
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [therapists, setTherapists] = useState<Therapist[]>([]);
@@ -86,7 +87,7 @@ export function CalendarView() {
   const [editMotif, setEditMotif] = useState('');
   const [editTherapist, setEditTherapist] = useState('');
   const [showEditMotifDropdown, setShowEditMotifDropdown] = useState(false);
-  const [currentTime, setCurrentTime] = useState(new Date());
+  const [currentTime, setCurrentTime] = useState(() => getMoroccoNow());
   const [isMobile, setIsMobile] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -105,9 +106,10 @@ export function CalendarView() {
   }, []);
 
   useEffect(() => {
+    setCurrentTime(getMoroccoNow());
     const timer = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 60000); // Update every minute
+      setCurrentTime(getMoroccoNow());
+    }, 15000); // Update every 15 seconds (Moroccan time GMT+1)
     return () => clearInterval(timer);
   }, []);
 
@@ -256,10 +258,8 @@ export function CalendarView() {
     
     await ensureMotifExists(newAppointmentMotif);
 
-    // Combine selectedDate and newAppointmentTime
-    const [hours, minutes] = newAppointmentTime.split(':').map(Number);
-    const finalDate = new Date(selectedDate);
-    finalDate.setHours(hours, minutes, 0, 0);
+    // Combine selectedDate and newAppointmentTime in Morocco clinic time
+    const isoDateHeure = toClinicIsoString(selectedDate, newAppointmentTime);
 
     // Ensure the selected therapist still exists in DB to prevent foreign key violation
     const validTherapistIds = therapists.map(t => t.id);
@@ -274,7 +274,7 @@ export function CalendarView() {
       .insert([{
         patient_id: selectedPatient,
         therapist_id: null, // Always null in DB to prevent foreign key constraint violation
-        date_heure: finalDate.toISOString(),
+        date_heure: isoDateHeure,
         notes_seance: dbNotes,
         statut: 'Confirmé',
         duree: 30
@@ -296,7 +296,7 @@ export function CalendarView() {
     
     await ensureMotifExists(editMotif);
     
-    const newDateTime = new Date(`${editDate}T${editTime}`);
+    const isoDateTime = toClinicIsoString(editDate, editTime);
 
     // Ensure the edited therapist still exists in DB to prevent foreign key violation
     const validTherapistIds = therapists.map(t => t.id);
@@ -309,7 +309,7 @@ export function CalendarView() {
     const { error } = await supabase
       .from('appointments')
       .update({ 
-        date_heure: newDateTime.toISOString(),
+        date_heure: isoDateTime,
         notes_seance: dbNotes,
         therapist_id: null // Always null in DB to prevent foreign key constraint violation
       })
@@ -383,7 +383,7 @@ export function CalendarView() {
 
     await ensureMotifExists(editMotif);
 
-    const newDateTime = new Date(`${editDate}T${editTime}`);
+    const isoDateTime = toClinicIsoString(editDate, editTime);
     const validTherapistIds = therapists.map(t => t.id);
     const therapistIdToUpdate = validTherapistIds.includes(editTherapist) ? editTherapist : null;
     const dbNotes = therapistIdToUpdate ? `||TH_ID:${therapistIdToUpdate}||${editMotif}` : editMotif;
@@ -393,7 +393,7 @@ export function CalendarView() {
       .from('appointments')
       .update({ 
         statut: 'Effectué',
-        date_heure: newDateTime.toISOString(),
+        date_heure: isoDateTime,
         notes_seance: dbNotes,
         therapist_id: null // Always null in DB to prevent foreign key constraint violation
       })
@@ -462,7 +462,7 @@ export function CalendarView() {
 
     await ensureMotifExists(editMotif);
 
-    const newDateTime = new Date(`${editDate}T${editTime}`);
+    const isoDateTime = toClinicIsoString(editDate, editTime);
     const validTherapistIds = therapists.map(t => t.id);
     const therapistIdToUpdate = validTherapistIds.includes(editTherapist) ? editTherapist : null;
     const dbNotes = therapistIdToUpdate ? `||TH_ID:${therapistIdToUpdate}||${editMotif}` : editMotif;
@@ -472,7 +472,7 @@ export function CalendarView() {
       .from('appointments')
       .update({ 
         statut: 'Impayé',
-        date_heure: newDateTime.toISOString(),
+        date_heure: isoDateTime,
         notes_seance: dbNotes,
         therapist_id: null // Always null in DB to prevent foreign key constraint violation
       })
@@ -527,7 +527,7 @@ export function CalendarView() {
 
   const getAppointmentsForSlot = (day: Date, hour: number) => {
     return appointments.filter(app => {
-      const appDate = new Date(app.date_heure);
+      const appDate = parseClinicDate(app.date_heure);
       const matchesTherapist = selectedTherapistId === 'all' || app.therapist_id === selectedTherapistId;
       return isSameDay(appDate, day) && appDate.getHours() === hour && matchesTherapist;
     });
@@ -576,7 +576,7 @@ export function CalendarView() {
           <Button 
             variant="ghost" 
             size="sm" 
-            onClick={() => setCurrentDate(new Date())}
+            onClick={() => setCurrentDate(getMoroccoNow())}
             className="rounded-xl hover:bg-slate-100 text-slate-600 font-semibold px-4"
           >
             Aujourd'hui
@@ -629,7 +629,7 @@ export function CalendarView() {
                   const appt = appointments.find(a => a.id === r.id);
                   if (appt) {
                     setSelectedAppointment(appt);
-                    const appDate = new Date(appt.date_heure);
+                    const appDate = parseClinicDate(appt.date_heure);
                     setEditDate(format(appDate, 'yyyy-MM-dd'));
                     setEditTime(format(appDate, 'HH:mm'));
                     setEditMotif(appt.notes_seance || '');
@@ -657,12 +657,15 @@ export function CalendarView() {
           <div className={`${isMobile ? 'min-w-full' : 'min-w-[900px]'} h-full flex flex-col relative`}>
             {/* Days Header */}
             <div className={`grid ${isMobile ? 'grid-cols-[60px_1fr]' : 'grid-cols-[80px_repeat(7,1fr)]'} border-b border-slate-200 bg-slate-50/50 backdrop-blur-sm sticky top-0 z-40`}>
-              <div className="p-4 border-r border-slate-200 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center justify-center bg-slate-50/80">
-                GMT+1
+              <div className="p-2 border-r border-slate-200 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider flex flex-col items-center justify-center bg-slate-50/80 gap-1">
+                <span>Maroc</span>
+                <span className="bg-rose-500 text-white px-1.5 py-0.5 rounded text-[10px] font-black shadow-2xs">
+                  {format(currentTime, 'HH:mm')}
+                </span>
               </div>
               {displayedDays.map((day, i) => {
-                const dayAppointmentsCount = appointments.filter(app => isSameDay(new Date(app.date_heure), day) && app.statut !== 'Annulé').length;
-                const isToday = isSameDay(day, new Date());
+                const dayAppointmentsCount = appointments.filter(app => isSameDay(parseClinicDate(app.date_heure), day) && app.statut !== 'Annulé').length;
+                const isToday = isSameDay(day, currentTime);
                 return (
                   <div key={i} className={`p-4 border-r border-slate-200 text-center transition-colors ${isToday ? 'bg-primary-50/30' : ''}`}>
                     <div className={`text-[10px] font-bold uppercase tracking-widest ${isToday ? 'text-primary-600' : 'text-slate-400'}`}>
@@ -719,7 +722,7 @@ export function CalendarView() {
                   </div>
                   {displayedDays.map((day, dayIdx) => {
                     const slotAppointments = getAppointmentsForSlot(day, hour);
-                    const isToday = isSameDay(day, new Date());
+                    const isToday = isSameDay(day, currentTime);
                     return (
                       <div 
                         key={dayIdx} 
@@ -740,7 +743,7 @@ export function CalendarView() {
                         <AnimatePresence>
                           {slotAppointments.map((app, index) => {
                             const isBilan = app.notes_seance === 'Séance de bilan' || app.notes_seance === 'Bilan Initial';
-                            const startMin = new Date(app.date_heure).getMinutes();
+                            const startMin = parseClinicDate(app.date_heure).getMinutes();
                             const count = slotAppointments.length;
                             
                             let statusStyles = 'bg-white border-primary-200 text-primary-900 shadow-primary-100/50 hover:shadow-primary-200/60'; // Confirmé
@@ -787,7 +790,7 @@ export function CalendarView() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setSelectedAppointment(app);
-                                  const appDate = new Date(app.date_heure);
+                                  const appDate = parseClinicDate(app.date_heure);
                                   setEditDate(format(appDate, 'yyyy-MM-dd'));
                                   setEditTime(format(appDate, 'HH:mm'));
                                   setEditMotif(app.notes_seance || 'Séance de Suivi');
@@ -814,7 +817,7 @@ export function CalendarView() {
                                 )}
                                 <div className={`${isNarrow ? 'hidden group-hover/app:flex' : 'flex'} items-center gap-1.5 opacity-70 font-medium pl-1 mt-1`}>
                                   <Clock className="h-3 w-3 shrink-0" />
-                                  <span className="truncate">{format(new Date(app.date_heure), 'HH:mm')} {app.notes_seance ? `• ${app.notes_seance}` : ''}</span>
+                                  <span className="truncate">{format(parseClinicDate(app.date_heure), 'HH:mm')} {app.notes_seance ? `• ${app.notes_seance}` : ''}</span>
                                 </div>
                               </motion.div>
                             );

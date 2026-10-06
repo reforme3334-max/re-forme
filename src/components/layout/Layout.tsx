@@ -1,11 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sidebar } from './Sidebar';
-import { Menu, Calendar } from 'lucide-react';
+import { Menu, Clock } from 'lucide-react';
 import { Button } from '../ui/button';
 import { NotificationCenter } from '../notifications/NotificationCenter';
+import { getMoroccoTimeStr, getMoroccoNow } from '../../lib/timeUtils';
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [moroccoTime, setMoroccoTime] = useState(() => getMoroccoTimeStr());
+  const [moroccoDateStr, setMoroccoDateStr] = useState(() =>
+    getMoroccoNow().toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
+  );
+
+  useEffect(() => {
+    const updateClock = () => {
+      setMoroccoTime(getMoroccoTimeStr());
+      setMoroccoDateStr(
+        getMoroccoNow().toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
+      );
+    };
+    updateClock();
+    const interval = setInterval(updateClock, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="flex h-screen bg-slate-50">
@@ -37,6 +54,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Live Morocco Clock */}
+            <div className="flex items-center gap-2 bg-slate-100/90 border border-slate-200/80 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700">
+              <Clock className="h-3.5 w-3.5 text-primary-600" />
+              <span className="capitalize text-slate-500">{moroccoDateStr}</span>
+              <span className="text-slate-300">•</span>
+              <span className="font-black text-slate-900 tabular-nums">{moroccoTime}</span>
+              <span className="text-[10px] font-bold text-primary-600 bg-primary-50 px-1.5 py-0.5 rounded">
+                Maroc
+              </span>
+            </div>
+
+            <div className="h-5 w-px bg-slate-200" />
+
             {/* Direct link to patient portal demo */}
             <a
               href="#espace-patient"
@@ -58,6 +88,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <span className="text-mint-500">Re</span>Forme
           </div>
           <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg text-xs font-bold text-slate-800 tabular-nums">
+              <Clock className="h-3 w-3 text-primary-600" />
+              <span>{moroccoTime}</span>
+            </div>
             <NotificationCenter />
             <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(true)}>
               <Menu className="h-6 w-6" />

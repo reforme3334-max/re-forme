@@ -10,6 +10,7 @@ import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, ExerciseItem } from '../lib/exercisesService';
+import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 
 interface PatientDetailProps {
   patientId?: string;
@@ -60,7 +61,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [isAddPainModalOpen, setIsAddPainModalOpen] = useState(false);
   const [practitionerPainScore, setPractitionerPainScore] = useState<number>(3);
   const [practitionerPainNote, setPractitionerPainNote] = useState<string>('');
-  const [practitionerPainDate, setPractitionerPainDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [practitionerPainDate, setPractitionerPainDate] = useState<string>(() => getMoroccoTodayStr());
   const [practitionerPainLoading, setPractitionerPainLoading] = useState<boolean>(false);
 
   const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
@@ -97,7 +98,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [newTreatmentData, setNewTreatmentData] = useState({
     motif: '',
     nombre_seances_prescrites: 10,
-    date_debut: new Date().toISOString().split('T')[0],
+    date_debut: getMoroccoTodayStr(),
     medecin_prescripteur: '',
     statut: 'En cours'
   });
@@ -129,11 +130,24 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     setLoading(true);
     
     // Fetch patient
-    const { data: patientData, error: patientError } = await supabase
+    let { data: patientData, error: patientError } = await supabase
       .from('patients')
       .select('*')
       .eq('id', patientId)
       .single();
+
+    if (patientError) {
+      // Fallback without notes_antecedents in case of oversized legacy data
+      const fallback = await supabase
+        .from('patients')
+        .select('id, nom, prenom, telephone, email, date_naissance, cin, adresse, pathologie, nombre_seances, atcd, forfait_seances, has_access, last_follow_up_date, follow_up_status, created_at')
+        .eq('id', patientId)
+        .single();
+      if (!fallback.error && fallback.data) {
+        patientData = fallback.data;
+        patientError = null;
+      }
+    }
 
     if (!patientError && patientData) {
       setPatient(patientData);
@@ -531,9 +545,22 @@ setForfait(patientData.forfait_seances || 0);
     setEditPatientLoading(true);
     setEditPatientMessage({ type: '', text: '' });
 
+    const updatePayload = {
+      nom: editPatientData.nom,
+      prenom: editPatientData.prenom,
+      telephone: editPatientData.telephone,
+      email: editPatientData.email,
+      date_naissance: editPatientData.date_naissance || null,
+      cin: editPatientData.cin,
+      adresse: editPatientData.adresse,
+      pathologie: editPatientData.pathologie,
+      nombre_seances: editPatientData.nombre_seances,
+      atcd: editPatientData.atcd,
+    };
+
     const { error } = await supabase
       .from('patients')
-      .update(editPatientData)
+      .update(updatePayload)
       .eq('id', patientId);
 
     setEditPatientLoading(false);
@@ -541,7 +568,7 @@ setForfait(patientData.forfait_seances || 0);
       setEditPatientMessage({ type: 'error', text: error.message });
     } else {
       setEditPatientMessage({ type: 'success', text: 'Patient modifié avec succès' });
-      setPatient({ ...patient, ...editPatientData });
+      setPatient({ ...patient, ...updatePayload });
       setTimeout(() => {
         setIsEditPatientModalOpen(false);
         setEditPatientMessage({ type: '', text: '' });
@@ -731,7 +758,7 @@ setForfait(patientData.forfait_seances || 0);
 
     await ensureMotifExists(newAppointmentMotif);
 
-    const dateHeure = new Date(`${newAppointmentDate}T${newAppointmentTime}`).toISOString();
+    const dateHeure = toClinicIsoString(newAppointmentDate, newAppointmentTime);
 
     const validTherapistIds = therapists.map(t => t.id);
     const therapistIdToInsert = validTherapistIds.includes(newAppointmentTherapist) ? newAppointmentTherapist : null;
@@ -804,8 +831,8 @@ setForfait(patientData.forfait_seances || 0);
   const exportHistoryToExcel = () => {
     const completedAppointments = appointments.filter(a => a.statut === 'Effectué');
     const data = completedAppointments.map(app => ({
-      'Date': new Date(app.date_heure).toLocaleDateString('fr-FR'),
-      'Heure': new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+      'Date': parseClinicDate(app.date_heure).toLocaleDateString('fr-FR'),
+      'Heure': parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
       'Thérapeute': 'Mr HADDAOUI Younes',
       'Nature des soins': app.notes_seance || 'Séance de kinésithérapie'
     }));
@@ -831,8 +858,8 @@ setForfait(patientData.forfait_seances || 0);
     
     const tableData = completedAppointments.map((app, index) => [
       (index + 1).toString(),
-      new Date(app.date_heure).toLocaleDateString('fr-FR'),
-      new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+      parseClinicDate(app.date_heure).toLocaleDateString('fr-FR'),
+      parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
       app.notes_seance || 'Seance de suivi'
     ]);
     
@@ -849,11 +876,11 @@ setForfait(patientData.forfait_seances || 0);
 
   const getPatientAlert = () => {
     if (!patient) return null;
-    const nowLocalDate = new Date();
+    const nowLocalDate = getMoroccoNow();
     
     const completedAppts = appointments.filter(a => a.statut === 'Effectué');
     const upcomingAppts = appointments.filter(a => {
-      const apptDate = new Date(a.date_heure);
+      const apptDate = parseClinicDate(a.date_heure);
       return apptDate >= nowLocalDate;
     });
     const hasUpcoming = upcomingAppts.length > 0;
@@ -861,13 +888,13 @@ setForfait(patientData.forfait_seances || 0);
 
     let lastApptDate: Date | null = null;
     if (completedAppts.length > 0) {
-      const sortedCompleted = [...completedAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
-      lastApptDate = new Date(sortedCompleted[0].date_heure);
+      const sortedCompleted = [...completedAppts].sort((a, b) => parseClinicDate(b.date_heure).getTime() - parseClinicDate(a.date_heure).getTime());
+      lastApptDate = parseClinicDate(sortedCompleted[0].date_heure);
     } else if (appointments.length > 0) {
-      const pastAppts = appointments.filter(a => new Date(a.date_heure) < nowLocalDate);
+      const pastAppts = appointments.filter(a => parseClinicDate(a.date_heure) < nowLocalDate);
       if (pastAppts.length > 0) {
-        const sortedPast = [...pastAppts].sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
-        lastApptDate = new Date(sortedPast[0].date_heure);
+        const sortedPast = [...pastAppts].sort((a, b) => parseClinicDate(b.date_heure).getTime() - parseClinicDate(a.date_heure).getTime());
+        lastApptDate = parseClinicDate(sortedPast[0].date_heure);
       }
     }
 
@@ -1299,9 +1326,9 @@ setForfait(patientData.forfait_seances || 0);
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-primary-500" />
-                            <span className="text-sm font-bold text-slate-900">Séance du {new Date(app.date_heure).toLocaleDateString('fr-FR')}</span>
+                            <span className="text-sm font-bold text-slate-900">Séance du {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR')}</span>
                           </div>
-                          <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md">{new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md">{parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
                         </div>
                         <p className="text-sm text-slate-600 leading-relaxed italic">"{app.notes_seance}"</p>
                       </div>
@@ -1322,16 +1349,16 @@ setForfait(patientData.forfait_seances || 0);
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {appointments.filter(a => new Date(a.date_heure) > new Date()).length > 0 ? (
+                {appointments.filter(a => parseClinicDate(a.date_heure) > getMoroccoNow()).length > 0 ? (
                   (() => {
-                    const next = appointments.filter(a => new Date(a.date_heure) > new Date()).sort((a,b) => new Date(a.date_heure).getTime() - new Date(b.date_heure).getTime())[0];
+                    const next = appointments.filter(a => parseClinicDate(a.date_heure) > getMoroccoNow()).sort((a,b) => parseClinicDate(a.date_heure).getTime() - parseClinicDate(b.date_heure).getTime())[0];
                     return (
                       <div className="p-4 bg-white rounded-xl border border-indigo-100 shadow-sm">
                         <p className="font-black text-indigo-900 text-base">
-                          {new Date(next.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
+                          {parseClinicDate(next.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
                         </p>
                         <p className="text-sm text-indigo-600 mt-1 font-bold">
-                          à {new Date(next.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                          à {parseClinicDate(next.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                         </p>
                         <div className="mt-3 pt-3 border-t border-indigo-50 flex items-center justify-between">
                           <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Durée : 30 min</span>
@@ -1496,7 +1523,7 @@ setForfait(patientData.forfait_seances || 0);
                       appointments.map((app) => (
                         <tr key={app.id} className="bg-white hover:bg-slate-50 transition-colors">
                           <td className="px-6 py-4 font-medium text-slate-900">
-                            {new Date(app.date_heure).toLocaleString('fr-FR', {
+                            {parseClinicDate(app.date_heure).toLocaleString('fr-FR', {
                               dateStyle: 'long',
                               timeStyle: 'short'
                             })}
@@ -1808,7 +1835,7 @@ return (
               <option value="">-- Choisir une séance --</option>
               {appointments.map(app => (
                 <option key={app.id} value={app.id}>
-                  {new Date(app.date_heure).toLocaleDateString('fr-FR')} à {new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                  {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR')} à {parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                 </option>
               ))}
             </select>

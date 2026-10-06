@@ -7,6 +7,7 @@ import { ReviewSection } from '../components/reviews/ReviewSection';
 import { Modal } from '../components/ui/modal';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseExercisesFromPatient, ExerciseItem } from '../lib/exercisesService';
+import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 
 export function PatientPortal() {
   const [patient, setPatient] = useState<any>(null);
@@ -72,15 +73,15 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetchPatientData();
+    fetchPatientData(false);
 
     // Auto-refresh when tab gains focus so new exercises added by the kiné appear immediately
-    const handleFocus = () => fetchPatientData();
+    const handleFocus = () => fetchPatientData(true);
     window.addEventListener('focus', handleFocus);
 
     // Background sync every 20 seconds
     const interval = setInterval(() => {
-      fetchPatientData();
+      fetchPatientData(true);
     }, 20000);
 
     return () => {
@@ -89,8 +90,8 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
     };
   }, []);
 
-  const fetchPatientData = async () => {
-    setLoading(true);
+  const fetchPatientData = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -99,16 +100,24 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
       }
 
       const userEmail = session.user.email || '';
-      let query = supabase.from('patients').select('*');
+      const buildQuery = (cols: string) => {
+        const q = supabase.from('patients').select(cols);
+        if (userEmail.endsWith('@patient.reforme.center')) {
+          const phone = userEmail.replace('@patient.reforme.center', '');
+          return q.ilike('telephone', `%${phone}%`);
+        }
+        return q.eq('email', userEmail);
+      };
 
-      if (userEmail.endsWith('@patient.reforme.center')) {
-        const phone = userEmail.replace('@patient.reforme.center', '');
-        query = query.ilike('telephone', `%${phone}%`);
-      } else {
-        query = query.eq('email', userEmail);
+      let { data: patientDataList, error: fetchError } = await buildQuery('*');
+
+      if (fetchError) {
+        const fallback = await buildQuery('id, nom, prenom, telephone, email, date_naissance, cin, adresse, pathologie, nombre_seances, atcd, forfait_seances, has_access, last_follow_up_date, follow_up_status, created_at');
+        if (!fallback.error) {
+          patientDataList = fallback.data;
+          fetchError = null;
+        }
       }
-
-      const { data: patientDataList, error: fetchError } = await query;
 
       if (fetchError || !patientDataList || patientDataList.length === 0) {
         setError('Aucun dossier patient trouvé pour cet identifiant.');
@@ -348,7 +357,7 @@ const handleLogout = async () => {
       // Create a pending appointment request with statut: 'En attente'
       const { error } = await supabase.from('appointments').insert({
         patient_id: patient.id,
-        date_heure: `${apptDate}T${apptTime}:00`,
+        date_heure: toClinicIsoString(apptDate, apptTime),
         statut: 'En attente',
         duree: 30, // Default duration
         notes_seance: `[DEMANDE_RDV] Motif: ${apptMotif || 'Séance de kinésithérapie'}`
@@ -532,7 +541,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
     );
   }
 
-  const now = new Date();
+  const now = getMoroccoNow();
   
   // Pending Requests (Appointments in 'En attente' or notes containing [DEMANDE])
   const pendingRequests = appointments.filter(
@@ -541,14 +550,14 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
 
   // Scheduled Upcoming Appointments (confirmed or planned)
   const upcomingAppointments = appointments
-    .filter(a => new Date(a.date_heure) > now && a.statut !== 'Annulé' && a.statut !== 'En attente' && !a.notes_seance?.includes('[DEMANDE'))
-    .sort((a, b) => new Date(a.date_heure).getTime() - new Date(b.date_heure).getTime());
+    .filter(a => parseClinicDate(a.date_heure) > now && a.statut !== 'Annulé' && a.statut !== 'En attente' && !a.notes_seance?.includes('[DEMANDE'))
+    .sort((a, b) => parseClinicDate(a.date_heure).getTime() - parseClinicDate(b.date_heure).getTime());
 
   const nextAppointment = upcomingAppointments[0] || null;
   
   const pastAppointments = appointments
-    .filter(a => new Date(a.date_heure) <= now || a.statut === 'Effectué')
-    .sort((a, b) => new Date(b.date_heure).getTime() - new Date(a.date_heure).getTime());
+    .filter(a => parseClinicDate(a.date_heure) <= now || a.statut === 'Effectué')
+    .sort((a, b) => parseClinicDate(b.date_heure).getTime() - parseClinicDate(a.date_heure).getTime());
   
   const unpaidAppointments = pastAppointments.filter(a => a.statut === 'Confirmé' || a.statut === 'Programmé');
 
@@ -654,7 +663,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                       <p className="text-xs text-slate-700 mt-1 font-medium">
                         {isReport 
                           ? req.notes_seance?.replace(/\|\|Initial:.*?$/, '')
-                          : `Créneau souhaité : ${new Date(req.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à ${new Date(req.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+                          : `Créneau souhaité : ${parseClinicDate(req.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à ${parseClinicDate(req.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
                         }
                       </p>
                       <p className="text-[11px] text-slate-500 mt-1 italic">
@@ -690,7 +699,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                           Prochaine séance confirmée
                         </span>
                         <p className="text-sm font-black text-slate-900 mt-0.5 capitalize">
-                          {new Date(nextAppointment.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à {new Date(nextAppointment.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                          {parseClinicDate(nextAppointment.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à {parseClinicDate(nextAppointment.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                         </p>
                         <p className="text-xs text-slate-500 mt-0.5">
                           {nextAppointment.notes_seance?.replace(/\[DEMANDE.*?\]/g, '') || 'Séance de kinésithérapie'}
@@ -1013,7 +1022,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                       <div key={app.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-slate-50 transition-colors gap-3">
                         <div>
                           <p className="text-sm font-semibold text-slate-900">
-                            {new Date(app.date_heure).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })} à {new Date(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                            {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })} à {parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                           </p>
                           <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
                             <Activity className="h-3 w-3" /> {app.notes_seance?.replace('\[DEMANDE EN LIGNE\]', '') || 'Séance de suivi'}
@@ -1326,7 +1335,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
               <input
                 type="date"
                 required
-                min={new Date().toISOString().split('T')[0]}
+                min={getMoroccoTodayStr()}
                 value={apptDate}
                 onChange={(e) => setApptDate(e.target.value)}
                 className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-mint-500 focus:border-mint-500"
@@ -1382,7 +1391,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs">
               <p className="text-slate-500 font-medium">Séance actuelle programmée le :</p>
               <p className="font-bold text-slate-800 text-sm mt-0.5 capitalize">
-                {new Date(selectedApptToReschedule.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} à {new Date(selectedApptToReschedule.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                {parseClinicDate(selectedApptToReschedule.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} à {parseClinicDate(selectedApptToReschedule.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
               </p>
             </div>
           )}
@@ -1393,7 +1402,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
               <input
                 type="date"
                 required
-                min={new Date().toISOString().split('T')[0]}
+                min={getMoroccoTodayStr()}
                 value={newRescheduleDate}
                 onChange={(e) => setNewRescheduleDate(e.target.value)}
                 className="w-full p-2.5 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-mint-500 outline-none"

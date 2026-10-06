@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient';
+import { getMoroccoNow, parseClinicDate } from './timeUtils';
 
 export interface DateRange {
   startDate: Date | null;
@@ -74,16 +75,16 @@ export async function fetchAllRows<T = any>(
  * Prioritizes date_facturation, then appointment date, then created_at.
  */
 export function getBillDate(b: any): Date {
-  if (!b) return new Date();
-  if (b.date_facturation) return new Date(b.date_facturation);
+  if (!b) return getMoroccoNow();
+  if (b.date_facturation) return parseClinicDate(b.date_facturation);
   
   const apptDate = Array.isArray(b.appointments) 
     ? b.appointments[0]?.date_heure 
     : b.appointments?.date_heure;
     
-  if (apptDate) return new Date(apptDate);
-  if (b.created_at) return new Date(b.created_at);
-  return new Date();
+  if (apptDate) return parseClinicDate(apptDate);
+  if (b.created_at) return parseClinicDate(b.created_at);
+  return getMoroccoNow();
 }
 
 /**
@@ -91,7 +92,7 @@ export function getBillDate(b: any): Date {
  * for a chosen filter period.
  */
 export function getDateRange(filter: string, customDate?: string): DateRange {
-  const now = new Date();
+  const now = getMoroccoNow();
 
   if (filter === 'all') {
     return { startDate: null, endDate: null, label: "Tout le temps" };
@@ -165,7 +166,7 @@ export function getPreviousDateRange(filter: string, customDate?: string): DateR
     return { startDate: null, endDate: null, label: '' };
   }
 
-  const now = new Date();
+  const now = getMoroccoNow();
 
   if (filter === 'day' || filter === 'today') {
     const yesterday = new Date(now);
@@ -224,7 +225,7 @@ export function isDateInRange(
   if (!dateInput) return false;
   if (!range.startDate || !range.endDate) return true; // 'all' filter matches everything
 
-  const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
+  const d = typeof dateInput === 'string' ? parseClinicDate(dateInput) : dateInput;
   const time = d.getTime();
   return time >= range.startDate.getTime() && time <= range.endDate.getTime();
 }
