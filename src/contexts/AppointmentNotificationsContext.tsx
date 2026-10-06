@@ -43,6 +43,10 @@ export function AppointmentNotificationsProvider({ children }: { children: React
   const isInitialLoad = useRef<boolean>(true);
 
   const fetchRequests = useCallback(async () => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return;
+    }
+
     try {
       // Fetch appointments that are either in 'En attente' OR contain 'DEMANDE' in notes_seance
       const { data: apptData, error: apptError } = await supabase
@@ -52,7 +56,7 @@ export function AppointmentNotificationsProvider({ children }: { children: React
         .order('created_at', { ascending: false });
 
       if (apptError) {
-        console.error('Erreur chargement demandes:', apptError.message);
+        console.warn('Avertissement chargement demandes:', apptError.message);
         return;
       }
 
@@ -145,19 +149,34 @@ export function AppointmentNotificationsProvider({ children }: { children: React
       isInitialLoad.current = false;
       setRequests(parsedRequests);
     } catch (err) {
-      console.error('Erreur inattendue dans fetchRequests:', err);
+      console.warn('Avertissement réseau dans fetchRequests:', err);
     }
   }, [soundEnabled]);
 
   useEffect(() => {
     fetchRequests();
 
-    // Polling every 12 seconds for fresh updates
+    // Polling every 15 seconds when tab is visible
     const interval = setInterval(() => {
-      fetchRequests();
-    }, 12000);
+      if (typeof document === 'undefined' || !document.hidden) {
+        fetchRequests();
+      }
+    }, 15000);
 
-    return () => clearInterval(interval);
+    const handleVisibilityOrOnline = () => {
+      if (typeof document === 'undefined' || !document.hidden) {
+        fetchRequests();
+      }
+    };
+
+    window.addEventListener('online', handleVisibilityOrOnline);
+    document.addEventListener('visibilitychange', handleVisibilityOrOnline);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('online', handleVisibilityOrOnline);
+      document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
+    };
   }, [fetchRequests]);
 
   const refreshRequests = async () => {

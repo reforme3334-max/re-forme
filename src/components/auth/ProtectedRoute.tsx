@@ -73,15 +73,15 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
             window.location.hash = 'login';
           }
         } else {
-          window.location.hash = 'login';
+          // If session is valid but profile fetch failed transiently, allow access rather than kicking user out
+          setAuthorized(true);
         }
       } else {
         // Si aucun rôle/permission spécifique n'est requis, on autorise l'accès
         setAuthorized(true);
       }
     } catch (error) {
-      console.error('Erreur lors de la vérification des droits:', error);
-      window.location.hash = 'login';
+      console.warn('Avertissement lors de la vérification des droits:', error);
     } finally {
       setLoading(false);
     }

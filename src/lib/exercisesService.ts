@@ -5,27 +5,37 @@ export interface ExerciseItem {
   title: string;
   url: string; // Embed URL (for iframe / video element)
   originalUrl?: string; // Direct link to open in YouTube app or web
+  thumbnailUrl?: string; // YouTube thumbnail preview
   instructions?: string; // Practitioner instructions (e.g. "3x10 répétitions")
   date: string;
   type?: 'video' | 'youtube';
 }
 
 /**
- * Normalizes YouTube URLs into proper embed and watch links.
- * Supports:
- * - https://www.youtube.com/watch?v=ID
- * - https://youtu.be/ID
- * - https://www.youtube.com/shorts/ID
- * - https://m.youtube.com/watch?v=ID
- * - https://www.youtube.com/embed/ID
+ * Normalizes YouTube and video URLs into proper embed, watch, and thumbnail links.
  */
-export function parseYouTubeUrl(url: string): { embedUrl: string; watchUrl: string; videoId?: string } {
+export function parseYouTubeUrl(url: string): {
+  embedUrl: string;
+  watchUrl: string;
+  videoId?: string;
+  thumbnailUrl?: string;
+} {
   if (!url) return { embedUrl: '', watchUrl: '' };
   const trimmed = url.trim();
 
   // Check if it's a local video data URL
   if (trimmed.startsWith('data:video')) {
     return { embedUrl: trimmed, watchUrl: trimmed };
+  }
+
+  // Google Drive video link support
+  const driveMatch = trimmed.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/i);
+  if (driveMatch && driveMatch[1]) {
+    const fileId = driveMatch[1];
+    return {
+      embedUrl: `https://drive.google.com/file/d/${fileId}/preview`,
+      watchUrl: trimmed
+    };
   }
 
   let videoId: string | null = null;
@@ -36,9 +46,9 @@ export function parseYouTubeUrl(url: string): { embedUrl: string; watchUrl: stri
     videoId = youtuBeMatch[1].split('?')[0].split('&')[0];
   }
 
-  // Pattern 2: youtube.com/shorts/ID
+  // Pattern 2: youtube.com/shorts/ID or youtube.com/live/ID
   if (!videoId) {
-    const shortsMatch = trimmed.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]+)/i);
+    const shortsMatch = trimmed.match(/youtube\.com\/(?:shorts|live)\/([a-zA-Z0-9_-]+)/i);
     if (shortsMatch && shortsMatch[1]) {
       videoId = shortsMatch[1].split('?')[0].split('&')[0];
     }
@@ -56,20 +66,19 @@ export function parseYouTubeUrl(url: string): { embedUrl: string; watchUrl: stri
   if (!videoId) {
     const vMatch = trimmed.match(/[?&]v=([a-zA-Z0-9_-]+)/i);
     if (vMatch && vMatch[1]) {
-      videoId = vMatch[1];
+      videoId = vMatch[1].split('&')[0];
     }
   }
 
-  // Fallback if videoId was found
   if (videoId) {
     return {
       videoId,
-      embedUrl: `https://www.youtube.com/embed/${videoId}?rel=0`,
-      watchUrl: `https://www.youtube.com/watch?v=${videoId}`
+      embedUrl: `https://www.youtube.com/embed/${videoId}?rel=0&playsinline=1`,
+      watchUrl: `https://www.youtube.com/watch?v=${videoId}`,
+      thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
     };
   }
 
-  // If cannot extract videoId, return trimmed URL as fallback
   return {
     embedUrl: trimmed,
     watchUrl: trimmed
@@ -82,55 +91,73 @@ export function parseYouTubeUrl(url: string): { embedUrl: string; watchUrl: stri
 export function parseExercisesFromPatient(rawNotesAntecedents: any, patientId?: string): ExerciseItem[] {
   let list: ExerciseItem[] = [];
 
-  if (rawNotesAntecedents) {
-    if (Array.isArray(rawNotesAntecedents)) {
-      list = rawNotesAntecedents;
-    } else if (typeof rawNotesAntecedents === 'string') {
-      const trimmed = rawNotesAntecedents.trim();
+  const extractFromStringOrArray = (input: any) => {
+    if (!input) return;
+    if (Array.isArray(input)) {
+      for (const entry of input) {
+        if (entry && typeof entry === 'object' && entry.url) {
+          list.push(entry);
+        } else if (entry && typeof entry === 'object' && 'notes_antecedents' in entry) {
+          extractFromStringOrArray(entry.notes_antecedents);
+        }
+      }
+    } else if (typeof input === 'string') {
+      const trimmed = input.trim();
       if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
         try {
           const parsed = JSON.parse(trimmed);
           if (Array.isArray(parsed)) {
-            list = parsed;
+            list.push(...parsed);
           } else if (parsed && Array.isArray(parsed.exercises)) {
-            list = parsed.exercises;
+            list.push(...parsed.exercises);
           }
         } catch (e) {
           console.warn('Could not parse JSON exercises from notes_antecedents', e);
         }
       }
     }
-  }
+  };
 
-  // Merge with localStorage if present (for backward compatibility or offline)
-  if (patientId) {
+  extractFromStringOrArray(rawNotesAntecedents);
+
+  // Merge with localStorage if present (only in browser environment)
+  if (patientId && typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
     try {
-      const localRaw = localStorage.getItem(`reforme_exercises_${patientId}`);
+      const localRaw = window.localStorage.getItem(`reforme_exercises_${patientId}`);
       if (localRaw) {
         const localList: ExerciseItem[] = JSON.parse(localRaw);
         if (Array.isArray(localList) && localList.length > 0) {
-          // Add any missing items from local storage to database list
-          const existingIds = new Set(list.map(item => item.id));
           for (const item of localList) {
-            if (!existingIds.has(item.id)) {
-              list.push(item);
-            }
+            list.push(item);
           }
         }
       }
     } catch (err) {
-      console.warn('Local storage exercise read error', err);
+      console.warn('Local storage exercise read warning', err);
     }
   }
 
-  // Ensure URLs are properly formatted
-  return list.map(item => {
-    if (item.url && (item.url.includes('youtu') || item.url.includes('youtube'))) {
+  // Deduplicate by id or url
+  const seen = new Set<string>();
+  const uniqueList: ExerciseItem[] = [];
+  for (const item of list) {
+    if (!item || !item.url) continue;
+    const key = item.id || item.url;
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueList.push(item);
+    }
+  }
+
+  // Ensure URLs and thumbnails are properly formatted
+  return uniqueList.map(item => {
+    if (item.url && (item.url.includes('youtu') || item.url.includes('youtube') || item.url.includes('drive.google.com'))) {
       const parsed = parseYouTubeUrl(item.url);
       return {
         ...item,
         url: parsed.embedUrl || item.url,
-        originalUrl: item.originalUrl || parsed.watchUrl || item.url
+        originalUrl: item.originalUrl || parsed.watchUrl || item.url,
+        thumbnailUrl: item.thumbnailUrl || parsed.thumbnailUrl
       };
     }
     return item;
@@ -139,29 +166,35 @@ export function parseExercisesFromPatient(rawNotesAntecedents: any, patientId?: 
 
 /**
  * Saves exercises both in Supabase (notes_antecedents) and localStorage.
+ * Also syncs across any duplicate patient records sharing the same phone number
+ * so the patient sees their exercises regardless of which duplicate row matches on login.
  */
 export async function saveExercisesForPatient(
   patientId: string,
-  exercises: ExerciseItem[]
+  exercises: ExerciseItem[],
+  patientTelephone?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
     // 1. Save in localStorage for fast local cache
-    try {
-      localStorage.setItem(`reforme_exercises_${patientId}`, JSON.stringify(exercises));
-    } catch (e) {
-      console.warn('LocalStorage save warning', e);
+    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+      try {
+        window.localStorage.setItem(`reforme_exercises_${patientId}`, JSON.stringify(exercises));
+      } catch (e) {
+        console.warn('LocalStorage save warning', e);
+      }
     }
 
     // 2. Persist in Supabase so that patient sees it on ANY device/phone.
-    // Guard against huge base64 video data URLs that would bloat the patients table and cause SQL timeouts.
+    // Guard against multi-megabyte (>4.5MB) raw video files that would cause SQL statement timeouts.
+    const MAX_DATA_URL_LENGTH = 6000000; // ~4.5 MB file
     const cloudSafeExercises = exercises.filter(
-      item => !(item.url && item.url.startsWith('data:') && item.url.length > 40000)
+      item => !(item.url && item.url.startsWith('data:') && item.url.length > MAX_DATA_URL_LENGTH)
     );
     const payload = JSON.stringify(cloudSafeExercises);
-    if (payload.length > 60000) {
+    if (payload.length > 6200000) {
       return {
         success: false,
-        error: 'Le volume de données est trop important pour la base de données. Privilégiez les liens YouTube.'
+        error: 'Fichier vidéo trop volumineux (> 4.5 Mo). Utilisez un lien YouTube ou une vidéo plus courte pour une visibilité garantie chez le patient.'
       };
     }
 
@@ -171,13 +204,33 @@ export async function saveExercisesForPatient(
       .eq('id', patientId);
 
     if (error) {
-      console.error('Error saving exercises to Supabase:', error);
+      console.warn('Error saving exercises to Supabase:', error);
       return { success: false, error: error.message };
+    }
+
+    // 3. Also sync to any duplicate patient rows that share the same phone number (normalized by last 8 digits)
+    const digitsOnly = (patientTelephone || '').replace(/\D/g, '');
+    const tail = digitsOnly.slice(-8);
+    if (tail.length === 8 && !/^0+$/.test(tail)) {
+      const { data: allPhones } = await supabase
+        .from('patients')
+        .select('id, telephone');
+      if (allPhones && allPhones.length > 0) {
+        const duplicateIds = allPhones
+          .filter(p => p.id !== patientId && (p.telephone || '').replace(/\D/g, '').endsWith(tail))
+          .map(p => p.id);
+        if (duplicateIds.length > 0) {
+          await supabase
+            .from('patients')
+            .update({ notes_antecedents: payload })
+            .in('id', duplicateIds);
+        }
+      }
     }
 
     return { success: true };
   } catch (err: any) {
-    console.error('Fatal error saving exercises:', err);
+    console.warn('Fatal error saving exercises:', err);
     return { success: false, error: err.message || 'Erreur inattendue' };
   }
 }

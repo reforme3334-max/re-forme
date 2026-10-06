@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Modal } from '../components/ui/modal';
-import { supabase } from '../lib/supabaseClient';
+import { createClient } from '@supabase/supabase-js';
+import { supabase, supabaseUrl, supabaseAnonKey } from '../lib/supabaseClient';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
@@ -158,16 +159,31 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
 
     if (!patientError && patientData) {
       setPatient(patientData);
+      try {
+        localStorage.setItem('reforme_preview_patient_id', patientData.id);
+      } catch {}
       
       // Load exercises synced from Supabase (with localStorage fallback & auto-sync)
       try {
-        const loadedExercises = parseExercisesFromPatient(patientData.notes_antecedents, patientData.id);
-        setExercises(loadedExercises);
-        // If there were local exercises not yet in Supabase, auto-persist now
-        if (loadedExercises.length > 0 && (!patientData.notes_antecedents || patientData.notes_antecedents.trim() === '')) {
-          saveExercisesForPatient(patientData.id, loadedExercises);
+        let rawSources: any[] = [patientData];
+        const digitsOnly = (patientData.telephone || '').replace(/\D/g, '');
+        const tail = digitsOnly.slice(-8);
+        if (tail.length === 8 && !/^0+$/.test(tail)) {
+          const { data: samePhoneRows } = await supabase
+            .from('patients')
+            .select('id, notes_antecedents')
+            .ilike('telephone', `%${tail}%`);
+          if (samePhoneRows && samePhoneRows.length > 0) {
+            rawSources = [patientData, ...samePhoneRows];
+          }
         }
-      } catch(e) { console.error('Error loading exercises', e); }
+        const loadedExercises = parseExercisesFromPatient(rawSources, patientData.id);
+        setExercises(loadedExercises);
+        // If there were exercises in localStorage or duplicate rows not yet on this row, auto-persist now
+        if (loadedExercises.length > 0 && (!patientData.notes_antecedents || patientData.notes_antecedents.trim() === '')) {
+          saveExercisesForPatient(patientData.id, loadedExercises, patientData.telephone);
+        }
+      } catch(e) { console.warn('Error loading exercises', e); }
 setForfait(patientData.forfait_seances || 0);
 
       // Load pain evaluations
@@ -322,6 +338,13 @@ setForfait(patientData.forfait_seances || 0);
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 4.2 * 1024 * 1024) {
+      if (videoInputRef.current) videoInputRef.current.value = '';
+      setIsNewVideoModalOpen(true);
+      setVideoSuccessNotice('Cette vidéo dépasse 4,2 Mo. Pour une visibilité instantanée sur le téléphone du patient, utilisez un lien YouTube / Shorts ou une vidéo plus courte.');
+      setTimeout(() => setVideoSuccessNotice(''), 6000);
+      return;
+    }
     const reader = new FileReader();
     reader.onloadend = async () => {
       const newEx: ExerciseItem = {
@@ -333,9 +356,13 @@ setForfait(patientData.forfait_seances || 0);
       };
       const updated = [newEx, ...exercises];
       setExercises(updated);
-      await saveExercisesForPatient(patient.id, updated);
-      setVideoSuccessNotice('Vidéo enregistrée et synchronisée avec l\'espace patient !');
-      setTimeout(() => setVideoSuccessNotice(''), 4000);
+      const res = await saveExercisesForPatient(patient.id, updated, patient.telephone);
+      if (res.success) {
+        setVideoSuccessNotice('Vidéo enregistrée et synchronisée avec l\'espace patient !');
+      } else {
+        setVideoSuccessNotice(res.error || 'Erreur lors de la synchronisation.');
+      }
+      setTimeout(() => setVideoSuccessNotice(''), 5000);
       if (videoInputRef.current) videoInputRef.current.value = '';
     };
     reader.readAsDataURL(file);
@@ -352,6 +379,7 @@ setForfait(patientData.forfait_seances || 0);
       title: newVideoTitle.trim(),
       url: parsed.embedUrl || newVideoUrl.trim(),
       originalUrl: parsed.watchUrl || newVideoUrl.trim(),
+      thumbnailUrl: parsed.thumbnailUrl,
       instructions: newVideoInstructions.trim() || undefined,
       type: 'youtube',
       date: new Date().toISOString()
@@ -360,7 +388,7 @@ setForfait(patientData.forfait_seances || 0);
     const updated = [newEx, ...exercises];
     setExercises(updated);
 
-    const res = await saveExercisesForPatient(patient.id, updated);
+    const res = await saveExercisesForPatient(patient.id, updated, patient.telephone);
     setSavingVideo(false);
 
     if (res.success) {
@@ -380,7 +408,7 @@ setForfait(patientData.forfait_seances || 0);
     if (!confirm('Supprimer cet exercice pour ce patient ?')) return;
     const updated = exercises.filter(e => e.id !== id);
     setExercises(updated);
-    await saveExercisesForPatient(patient.id, updated);
+    await saveExercisesForPatient(patient.id, updated, patient.telephone);
     setVideoSuccessNotice('Exercice supprimé.');
     setTimeout(() => setVideoSuccessNotice(''), 3000);
   };
@@ -472,33 +500,48 @@ setForfait(patientData.forfait_seances || 0);
       const cleanPhone = patient.telephone.replace(/\s+/g, '');
       const dummyEmail = `${cleanPhone}@patient.reforme.center`;
 
+      // Use an isolated non-persisting client so signUp never overwrites the practitioner's active session
+      const tempAuthClient = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      });
+
       // 1. Create auth user
-      const { data: authData, error: authError } = await supabase.auth.signUp({
+      const { data: authData, error: authError } = await tempAuthClient.auth.signUp({
         email: dummyEmail,
         password: accessPassword,
       });
 
-      if (authError) throw authError;
+      if (authError && !authError.message?.toLowerCase().includes('already registered')) {
+        throw authError;
+      }
 
-      if (authData.user) {
+      if (authData?.user) {
         // 2. Create profile with 'patient' role
-        const { error: profileError } = await supabase
+        await supabase
           .from('profiles')
           .upsert([
             { id: authData.user.id, role: 'patient' }
           ]);
-
-        if (profileError) throw profileError;
-
-        // 3. Update patient to record that access has been generated
-        await supabase
-          .from('patients')
-          .update({ has_access: true })
-          .eq('id', patientId);
-
-        setAccessMessage({ type: 'success', text: 'Accès généré avec succès ! Le patient peut se connecter avec son numéro de téléphone et ce mot de passe.' });
-        setAccessPassword('');
       }
+
+      // 3. Update patient to record that access has been generated
+      await supabase
+        .from('patients')
+        .update({ has_access: true })
+        .eq('id', patientId);
+
+      // 4. Sync exercises across any duplicate phone records so the patient immediately sees their videos
+      if (exercises.length > 0) {
+        await saveExercisesForPatient(patient.id, exercises, patient.telephone);
+      }
+
+      setPatient({ ...patient, has_access: true });
+      setAccessMessage({ type: 'success', text: 'Accès généré et synchronisé avec succès ! Le patient peut se connecter avec son numéro de téléphone et ce mot de passe.' });
+      setAccessPassword('');
     } catch (err: any) {
       setAccessMessage({ type: 'error', text: err.message || 'Erreur lors de la génération de l\'accès.' });
     } finally {
@@ -1739,6 +1782,18 @@ return (
             </div>
             
             <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  try {
+                    localStorage.setItem('reforme_preview_patient_id', patient.id);
+                  } catch {}
+                  window.location.hash = 'espace-patient';
+                }}
+                className="gap-2 border-mint-200 bg-mint-50 text-mint-700 hover:bg-mint-100"
+              >
+                <ExternalLink className="h-4 w-4" /> Voir dans l'accès patient
+              </Button>
               <Button onClick={() => setIsNewVideoModalOpen(true)} className="gap-2 bg-red-600 hover:bg-red-700 text-white shadow-xs">
                 <Plus className="h-4 w-4" /> Lien YouTube
               </Button>
@@ -1775,6 +1830,7 @@ return (
                           src={ex.url} 
                           title={ex.title}
                           className="w-full h-full border-0"
+                          referrerPolicy="strict-origin-when-cross-origin"
                           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
                           allowFullScreen
                         ></iframe>

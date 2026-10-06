@@ -215,8 +215,8 @@ export function CalendarView() {
       });
       
       setAppointments(mappedData);
-    } else {
-      console.error("Critical error fetching appointments:", appError?.message);
+    } else if (appError) {
+      console.warn("Avertissement chargement rendez-vous:", appError?.message);
     }
   };
 

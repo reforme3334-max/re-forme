@@ -13,14 +13,23 @@ import { AppointmentNotificationsProvider } from './contexts/AppointmentNotifica
 
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState('login');
-  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('reforme_preview_patient_id');
+    } catch {
+      return null;
+    }
+  });
 
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#', '') || 'login';
       setCurrentRoute(hash);
-      if (hash !== 'patient-detail') {
-        setSelectedPatientId(null);
+      if (hash === 'patient-detail' && !selectedPatientId) {
+        try {
+          const savedId = localStorage.getItem('reforme_preview_patient_id');
+          if (savedId) setSelectedPatientId(savedId);
+        } catch {}
       }
     };
 
@@ -28,10 +37,13 @@ export default function App() {
     handleHashChange(); // Initial check
 
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
+  }, [selectedPatientId]);
 
   const handleSelectPatient = (id: string) => {
     setSelectedPatientId(id);
+    try {
+      localStorage.setItem('reforme_preview_patient_id', id);
+    } catch {}
     window.location.hash = 'patient-detail';
   };
 
@@ -91,7 +103,7 @@ export default function App() {
   return (
     <AppointmentNotificationsProvider>
       {currentRoute === 'espace-patient' ? (
-        <ProtectedRoute allowedRoles={['patient']}>
+        <ProtectedRoute allowedRoles={['patient', 'admin', 'therapeute', 'secretaire']}>
           <PatientPortal />
         </ProtectedRoute>
       ) : (

@@ -69,7 +69,8 @@ export function PatientPortal() {
   const [painViewMode, setPainViewMode] = useState<'chart' | 'list'>('chart');
 
   const [exercises, setExercises] = useState<ExerciseItem[]>([]);
-const [localDocs, setLocalDocs] = useState<any[]>([]);
+  const [localDocs, setLocalDocs] = useState<any[]>([]);
+  const [isStaffPreview, setIsStaffPreview] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -100,22 +101,95 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
       }
 
       const userEmail = session.user.email || '';
-      const buildQuery = (cols: string) => {
-        const q = supabase.from('patients').select(cols);
-        if (userEmail.endsWith('@patient.reforme.center')) {
-          const phone = userEmail.replace('@patient.reforme.center', '');
-          return q.ilike('telephone', `%${phone}%`);
+      const safeCols = 'id, nom, prenom, telephone, email, date_naissance, cin, adresse, pathologie, nombre_seances, atcd, forfait_seances, has_access, last_follow_up_date, follow_up_status, notes_antecedents, created_at';
+      const fallbackCols = 'id, nom, prenom, telephone, email, date_naissance, cin, adresse, pathologie, nombre_seances, atcd, forfait_seances, has_access, last_follow_up_date, follow_up_status, created_at';
+
+      let patientDataList: any[] | null = null;
+      let fetchError: any = null;
+
+      if (userEmail.endsWith('@patient.reforme.center')) {
+        setIsStaffPreview(false);
+        const phone = userEmail.replace('@patient.reforme.center', '').trim();
+        const digitsOnly = phone.replace(/\D/g, '');
+        const tail = digitsOnly.slice(-8);
+
+        // First find all patient IDs matching this phone number (even if formatted with spaces or +212)
+        const matchedIds = new Set<string>();
+        if (tail.length >= 8) {
+          const { data: lightPhones } = await supabase
+            .from('patients')
+            .select('id, telephone');
+          if (lightPhones) {
+            for (const row of lightPhones) {
+              if ((row.telephone || '').replace(/\D/g, '').endsWith(tail)) {
+                matchedIds.add(row.id);
+              }
+            }
+          }
         }
-        return q.eq('email', userEmail);
-      };
 
-      let { data: patientDataList, error: fetchError } = await buildQuery('*');
+        let res;
+        if (matchedIds.size > 0) {
+          res = await supabase
+            .from('patients')
+            .select(safeCols)
+            .in('id', Array.from(matchedIds))
+            .order('created_at', { ascending: false });
+          if (res.error) {
+            res = await supabase
+              .from('patients')
+              .select(fallbackCols)
+              .in('id', Array.from(matchedIds));
+          }
+        } else {
+          res = await supabase
+            .from('patients')
+            .select(safeCols)
+            .ilike('telephone', `%${phone}%`)
+            .order('created_at', { ascending: false });
+          if (res.error) {
+            res = await supabase
+              .from('patients')
+              .select(fallbackCols)
+              .ilike('telephone', `%${phone}%`);
+          }
+        }
 
-      if (fetchError) {
-        const fallback = await buildQuery('id, nom, prenom, telephone, email, date_naissance, cin, adresse, pathologie, nombre_seances, atcd, forfait_seances, has_access, last_follow_up_date, follow_up_status, created_at');
-        if (!fallback.error) {
-          patientDataList = fallback.data;
-          fetchError = null;
+        patientDataList = res.data;
+        fetchError = res.error;
+      } else {
+        // Check if user is a patient with a standard email or staff previewing a patient's portal
+        const res = await supabase.from('patients').select(safeCols).ilike('email', userEmail.trim());
+        if (!res.error && res.data && res.data.length > 0) {
+          patientDataList = res.data;
+          setIsStaffPreview(false);
+        } else {
+          setIsStaffPreview(true);
+          let previewId: string | null = null;
+          try {
+            previewId = localStorage.getItem('reforme_preview_patient_id');
+          } catch {}
+
+          if (previewId) {
+            const pRes = await supabase.from('patients').select(safeCols).eq('id', previewId);
+            if (!pRes.error && pRes.data && pRes.data.length > 0) {
+              patientDataList = pRes.data;
+            }
+          }
+
+          if (!patientDataList || patientDataList.length === 0) {
+            const withExRes = await supabase
+              .from('patients')
+              .select(safeCols)
+              .not('notes_antecedents', 'is', null)
+              .limit(1);
+            if (!withExRes.error && withExRes.data && withExRes.data.length > 0) {
+              patientDataList = withExRes.data;
+            } else {
+              const anyRes = await supabase.from('patients').select(safeCols).limit(1);
+              patientDataList = anyRes.data;
+            }
+          }
         }
       }
 
@@ -125,7 +199,12 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
         return;
       }
 
-      const patientData = patientDataList[0];
+      // Prefer the record that has exercises (notes_antecedents) or has_access = true
+      const patientData =
+        patientDataList.find((p: any) => p.notes_antecedents && String(p.notes_antecedents).trim().length > 2) ||
+        patientDataList.find((p: any) => p.has_access) ||
+        patientDataList[0];
+
       setPatient(patientData);
 
       // 1. Load documents
@@ -134,13 +213,13 @@ const [localDocs, setLocalDocs] = useState<any[]>([]);
         if (storedDocs) {
           setLocalDocs(JSON.parse(storedDocs));
         }
-      } catch(e) { console.error('Erreur lecture docs', e); }
+      } catch(e) { console.warn('Erreur lecture docs', e); }
 
-      // 2. Load exercises from Supabase notes_antecedents (with localStorage fallback)
+      // 2. Load exercises from ALL matching rows for this patient's phone/ID + localStorage
       try {
-        const loadedExercises = parseExercisesFromPatient(patientData.notes_antecedents, patientData.id);
+        const loadedExercises = parseExercisesFromPatient(patientDataList, patientData.id);
         setExercises(loadedExercises);
-      } catch(e) { console.error('Erreur lecture exercices', e); }
+      } catch(e) { console.warn('Erreur lecture exercices', e); }
 
       setProfileForm({
         telephone: patientData.telephone || '',
@@ -563,6 +642,22 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
 
   return (
     <div className="min-h-screen bg-slate-50 pb-20 font-sans">
+      {isStaffPreview && (
+        <div className="bg-slate-900 text-white px-4 py-2.5 text-xs flex items-center justify-between gap-2">
+          <span className="font-medium truncate">
+            Aperçu Espace Patient : <strong className="text-mint-400">{patient.prenom} {patient.nom}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              window.location.hash = 'patient-detail';
+            }}
+            className="bg-white/10 hover:bg-white/20 text-white font-bold px-3 py-1 rounded-lg whitespace-nowrap transition-colors"
+          >
+            ← Retour à la fiche patient
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className="bg-white px-5 pt-4 pb-2 shadow-sm sticky top-0 z-20 flex flex-col border-b border-slate-100">
         <div className="flex justify-between items-center mb-4">
@@ -629,6 +724,79 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
         
         {activeTab === 'accueil' && (
           <>
+            {/* Section Exercices Recommandés placée tout en haut de l'Accueil pour visibilité immédiate */}
+            {exercises.length > 0 && (
+              <section className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white rounded-2xl p-5 shadow-md space-y-3.5 border border-red-500/30">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-9 w-9 bg-red-600 rounded-xl flex items-center justify-center text-white shadow-sm flex-shrink-0">
+                      <Play className="h-5 w-5 fill-current" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                        Programme d'exercices vidéo
+                        <span className="px-1.5 py-0.5 text-[10px] bg-red-500/20 text-red-300 font-bold rounded border border-red-500/30">
+                          {exercises.length} vidéo{exercises.length > 1 ? 's' : ''}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-300">Prescrit par votre kinésithérapeute</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setActiveTab('exercices')}
+                    className="text-xs font-semibold text-mint-400 hover:text-mint-300 underline underline-offset-2 flex items-center gap-0.5"
+                  >
+                    Voir tout ({exercises.length})
+                  </button>
+                </div>
+
+                {/* Liste complète des exercices prescrits directement accessible sur l'Accueil */}
+                <div className="space-y-3">
+                  {exercises.map((ex, idx) => (
+                    <div key={ex.id || idx} className="bg-slate-950/70 rounded-xl overflow-hidden border border-slate-700/60">
+                      <div className="aspect-video w-full bg-black relative">
+                        {ex.url.startsWith('data:video') ? (
+                          <video src={ex.url} controls className="w-full h-full object-cover" />
+                        ) : (
+                          <iframe 
+                            src={ex.url}
+                            title={ex.title}
+                            className="w-full h-full border-0"
+                            referrerPolicy="strict-origin-when-cross-origin"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                            allowFullScreen
+                          />
+                        )}
+                      </div>
+                      <div className="p-3.5 space-y-2">
+                        <h4 className="font-bold text-sm text-white line-clamp-1">{ex.title}</h4>
+                        {ex.instructions && (
+                          <div className="text-xs text-amber-200 bg-amber-950/50 border border-amber-800/40 p-2 rounded-lg">
+                            <span className="font-semibold text-amber-100">Consigne :</span> {ex.instructions}
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-[11px] text-slate-400">
+                            Ajouté le {new Date(ex.date).toLocaleDateString('fr-FR')}
+                          </span>
+                          {ex.originalUrl && (
+                            <a 
+                              href={ex.originalUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs bg-red-600 hover:bg-red-700 text-white px-2.5 py-1 rounded-lg font-semibold transition-colors"
+                            >
+                              <ExternalLink className="h-3 w-3" /> Ouvrir sur YouTube
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* Quick Actions */}
             <div className="flex gap-3">
               <Button onClick={() => setIsApptModalOpen(true)} className="flex-1 bg-mint-600 hover:bg-mint-700 text-white shadow-sm flex items-center justify-center gap-2 font-bold py-2.5">
@@ -738,87 +906,6 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
               ) : null}
             </div>
 
-            {/* Section Exercices Recommandés directement sur l'Accueil */}
-            {exercises.length > 0 && (
-              <section className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white rounded-2xl p-5 shadow-sm space-y-3.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="h-9 w-9 bg-red-600 rounded-xl flex items-center justify-center text-white shadow-sm flex-shrink-0">
-                      <Play className="h-5 w-5 fill-current" />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-sm text-white flex items-center gap-2">
-                        Programme d'exercices vidéo
-                        <span className="px-1.5 py-0.5 text-[10px] bg-red-500/20 text-red-300 font-bold rounded border border-red-500/30">
-                          {exercises.length} vidéo{exercises.length > 1 ? 's' : ''}
-                        </span>
-                      </h3>
-                      <p className="text-xs text-slate-300">Prescrit par votre kinésithérapeute</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => setActiveTab('exercices')}
-                    className="text-xs font-semibold text-mint-400 hover:text-mint-300 underline underline-offset-2 flex items-center gap-0.5"
-                  >
-                    Voir tout ({exercises.length})
-                  </button>
-                </div>
-
-                {/* Dernier exercice en aperçu interactif */}
-                {exercises[0] && (
-                  <div className="bg-slate-950/70 rounded-xl overflow-hidden border border-slate-700/60">
-                    <div className="aspect-video w-full bg-black relative">
-                      {exercises[0].url.startsWith('data:video') ? (
-                        <video src={exercises[0].url} controls className="w-full h-full object-cover" />
-                      ) : (
-                        <iframe 
-                          src={exercises[0].url}
-                          title={exercises[0].title}
-                          className="w-full h-full border-0"
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
-                          allowFullScreen
-                        />
-                      )}
-                    </div>
-                    <div className="p-3.5 space-y-2">
-                      <h4 className="font-bold text-sm text-white line-clamp-1">{exercises[0].title}</h4>
-                      {exercises[0].instructions && (
-                        <div className="text-xs text-amber-200 bg-amber-950/50 border border-amber-800/40 p-2 rounded-lg">
-                          <span className="font-semibold text-amber-100">Consigne :</span> {exercises[0].instructions}
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between pt-1">
-                        <span className="text-[11px] text-slate-400">
-                          Ajouté le {new Date(exercises[0].date).toLocaleDateString('fr-FR')}
-                        </span>
-                        {exercises[0].originalUrl && (
-                          <a 
-                            href={exercises[0].originalUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs text-red-400 hover:text-red-300 font-medium"
-                          >
-                            <ExternalLink className="h-3 w-3" /> Ouvrir sur YouTube
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {exercises.length > 1 && (
-                  <Button 
-                    onClick={() => setActiveTab('exercices')}
-                    variant="outline"
-                    className="w-full text-xs font-semibold bg-slate-800/80 hover:bg-slate-700 text-white border-slate-700 py-2"
-                  >
-                    Consulter les {exercises.length} exercices prescrits
-                  </Button>
-                )}
-              </section>
-            )}
-
-            
             {/* Suivi Quotidien de la Douleur (Échelle EVA 1 à 10) */}
             <section className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
               <div className="p-4 border-b border-slate-50 flex items-center justify-between">
@@ -1101,6 +1188,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                           src={ex.url} 
                           title={ex.title}
                           className="w-full h-full border-0"
+                          referrerPolicy="strict-origin-when-cross-origin"
                           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
                           allowFullScreen
                         />
