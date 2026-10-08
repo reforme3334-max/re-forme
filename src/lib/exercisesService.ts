@@ -11,6 +11,14 @@ export interface ExerciseItem {
   type?: 'video' | 'youtube';
 }
 
+export interface PainLogItem {
+  id: string;
+  score: number;
+  note: string;
+  date: string;
+  author?: 'patient' | 'praticien';
+}
+
 /**
  * Normalizes YouTube and video URLs into proper embed, watch, and thumbnail links.
  */
@@ -165,9 +173,151 @@ export function parseExercisesFromPatient(rawNotesAntecedents: any, patientId?: 
 }
 
 /**
- * Saves exercises both in Supabase (notes_antecedents) and localStorage.
- * Also syncs across any duplicate patient records sharing the same phone number
- * so the patient sees their exercises regardless of which duplicate row matches on login.
+ * Safely parses pain evaluation logs stored in the database (notes_antecedents + follow_up_status + localStorage).
+ */
+export function parsePainLogsFromPatient(rawInput: any, patientId?: string): PainLogItem[] {
+  const rawLogs: PainLogItem[] = [];
+  const fallbackStatusLogs: PainLogItem[] = [];
+
+  const extractFromInput = (input: any) => {
+    if (!input) return;
+    if (Array.isArray(input)) {
+      for (const entry of input) {
+        if (!entry || typeof entry !== 'object') continue;
+        if ('score' in entry && 'date' in entry) {
+          rawLogs.push({
+            id: String(entry.id || Date.now()),
+            score: Number(entry.score) || 1,
+            note: entry.note ? String(entry.note) : '',
+            date: String(entry.date),
+            author: entry.author
+          });
+        } else {
+          if ('notes_antecedents' in entry && entry.notes_antecedents) {
+            extractFromInput(entry.notes_antecedents);
+          }
+          if ('follow_up_status' in entry && typeof entry.follow_up_status === 'string' && entry.follow_up_status.startsWith('PAIN:')) {
+            const parts = entry.follow_up_status.replace('PAIN:', '').split('|');
+            const dbScore = parseInt(parts[0], 10);
+            const dbDate = parts[1] || entry.last_follow_up_date || new Date().toISOString();
+            const dbNote = parts[2] || '';
+            if (!isNaN(dbScore)) {
+              fallbackStatusLogs.push({
+                id: 'status-' + dbDate.split('T')[0],
+                score: dbScore,
+                note: dbNote,
+                date: dbDate.includes('T') ? dbDate : `${dbDate}T12:00:00.000Z`
+              });
+            }
+          }
+        }
+      }
+    } else if (typeof input === 'object') {
+      if ('notes_antecedents' in input || 'follow_up_status' in input) {
+        extractFromInput([input]);
+      } else if (Array.isArray(input.painLogs)) {
+        extractFromInput(input.painLogs);
+      }
+    } else if (typeof input === 'string') {
+      const trimmed = input.trim();
+      if (trimmed.startsWith('PAIN:')) {
+        const parts = trimmed.replace('PAIN:', '').split('|');
+        const dbScore = parseInt(parts[0], 10);
+        const dbDate = parts[1] || new Date().toISOString();
+        const dbNote = parts[2] || '';
+        if (!isNaN(dbScore)) {
+          fallbackStatusLogs.push({
+            id: 'status-' + dbDate.split('T')[0],
+            score: dbScore,
+            note: dbNote,
+            date: dbDate.includes('T') ? dbDate : `${dbDate}T12:00:00.000Z`
+          });
+        }
+      } else if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.painLogs)) {
+            extractFromInput(parsed.painLogs);
+          }
+        } catch (e) {
+          console.warn('Could not parse JSON painLogs from notes_antecedents', e);
+        }
+      }
+    }
+  };
+
+  extractFromInput(rawInput);
+
+  // Merge with localStorage if present
+  if (patientId && typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+    try {
+      const localRaw = window.localStorage.getItem(`reforme_pain_${patientId}`);
+      if (localRaw) {
+        const localList = JSON.parse(localRaw);
+        if (Array.isArray(localList)) {
+          extractFromInput(localList);
+        }
+      }
+    } catch (err) {
+      console.warn('Local storage pain read warning', err);
+    }
+  }
+
+  // Append fallback follow_up_status logs last so full notes_antecedents logs take priority
+  const allLogs = [...rawLogs, ...fallbackStatusLogs];
+
+  // Deduplicate by date (YYYY-MM-DD), keeping the entry with the most recent timestamp or longest note
+  const byDay = new Map<string, PainLogItem>();
+  for (const item of allLogs) {
+    if (!item || typeof item.score !== 'number' || isNaN(item.score) || !item.date) continue;
+    const dayKey = item.date.split('T')[0];
+    const existing = byDay.get(dayKey);
+    if (!existing) {
+      byDay.set(dayKey, item);
+    } else {
+      const existingIsFallback = String(existing.id).startsWith('status-') || String(existing.id).startsWith('db-');
+      const itemIsFallback = String(item.id).startsWith('status-') || String(item.id).startsWith('db-');
+      if (existingIsFallback && !itemIsFallback) {
+        byDay.set(dayKey, item);
+      } else if (!existingIsFallback && !itemIsFallback && (item.note?.length || 0) > (existing.note?.length || 0)) {
+        byDay.set(dayKey, item);
+      }
+    }
+  }
+
+  return Array.from(byDay.values()).sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+}
+
+/**
+ * Helper to fetch existing exercises & painLogs on a patient record before updating one of them.
+ */
+async function getExistingCloudData(patientId: string): Promise<{ exercises: ExerciseItem[]; painLogs: PainLogItem[] }> {
+  try {
+    const { data } = await supabase
+      .from('patients')
+      .select('notes_antecedents, follow_up_status, last_follow_up_date')
+      .eq('id', patientId)
+      .single();
+    if (data) {
+      return {
+        exercises: parseExercisesFromPatient(data.notes_antecedents, patientId),
+        painLogs: parsePainLogsFromPatient(data, patientId)
+      };
+    }
+  } catch (e) {
+    console.warn('Could not read existing cloud data for merge', e);
+  }
+  return {
+    exercises: parseExercisesFromPatient(null, patientId),
+    painLogs: parsePainLogsFromPatient(null, patientId)
+  };
+}
+
+/**
+ * Saves exercises both in Supabase (notes_antecedents) and localStorage,
+ * preserving any existing painLogs and syncing across duplicate phone records.
  */
 export async function saveExercisesForPatient(
   patientId: string,
@@ -184,13 +334,18 @@ export async function saveExercisesForPatient(
       }
     }
 
-    // 2. Persist in Supabase so that patient sees it on ANY device/phone.
+    // 2. Preserve existing painLogs when saving exercises
+    const existing = await getExistingCloudData(patientId);
+
     // Guard against multi-megabyte (>4.5MB) raw video files that would cause SQL statement timeouts.
     const MAX_DATA_URL_LENGTH = 6000000; // ~4.5 MB file
     const cloudSafeExercises = exercises.filter(
       item => !(item.url && item.url.startsWith('data:') && item.url.length > MAX_DATA_URL_LENGTH)
     );
-    const payload = JSON.stringify(cloudSafeExercises);
+    const payload = JSON.stringify({
+      exercises: cloudSafeExercises,
+      painLogs: existing.painLogs.slice(0, 90)
+    });
     if (payload.length > 6200000) {
       return {
         success: false,
@@ -231,6 +386,94 @@ export async function saveExercisesForPatient(
     return { success: true };
   } catch (err: any) {
     console.warn('Fatal error saving exercises:', err);
+    return { success: false, error: err.message || 'Erreur inattendue' };
+  }
+}
+
+/**
+ * Saves the full 30-day pain evaluation history (painLogs) in Supabase (notes_antecedents + follow_up_status)
+ * and localStorage, syncing across any duplicate patient rows sharing the same phone number
+ * so the Patient, Admin, Secrétaire, and Kiné all see the exact same pain evolution diagram.
+ */
+export async function savePainLogsForPatient(
+  patientId: string,
+  painLogs: PainLogItem[],
+  patientTelephone?: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const sortedLogs = [...painLogs].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+
+    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+      try {
+        window.localStorage.setItem(`reforme_pain_${patientId}`, JSON.stringify(sortedLogs));
+      } catch (e) {
+        console.warn('LocalStorage pain save warning', e);
+      }
+    }
+
+    const existing = await getExistingCloudData(patientId);
+    const MAX_DATA_URL_LENGTH = 6000000;
+    const cloudSafeExercises = existing.exercises.filter(
+      item => !(item.url && item.url.startsWith('data:') && item.url.length > MAX_DATA_URL_LENGTH)
+    );
+
+    const payload = JSON.stringify({
+      exercises: cloudSafeExercises,
+      painLogs: sortedLogs.slice(0, 90)
+    });
+
+    const latest = sortedLogs[0];
+    let followUpStatus: string | null = null;
+    let lastFollowUpDate: string | null = null;
+
+    if (latest) {
+      const dateStr = latest.date.split('T')[0];
+      const shortNote = (latest.note || '').trim().replace(/\|/g, ' ').slice(0, 20);
+      followUpStatus = `PAIN:${latest.score}|${dateStr}${shortNote ? '|' + shortNote : ''}`;
+      lastFollowUpDate = latest.date;
+    }
+
+    const updateData: Record<string, any> = {
+      notes_antecedents: payload,
+      follow_up_status: followUpStatus,
+      last_follow_up_date: lastFollowUpDate
+    };
+
+    const { error } = await supabase
+      .from('patients')
+      .update(updateData)
+      .eq('id', patientId);
+
+    if (error) {
+      console.warn('Error saving painLogs to Supabase:', error);
+      return { success: false, error: error.message };
+    }
+
+    // Sync across duplicate patient rows sharing the same phone number
+    const digitsOnly = (patientTelephone || '').replace(/\D/g, '');
+    const tail = digitsOnly.slice(-8);
+    if (tail.length === 8 && !/^0+$/.test(tail)) {
+      const { data: allPhones } = await supabase
+        .from('patients')
+        .select('id, telephone');
+      if (allPhones && allPhones.length > 0) {
+        const duplicateIds = allPhones
+          .filter(p => p.id !== patientId && (p.telephone || '').replace(/\D/g, '').endsWith(tail))
+          .map(p => p.id);
+        if (duplicateIds.length > 0) {
+          await supabase
+            .from('patients')
+            .update(updateData)
+            .in('id', duplicateIds);
+        }
+      }
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.warn('Fatal error saving painLogs:', err);
     return { success: false, error: err.message || 'Erreur inattendue' };
   }
 }

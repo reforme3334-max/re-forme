@@ -41,6 +41,9 @@ export function Sidebar({ onClose }: SidebarProps) {
   const hasPermission = (permission: string) => {
     if (!userProfile) return false;
     if (userProfile.role === 'admin') return true;
+    if ((userProfile.role === 'secretaire' || userProfile.role === 'therapeute') && (permission === 'agenda' || permission === 'patients')) {
+      return true;
+    }
     return userProfile.permissions?.includes(permission);
   };
 

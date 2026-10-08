@@ -48,19 +48,27 @@ export function LoginPage() {
           .eq('id', authData.user.id)
           .single();
 
-        if (profileError || !profile) {
+        const isPatientAccount = loginEmail.toLowerCase().endsWith('@patient.reforme.center');
+        if ((profileError || !profile) && !isPatientAccount) {
           throw new Error('Profil introuvable ou rôle non défini.');
         }
 
         // 3. Redirection Intelligente selon le rôle
-        const role = profile.role;
+        const role = profile?.role || (isPatientAccount ? 'patient' : '');
         if (role === 'admin') {
+          try { sessionStorage.removeItem('reforme_portal_patient_phone'); } catch {}
           window.location.hash = 'dashboard';
         } else if (role === 'therapeute') {
+          try { sessionStorage.removeItem('reforme_portal_patient_phone'); } catch {}
           window.location.hash = 'agenda';
         } else if (role === 'secretaire') {
+          try { sessionStorage.removeItem('reforme_portal_patient_phone'); } catch {}
           window.location.hash = 'agenda';
         } else if (role === 'patient') {
+          try {
+            const patientPhone = cleanInput.replace(/@patient\.reforme\.center$/i, '');
+            sessionStorage.setItem('reforme_portal_patient_phone', patientPhone);
+          } catch {}
           window.location.hash = 'espace-patient';
         } else {
           throw new Error('Rôle non reconnu.');

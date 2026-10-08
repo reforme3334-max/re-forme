@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2 } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -10,7 +10,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
-import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, ExerciseItem } from '../lib/exercisesService';
+import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 
 interface PatientDetailProps {
@@ -131,8 +131,59 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   useEffect(() => {
     if (patientId) {
       fetchPatientDetails();
+
+      const handleFocus = () => syncPainAndExercises();
+      window.addEventListener('focus', handleFocus);
+      const timer = setInterval(() => {
+        syncPainAndExercises();
+      }, 15000);
+
+      return () => {
+        window.removeEventListener('focus', handleFocus);
+        clearInterval(timer);
+      };
     }
   }, [patientId]);
+
+  const syncPainAndExercises = async () => {
+    if (!patientId) return;
+    try {
+      const { data: pData } = await supabase
+        .from('patients')
+        .select('id, telephone, notes_antecedents, follow_up_status, last_follow_up_date')
+        .eq('id', patientId)
+        .single();
+      if (!pData) return;
+
+      let rawSources: any[] = [pData];
+      const digitsOnly = (pData.telephone || '').replace(/\D/g, '');
+      const tail = digitsOnly.slice(-8);
+      if (tail.length === 8 && !/^0+$/.test(tail)) {
+        const { data: lightPhones } = await supabase
+          .from('patients')
+          .select('id, telephone');
+        if (lightPhones) {
+          const dupIds = lightPhones
+            .filter(r => r.id !== pData.id && (r.telephone || '').replace(/\D/g, '').endsWith(tail))
+            .map(r => r.id);
+          if (dupIds.length > 0) {
+            const { data: samePhoneRows } = await supabase
+              .from('patients')
+              .select('id, notes_antecedents, follow_up_status, last_follow_up_date')
+              .in('id', dupIds);
+            if (samePhoneRows) {
+              rawSources = [pData, ...samePhoneRows];
+            }
+          }
+        }
+      }
+
+      setExercises(parseExercisesFromPatient(rawSources, pData.id));
+      setPainLogs(parsePainLogsFromPatient(rawSources, pData.id));
+    } catch (e) {
+      console.warn('Silent sync warning', e);
+    }
+  };
 
   const fetchPatientDetails = async () => {
     setLoading(true);
@@ -163,54 +214,47 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
         localStorage.setItem('reforme_preview_patient_id', patientData.id);
       } catch {}
       
-      // Load exercises synced from Supabase (with localStorage fallback & auto-sync)
+      // Load exercises & pain evaluations synced from Supabase (including duplicate phone rows & localStorage)
       try {
         let rawSources: any[] = [patientData];
         const digitsOnly = (patientData.telephone || '').replace(/\D/g, '');
         const tail = digitsOnly.slice(-8);
         if (tail.length === 8 && !/^0+$/.test(tail)) {
-          const { data: samePhoneRows } = await supabase
+          const { data: lightPhones } = await supabase
             .from('patients')
-            .select('id, notes_antecedents')
-            .ilike('telephone', `%${tail}%`);
-          if (samePhoneRows && samePhoneRows.length > 0) {
-            rawSources = [patientData, ...samePhoneRows];
+            .select('id, telephone');
+          if (lightPhones) {
+            const dupIds = lightPhones
+              .filter(r => r.id !== patientData.id && (r.telephone || '').replace(/\D/g, '').endsWith(tail))
+              .map(r => r.id);
+            if (dupIds.length > 0) {
+              const { data: samePhoneRows } = await supabase
+                .from('patients')
+                .select('id, notes_antecedents, follow_up_status, last_follow_up_date')
+                .in('id', dupIds);
+              if (samePhoneRows && samePhoneRows.length > 0) {
+                rawSources = [patientData, ...samePhoneRows];
+              }
+            }
           }
         }
         const loadedExercises = parseExercisesFromPatient(rawSources, patientData.id);
         setExercises(loadedExercises);
-        // If there were exercises in localStorage or duplicate rows not yet on this row, auto-persist now
-        if (loadedExercises.length > 0 && (!patientData.notes_antecedents || patientData.notes_antecedents.trim() === '')) {
-          saveExercisesForPatient(patientData.id, loadedExercises, patientData.telephone);
-        }
-      } catch(e) { console.warn('Error loading exercises', e); }
-setForfait(patientData.forfait_seances || 0);
 
-      // Load pain evaluations
-      try {
-        const storedPain = localStorage.getItem(`reforme_pain_${patientData.id}`);
-        let parsedPain: any[] = [];
-        if (storedPain) {
-          parsedPain = JSON.parse(storedPain);
-        }
-        if (patientData.follow_up_status && patientData.follow_up_status.startsWith('PAIN:')) {
-          const parts = patientData.follow_up_status.replace('PAIN:', '').split('|');
-          const dbScore = parseInt(parts[0], 10);
-          const dbDate = parts[1] || new Date().toISOString();
-          const dbNote = parts[2] || '';
-          if (!parsedPain.some((p: any) => p.date && p.date.startsWith(dbDate.split('T')[0]))) {
-            parsedPain.unshift({
-              id: 'db-' + Date.now(),
-              score: dbScore,
-              date: dbDate,
-              note: dbNote
-            });
+        const loadedPainLogs = parsePainLogsFromPatient(rawSources, patientData.id);
+        setPainLogs(loadedPainLogs);
+
+        // Auto-persist if local or duplicate data hasn't been saved to this patient's cloud record yet
+        const hasCloudJson = patientData.notes_antecedents && patientData.notes_antecedents.trim().startsWith('{');
+        if (!hasCloudJson && (loadedExercises.length > 0 || loadedPainLogs.length > 0)) {
+          if (loadedPainLogs.length > 0) {
+            savePainLogsForPatient(patientData.id, loadedPainLogs, patientData.telephone);
+          } else if (loadedExercises.length > 0) {
+            saveExercisesForPatient(patientData.id, loadedExercises, patientData.telephone);
           }
         }
-        setPainLogs(parsedPain);
-      } catch (e) {
-        console.error('Error loading pain logs', e);
-      }
+      } catch(e) { console.warn('Error loading exercises & pain logs', e); }
+      setForfait(patientData.forfait_seances || 0);
 
     }
 
@@ -427,29 +471,20 @@ setForfait(patientData.forfait_seances || 0);
     setPractitionerPainLoading(true);
     try {
       const dateObj = new Date(practitionerPainDate + 'T12:00:00');
-      const newEntry = {
+      const newEntry: PainLogItem = {
         id: Date.now().toString(),
         score: practitionerPainScore,
         note: practitionerPainNote.trim() || 'Évaluation en consultation',
-        date: dateObj.toISOString()
+        date: dateObj.toISOString(),
+        author: 'praticien'
       };
       const filtered = painLogs.filter(p => !(p.date && p.date.startsWith(practitionerPainDate)));
-      const updated = [newEntry, ...filtered];
+      const updated = [newEntry, ...filtered].sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+      );
       setPainLogs(updated);
 
-      try {
-        localStorage.setItem(`reforme_pain_${patient.id}`, JSON.stringify(updated));
-      } catch (err) {
-        console.error('Local storage write error', err);
-      }
-
-      // Sync with Supabase
-      const cleanNote = (practitionerPainNote.trim() || 'Consultation').slice(0, 20);
-      const dbVal = `PAIN:${practitionerPainScore}|${practitionerPainDate}${cleanNote ? '|' + cleanNote : ''}`;
-      await supabase.from('patients').update({
-        follow_up_status: dbVal,
-        last_follow_up_date: dateObj.toISOString()
-      }).eq('id', patient.id);
+      await savePainLogsForPatient(patient.id, updated, patient.telephone);
 
       setIsAddPainModalOpen(false);
       setPractitionerPainNote('');
@@ -460,14 +495,12 @@ setForfait(patientData.forfait_seances || 0);
     }
   };
 
-  const handleDeletePainLog = (id: string) => {
+  const handleDeletePainLog = async (id: string) => {
     if (!confirm('Supprimer cette évaluation de douleur ?')) return;
     const updated = painLogs.filter(p => p.id !== id);
     setPainLogs(updated);
-    try {
-      localStorage.setItem(`reforme_pain_${patient.id}`, JSON.stringify(updated));
-    } catch (err) {
-      console.error(err);
+    if (patient) {
+      await savePainLogsForPatient(patient.id, updated, patient.telephone);
     }
   };
 
@@ -1250,28 +1283,44 @@ setForfait(patientData.forfait_seances || 0);
               </Card>
             </div>
 
-                        {/* Bloc Suivi Quotidien de la Douleur (EVA 1-10) */}
+            {/* Bloc Suivi Quotidien de la Douleur (EVA 1-10) */}
             <Card className="border-0 shadow-sm overflow-hidden bg-white">
-              <CardHeader className="pb-3 border-b border-slate-50 flex flex-row items-center justify-between">
+              <CardHeader className="pb-3 border-b border-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5">
-                  <div className="h-8 w-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center">
+                  <div className="h-8 w-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
                     <HeartPulse className="h-4 w-4" />
                   </div>
                   <div>
-                    <CardTitle className="text-base font-bold text-slate-800">
-                      Suivi de la Douleur Quotidienne (Échelle EVA 1-10)
-                    </CardTitle>
-                    <p className="text-xs text-slate-500">Évaluations renseignées par le patient ou notées en consultation</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <CardTitle className="text-base font-bold text-slate-800">
+                        Suivi de la Douleur Quotidienne (Échelle EVA 1-10)
+                      </CardTitle>
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3" /> Synchronisé en direct avec le patient
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500">Diagramme et historique synchronisés entre l'espace patient, l'administrateur et le secrétariat</p>
                   </div>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsAddPainModalOpen(true)}
-                  className="rounded-lg text-xs font-bold text-primary-600 hover:bg-primary-50 border-primary-100 gap-1.5"
-                >
-                  <Plus className="h-3.5 w-3.5" /> Évaluer / Noter
-                </Button>
+                <div className="flex items-center gap-2 self-end sm:self-center">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={syncPainAndExercises}
+                    title="Actualiser les données du patient"
+                    className="h-8 px-2.5 text-xs text-slate-600 hover:text-primary-600 gap-1"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" /> Actualiser
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsAddPainModalOpen(true)}
+                    className="rounded-lg text-xs font-bold text-primary-600 hover:bg-primary-50 border-primary-100 gap-1.5"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Évaluer / Noter
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="pt-4">
                 {painLogs.length === 0 ? (

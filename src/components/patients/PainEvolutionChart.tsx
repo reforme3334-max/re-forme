@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import {
   ResponsiveContainer,
-  LineChart,
+  ComposedChart,
+  Area,
   Line,
   XAxis,
   YAxis,
@@ -9,19 +10,38 @@ import {
   Tooltip,
   ReferenceLine,
 } from 'recharts';
-import { TrendingDown, TrendingUp, Minus, Calendar, Activity } from 'lucide-react';
+import { TrendingDown, TrendingUp, Minus, Activity } from 'lucide-react';
+import { getMoroccoNow } from '../../lib/timeUtils';
+import { extractPainDayKey } from '../../lib/exercisesService';
 
 export interface PainLogEntry {
   id?: string;
   score: number;
   date: string;
   note?: string;
+  updatedAt?: number;
 }
 
 interface PainEvolutionChartProps {
   logs: PainLogEntry[];
   daysCount?: number;
   className?: string;
+}
+
+function formatDayMetadata(dateStr: string): { label: string; fullDate: string; dateObj: Date } {
+  const parts = dateStr.split('-');
+  const y = parseInt(parts[0], 10) || 2026;
+  const m = (parseInt(parts[1], 10) || 1) - 1;
+  const d = parseInt(parts[2], 10) || 1;
+  const dateObj = new Date(y, m, d, 12, 0, 0);
+  const label = `${String(d).padStart(2, '0')}/${String(m + 1).padStart(2, '0')}`;
+  const fullDate = dateObj.toLocaleDateString('fr-FR', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+  return { label, fullDate, dateObj };
 }
 
 export function PainEvolutionChart({
@@ -31,65 +51,131 @@ export function PainEvolutionChart({
 }: PainEvolutionChartProps) {
   const [selectedRange, setSelectedRange] = useState<number>(daysCount);
 
-  // Generate chart data for the selected range (default 30 days)
-  const { chartData, stats } = useMemo(() => {
+  // Generate chart data for the selected range while always preserving the exact dates entered by the patient
+  const { chartData, visibleTicks, stats } = useMemo(() => {
     const days = selectedRange;
-    const now = new Date();
-    const result: Array<{
-      dateStr: string;
-      label: string;
-      fullDate: string;
-      score: number | null;
-      note?: string;
-    }> = [];
+    const now = getMoroccoNow();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-    // Map logs by date (YYYY-MM-DD)
+    // Sort logs so the newest update for any given day wins
+    const sortedLogs = [...(logs || [])].sort((a, b) => {
+      const tsA = a.updatedAt || new Date(a.date || 0).getTime();
+      const tsB = b.updatedAt || new Date(b.date || 0).getTime();
+      return tsB - tsA;
+    });
+
+    // Map logs by exact calendar date (YYYY-MM-DD)
     const logsByDate = new Map<string, PainLogEntry>();
-    logs.forEach((log) => {
-      if (!log.date) return;
-      const datePart = log.date.split('T')[0];
-      // Keep the most recent or highest priority for the day
+    sortedLogs.forEach((log) => {
+      if (!log || !log.date) return;
+      const datePart = extractPainDayKey(log.date);
       if (!logsByDate.has(datePart)) {
         logsByDate.set(datePart, log);
       }
     });
 
-    let totalScore = 0;
-    let count = 0;
-    let minScore = 10;
-    let maxScore = 0;
-    const scoredDays: Array<{ date: string; score: number }> = [];
-
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      const label = d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
-      const fullDate = d.toLocaleDateString('fr-FR', {
-        weekday: 'long',
-        day: 'numeric',
-        month: 'long',
-      });
-
-      const entry = logsByDate.get(dateStr);
-      const score = entry !== undefined ? entry.score : null;
-
-      if (score !== null) {
-        totalScore += score;
-        count++;
-        if (score < minScore) minScore = score;
-        if (score > maxScore) maxScore = score;
-        scoredDays.push({ date: dateStr, score });
+    // Anchor end date to max(todayStr, latest recorded evaluation date) so future/midnight dates are never clipped
+    const allRecordedDates = Array.from(logsByDate.keys()).sort();
+    let endRefDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+    if (allRecordedDates.length > 0) {
+      const latestRecordedStr = allRecordedDates[allRecordedDates.length - 1];
+      if (latestRecordedStr > todayStr) {
+        endRefDate = formatDayMetadata(latestRecordedStr).dateObj;
       }
+    }
 
-      result.push({
+    const dayMap = new Map<
+      string,
+      {
+        dateStr: string;
+        label: string;
+        fullDate: string;
+        score: number | null;
+        displayScore: number | null;
+        note?: string;
+      }
+    >();
+
+    // Populate the N-day window ending at endRefDate
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(endRefDate.getFullYear(), endRefDate.getMonth(), endRefDate.getDate() - i, 12, 0, 0);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const dateStr = `${yyyy}-${mm}-${dd}`;
+      const { label, fullDate } = formatDayMetadata(dateStr);
+      const entry = logsByDate.get(dateStr);
+      const score = entry !== undefined && !isNaN(Number(entry.score)) ? Number(entry.score) : null;
+
+      dayMap.set(dateStr, {
         dateStr,
         label,
         fullDate,
         score,
+        displayScore: score,
         note: entry?.note,
       });
     }
+
+    // Ensure EVERY recorded pain evaluation date is present with its TRUE date (never overwrite today's date with an older log!)
+    for (const [dateStr, entry] of logsByDate.entries()) {
+      if (!dayMap.has(dateStr)) {
+        const { label, fullDate } = formatDayMetadata(dateStr);
+        const score = !isNaN(Number(entry.score)) ? Number(entry.score) : null;
+        dayMap.set(dateStr, {
+          dateStr,
+          label,
+          fullDate,
+          score,
+          displayScore: score,
+          note: entry?.note,
+        });
+      }
+    }
+
+    const result = Array.from(dayMap.values()).sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+
+    let totalScore = 0;
+    let count = 0;
+    let minScore = 10;
+    let maxScore = 0;
+    const scoredDays: Array<{ date: string; label: string; score: number; index: number }> = [];
+
+    result.forEach((item, idx) => {
+      if (item.score !== null && !isNaN(item.score)) {
+        totalScore += item.score;
+        count++;
+        if (item.score < minScore) minScore = item.score;
+        if (item.score > maxScore) maxScore = item.score;
+        scoredDays.push({ date: item.dateStr, label: item.label, score: item.score, index: idx });
+      }
+    });
+
+    // Build X-axis ticks: ALWAYS include every date where the patient recorded a pain evaluation,
+    // plus non-overlapping reference dates so the patient's exact dates are 100% visible on the axis.
+    const scoredIndices = scoredDays.map((s) => s.index);
+    const minGap = days <= 7 ? 1 : days <= 14 ? 2 : 4;
+    const step = days <= 7 ? 1 : days <= 14 ? 2 : 5;
+    const tickSet = new Set<string>();
+
+    // 1. Add all evaluated dates first (authoritative)
+    for (const s of scoredDays) {
+      tickSet.add(s.date);
+    }
+
+    // 2. Add background reference dates only if they don't collide with evaluated dates
+    result.forEach((item, idx) => {
+      const isEdge = idx === 0 || idx === result.length - 1;
+      const isStep = idx % step === 0;
+      if (isEdge || isStep) {
+        const tooCloseToScored = scoredIndices.some((sIdx) => sIdx !== idx && Math.abs(sIdx - idx) < minGap);
+        if (!tooCloseToScored) {
+          tickSet.add(item.dateStr);
+        }
+      }
+    });
+
+    const computedTicks = result.filter((r) => tickSet.has(r.dateStr)).map((r) => r.dateStr);
 
     // Calculate trend between first recorded score and latest score
     let trendDiff = 0;
@@ -101,6 +187,7 @@ export function PainEvolutionChart({
 
     return {
       chartData: result,
+      visibleTicks: computedTicks,
       stats: {
         count,
         average,
@@ -109,6 +196,7 @@ export function PainEvolutionChart({
         trendDiff,
         firstScore: scoredDays[0]?.score ?? null,
         latestScore: scoredDays[scoredDays.length - 1]?.score ?? null,
+        latestDateLabel: scoredDays[scoredDays.length - 1]?.label ?? null,
       },
     };
   }, [logs, selectedRange]);
@@ -256,17 +344,46 @@ export function PainEvolutionChart({
         </div>
       )}
 
-      {/* Recharts LineChart */}
-      <div className="w-full h-56 sm:h-64 bg-slate-50/50 rounded-xl p-2 border border-slate-100/80">
+      {/* Recharts ComposedChart (Area + Line) */}
+      <div className="w-full h-60 sm:h-64 bg-slate-50/50 rounded-xl p-2 border border-slate-100/80">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 15, right: 15, left: -20, bottom: 5 }}>
+          <ComposedChart data={chartData} margin={{ top: 28, right: 24, left: -20, bottom: 8 }}>
+            <defs>
+              <linearGradient id="painAreaGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#0d9488" stopOpacity={0.22} />
+                <stop offset="95%" stopColor="#0d9488" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
             <XAxis
-              dataKey="label"
+              dataKey="dateStr"
+              ticks={visibleTicks}
               stroke="#94a3b8"
               fontSize={10}
               tickLine={false}
-              interval={selectedRange <= 7 ? 0 : selectedRange <= 14 ? 1 : 4}
+              interval={0}
+              tick={(props: any) => {
+                const { x, y, payload } = props;
+                const dStr = String(payload?.value || '');
+                const matchedItem = chartData.find((c) => c.dateStr === dStr);
+                const labelText = matchedItem ? matchedItem.label : formatDayMetadata(dStr).label;
+                const hasScore = matchedItem && matchedItem.score !== null;
+                return (
+                  <g transform={`translate(${x},${y})`}>
+                    <text
+                      x={0}
+                      y={0}
+                      dy={12}
+                      textAnchor="middle"
+                      fill={hasScore ? '#0f172a' : '#94a3b8'}
+                      fontSize={hasScore ? 10.5 : 10}
+                      fontWeight={hasScore ? 800 : 500}
+                    >
+                      {labelText}
+                    </text>
+                  </g>
+                );
+              }}
             />
             <YAxis
               domain={[0, 10]}
@@ -283,54 +400,108 @@ export function PainEvolutionChart({
               y={3}
               stroke="#10b981"
               strokeDasharray="4 4"
-              strokeOpacity={0.6}
+              strokeOpacity={0.5}
             />
             <ReferenceLine
               y={6}
               stroke="#f59e0b"
               strokeDasharray="4 4"
-              strokeOpacity={0.6}
+              strokeOpacity={0.5}
             />
             <ReferenceLine
               y={8}
               stroke="#ef4444"
               strokeDasharray="4 4"
-              strokeOpacity={0.6}
+              strokeOpacity={0.5}
+            />
+
+            {/* Horizontal level line when exactly 1 evaluation is recorded */}
+            {stats.count === 1 && stats.latestScore !== null && (
+              <ReferenceLine
+                y={stats.latestScore}
+                stroke="#0d9488"
+                strokeWidth={2}
+                strokeDasharray="6 4"
+                strokeOpacity={0.65}
+              />
+            )}
+
+            <Area
+              type="monotone"
+              dataKey="displayScore"
+              stroke="none"
+              fill="url(#painAreaGradient)"
+              connectNulls={true}
+              isAnimationActive={false}
             />
 
             {/* Pain Evolution Curve */}
             <Line
               type="monotone"
-              dataKey="score"
+              dataKey="displayScore"
               name="Douleur"
               stroke="#0d9488"
               strokeWidth={3}
               connectNulls={true}
+              isAnimationActive={false}
               dot={(props: any) => {
-                const { cx, cy, payload } = props;
-                if (payload.score === null) return <g key={`dot-null-${cx}-${cy}`} />;
+                const { cx, cy, payload, index } = props;
+                if (payload.score === null || cx === undefined || cy === undefined) {
+                  return <g key={`dot-null-${index}`} />;
+                }
                 const color = getScoreColor(payload.score);
                 return (
+                  <g key={`dot-${payload.dateStr}-${index}`}>
+                    <circle
+                      cx={cx}
+                      cy={cy}
+                      r={6.5}
+                      fill={color}
+                      stroke="#ffffff"
+                      strokeWidth={2}
+                    />
+                    <text
+                      x={cx}
+                      y={cy - 17}
+                      textAnchor="middle"
+                      fill="#0f172a"
+                      fontSize={10}
+                      fontWeight="800"
+                    >
+                      {payload.score}/10
+                    </text>
+                    <text
+                      x={cx}
+                      y={cy - 8}
+                      textAnchor="middle"
+                      fill="#0f766e"
+                      fontSize={8.5}
+                      fontWeight="700"
+                    >
+                      {payload.label}
+                    </text>
+                  </g>
+                );
+              }}
+              activeDot={(props: any) => {
+                const { cx, cy, payload, index } = props;
+                if (payload.score === null || cx === undefined || cy === undefined) {
+                  return <g key={`activedot-null-${index}`} />;
+                }
+                return (
                   <circle
-                    key={`dot-${cx}-${cy}`}
+                    key={`activedot-${payload.dateStr}-${index}`}
                     cx={cx}
                     cy={cy}
-                    r={4.5}
-                    fill={color}
+                    r={8}
+                    fill="#0f766e"
                     stroke="#ffffff"
                     strokeWidth={2}
-                    className="shadow-sm transition-all hover:scale-125"
                   />
                 );
               }}
-              activeDot={{
-                r: 7,
-                fill: '#0f766e',
-                stroke: '#ffffff',
-                strokeWidth: 2,
-              }}
             />
-          </LineChart>
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
 

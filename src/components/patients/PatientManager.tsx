@@ -674,6 +674,27 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                               {patient.nombre_seances} séance(s)
                             </div>
                           )}
+                          {(patient as any).follow_up_status && String((patient as any).follow_up_status).startsWith('PAIN:') && (() => {
+                            const parts = String((patient as any).follow_up_status).replace('PAIN:', '').split('|');
+                            const score = parseInt(parts[0], 10);
+                            const dateStr = parts[1] || '';
+                            const noteStr = parts[2] || '';
+                            if (isNaN(score)) return null;
+                            const colorCls =
+                              score <= 2 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                              score <= 4 ? 'bg-lime-50 text-lime-700 border-lime-200' :
+                              score <= 6 ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                              score <= 8 ? 'bg-orange-50 text-orange-700 border-orange-200' :
+                              'bg-rose-50 text-rose-700 border-rose-200';
+                            return (
+                              <div
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${colorCls}`}
+                                title={`Douleur EVA ${score}/10 (${dateStr})${noteStr ? ' : ' + noteStr : ''}`}
+                              >
+                                <span>EVA : {score}/10</span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </td>
                       <td className="px-6 py-4 text-slate-500">

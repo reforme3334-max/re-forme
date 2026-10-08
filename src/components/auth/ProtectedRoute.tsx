@@ -57,11 +57,15 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
           }
           
           if (checkPerms) {
-            // Admin has all permissions implicitly or we check the array
+            // Admin has all permissions implicitly; secretaire & therapeute always have agenda & patients
             if (profile.role === 'admin') {
               permOk = true;
             } else {
-              const userPerms = profile.permissions || [];
+              const defaultRolePerms =
+                profile.role === 'secretaire' || profile.role === 'therapeute'
+                  ? ['agenda', 'patients']
+                  : [];
+              const userPerms = Array.from(new Set([...(profile.permissions || []), ...defaultRolePerms]));
               // Check if user has at least one of the allowed permissions
               permOk = allowedPermissions.some(p => userPerms.includes(p));
             }

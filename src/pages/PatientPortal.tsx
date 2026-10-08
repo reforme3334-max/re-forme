@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button';
 import { ReviewSection } from '../components/reviews/ReviewSection';
 import { Modal } from '../components/ui/modal';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
-import { parseExercisesFromPatient, ExerciseItem } from '../lib/exercisesService';
+import { parseExercisesFromPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 
 export function PatientPortal() {
@@ -62,10 +62,10 @@ export function PatientPortal() {
   // Daily Pain Evaluation State (Échelle EVA 1-10)
   const [painLevel, setPainLevel] = useState<number>(3);
   const [painNote, setPainNote] = useState<string>('');
-  const [painLogs, setPainLogs] = useState<Array<{ id: string; score: number; note: string; date: string }>>([]);
+  const [painLogs, setPainLogs] = useState<PainLogItem[]>([]);
   const [painSaving, setPainSaving] = useState(false);
   const [painSuccessMsg, setPainSuccessMsg] = useState('');
-  const [showPainHistory, setShowPainHistory] = useState(false);
+  const [showPainHistory, setShowPainHistory] = useState(true);
   const [painViewMode, setPainViewMode] = useState<'chart' | 'list'>('chart');
 
   const [exercises, setExercises] = useState<ExerciseItem[]>([]);
@@ -221,6 +221,21 @@ export function PatientPortal() {
         setExercises(loadedExercises);
       } catch(e) { console.warn('Erreur lecture exercices', e); }
 
+      // 3. Load full pain evaluations history from Supabase + localStorage
+      try {
+        const loadedPainLogs = parsePainLogsFromPatient(patientDataList, patientData.id);
+        setPainLogs(loadedPainLogs);
+
+        const todayStr = getMoroccoTodayStr();
+        const todayLog = loadedPainLogs.find((p) => p.date && p.date.startsWith(todayStr));
+        if (todayLog && !silent) {
+          setPainLevel(todayLog.score);
+          setPainNote(todayLog.note || '');
+        }
+      } catch (err) {
+        console.error('Erreur chargement douleur:', err);
+      }
+
       setProfileForm({
         telephone: patientData.telephone || '',
         email: patientData.email || '',
@@ -255,40 +270,6 @@ export function PatientPortal() {
           };
         });
         setAppointments(mappedAppts);
-
-      // Load pain evaluations
-      try {
-        const storedPain = localStorage.getItem(`reforme_pain_${patientData.id}`);
-        let parsedPain: any[] = [];
-        if (storedPain) {
-          parsedPain = JSON.parse(storedPain);
-        }
-        if (patientData.follow_up_status && patientData.follow_up_status.startsWith('PAIN:')) {
-          const parts = patientData.follow_up_status.replace('PAIN:', '').split('|');
-          const dbScore = parseInt(parts[0], 10);
-          const dbDate = parts[1] || new Date().toISOString();
-          const dbNote = parts[2] || '';
-          if (!parsedPain.some((p: any) => p.date && p.date.startsWith(dbDate.split('T')[0]))) {
-            parsedPain.unshift({
-              id: 'db-' + Date.now(),
-              score: dbScore,
-              date: dbDate,
-              note: dbNote
-            });
-          }
-        }
-        setPainLogs(parsedPain);
-
-        const todayStr = new Date().toISOString().split('T')[0];
-        const todayLog = parsedPain.find((p: any) => p.date && p.date.startsWith(todayStr));
-        if (todayLog) {
-          setPainLevel(todayLog.score);
-          setPainNote(todayLog.note || '');
-        }
-      } catch (err) {
-        console.error('Erreur chargement douleur:', err);
-      }
-
       }
 
       const { data: bills } = await supabase
@@ -356,34 +337,26 @@ export function PatientPortal() {
     setPainSaving(true);
     setPainSuccessMsg('');
     try {
-      const now = new Date();
-      const todayStr = now.toISOString().split('T')[0];
+      const now = getMoroccoNow();
+      const todayStr = getMoroccoTodayStr();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
       
-      const newEntry = {
+      const newEntry: PainLogItem = {
         id: Date.now().toString(),
         score: painLevel,
         note: painNote.trim(),
-        date: now.toISOString()
+        date: `${todayStr}T${timeStr}:00.000Z`,
+        author: 'patient'
       };
 
       const filtered = painLogs.filter(p => !(p.date && p.date.startsWith(todayStr)));
       const updated = [newEntry, ...filtered];
       setPainLogs(updated);
+      setShowPainHistory(true);
 
-      try {
-        localStorage.setItem(`reforme_pain_${patient.id}`, JSON.stringify(updated));
-      } catch (err) {
-        console.error('LocalStorage write error', err);
-      }
+      await savePainLogsForPatient(patient.id, updated, patient.telephone);
 
-      const cleanNote = painNote.trim().slice(0, 20);
-      const dbVal = `PAIN:${painLevel}|${todayStr}${cleanNote ? '|' + cleanNote : ''}`;
-      await supabase.from('patients').update({
-        follow_up_status: dbVal,
-        last_follow_up_date: now.toISOString()
-      }).eq('id', patient.id);
-
-      setPainSuccessMsg("Votre niveau de douleur a été enregistré avec succès !");
+      setPainSuccessMsg("Votre niveau de douleur a été enregistré et synchronisé avec le cabinet !");
       setTimeout(() => setPainSuccessMsg(''), 4000);
     } catch (err: any) {
       console.error('Erreur sauvegarde douleur:', err);
