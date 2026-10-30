@@ -8,6 +8,7 @@ import { Modal } from '../components/ui/modal';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseExercisesFromPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
+import { parsePatientMutuelle, serializeAtcdWithMutuelle } from '../lib/mutuelleUtils';
 
 export function PatientPortal() {
   const [patient, setPatient] = useState<any>(null);
@@ -236,12 +237,13 @@ export function PatientPortal() {
         console.error('Erreur chargement douleur:', err);
       }
 
+      const parsedMut = parsePatientMutuelle(patientData);
       setProfileForm({
         telephone: patientData.telephone || '',
         email: patientData.email || '',
         adresse: patientData.adresse || '',
         pathologie: patientData.pathologie || '',
-        atcd: patientData.atcd || ''
+        atcd: parsedMut.cleanAtcd || ''
       });
       
       const { data: appts } = await supabase
@@ -509,7 +511,14 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setProfileLoading(true);
     try {
-      const { error } = await supabase.from('patients').update(profileForm).eq('id', patient.id);
+      const existingMut = parsePatientMutuelle(patient);
+      const payloadToSave = {
+        ...profileForm,
+        atcd: existingMut.hasExplicitTag
+          ? serializeAtcdWithMutuelle(profileForm.atcd, existingMut.isMutualiste, existingMut.organisme)
+          : profileForm.atcd,
+      };
+      const { error } = await supabase.from('patients').update(payloadToSave).eq('id', patient.id);
       if (error) throw error;
       setProfileMessage({ type: 'success', text: 'Profil mis à jour avec succès !' });
       fetchPatientData();
@@ -1342,7 +1351,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                       <span className="font-medium text-slate-600">Pathologie :</span> {patient.pathologie || 'Non renseignée'}
                     </p>
                     <p className="text-sm text-slate-800">
-                      <span className="font-medium text-slate-600">Antécédents :</span> {patient.atcd || patient.notes_antecedents || 'Aucun antécédent particulier'}
+                      <span className="font-medium text-slate-600">Antécédents :</span> {parsePatientMutuelle(patient).cleanAtcd || 'Aucun antécédent particulier'}
                     </p>
                   </div>
                 </div>

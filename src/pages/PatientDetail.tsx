@@ -12,6 +12,7 @@ import * as XLSX from 'xlsx';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
+import { ORGANISMES_MUTUELLE, parsePatientMutuelle, serializeAtcdWithMutuelle } from '../lib/mutuelleUtils';
 
 interface PatientDetailProps {
   patientId?: string;
@@ -628,6 +629,12 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     setEditPatientLoading(true);
     setEditPatientMessage({ type: '', text: '' });
 
+    const serializedAtcd = serializeAtcdWithMutuelle(
+      editPatientData.cleanAtcd ?? editPatientData.atcd ?? '',
+      Boolean(editPatientData.isMutualiste),
+      editPatientData.isMutualiste ? editPatientData.organismeMutuelle || 'CNOPS' : ''
+    );
+
     const updatePayload = {
       nom: editPatientData.nom,
       prenom: editPatientData.prenom,
@@ -638,7 +645,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       adresse: editPatientData.adresse,
       pathologie: editPatientData.pathologie,
       nombre_seances: editPatientData.nombre_seances,
-      atcd: editPatientData.atcd,
+      atcd: serializedAtcd,
     };
 
     const { error } = await supabase
@@ -1077,7 +1084,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             <ArrowLeft className="h-4 w-4 mr-2" /> Retour
           </Button>
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => {
-            setEditPatientData(patient);
+            const mutInfo = parsePatientMutuelle(patient);
+            setEditPatientData({
+              ...patient,
+              cleanAtcd: mutInfo.cleanAtcd,
+              isMutualiste: mutInfo.isMutualiste,
+              organismeMutuelle: mutInfo.organisme || 'CNOPS',
+            });
             setIsEditPatientModalOpen(true);
           }}>Modifier</Button>
           <Button className="flex-1 md:flex-none gap-2" onClick={openNewAppointmentModal}><Plus className="h-4 w-4" /> Nouveau RDV</Button>
@@ -1173,7 +1186,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                     size="sm" 
                     className="h-8 text-primary-600 hover:text-primary-700 hover:bg-primary-50 font-bold"
                     onClick={() => {
-                      setEditPatientData(patient);
+                      const mutInfo = parsePatientMutuelle(patient);
+                      setEditPatientData({
+                        ...patient,
+                        cleanAtcd: mutInfo.cleanAtcd,
+                        isMutualiste: mutInfo.isMutualiste,
+                        organismeMutuelle: mutInfo.organisme || 'CNOPS',
+                      });
                       setIsEditPatientModalOpen(true);
                     }}
                   >
@@ -1195,6 +1214,21 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                     <p className="text-sm font-bold text-slate-900">{patient.cin || 'Non renseigné'}</p>
                   </div>
                   <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Couverture / Mutuelle</h4>
+                    {(() => {
+                      const mutInfo = parsePatientMutuelle(patient);
+                      return mutInfo.isMutualiste ? (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          Mutualiste{mutInfo.organisme ? ` • ${mutInfo.organisme}` : ''}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                          Non mutualiste
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <div className="space-y-1">
                     <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">N° de Téléphone</h4>
                     <div className="flex items-center gap-2">
                       <Phone className="h-3.5 w-3.5 text-primary-500" />
@@ -1208,7 +1242,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                       <p className="text-sm font-bold text-slate-900 truncate">{patient.email || 'Non renseigné'}</p>
                     </div>
                   </div>
-                  <div className="space-y-1 sm:col-span-2">
+                  <div className="space-y-1">
                     <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Adresse Résidence</h4>
                     <div className="flex items-center gap-2">
                       <MapPin className="h-3.5 w-3.5 text-primary-500" />
@@ -1537,7 +1571,7 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                 <div className="p-3 bg-amber-50/50 rounded-xl border border-amber-100">
                   <h4 className="text-[10px] font-bold text-amber-500 uppercase tracking-widest mb-1.5">Antécédents</h4>
                   <p className="text-xs text-amber-900 font-medium leading-relaxed">
-                    {patient.atcd || patient.notes_antecedents || 'Aucun antécédent médical signalé.'}
+                    {parsePatientMutuelle(patient).cleanAtcd || 'Aucun antécédent médical signalé.'}
                   </p>
                 </div>
               </CardContent>
@@ -2124,11 +2158,53 @@ return (
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             />
           </div>
+          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+            <label className="text-sm font-semibold text-slate-700 block">Couverture médicale (Mutuelle)</label>
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => setEditPatientData({ ...editPatientData, isMutualiste: false })}
+                  className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                    !editPatientData.isMutualiste
+                      ? 'bg-slate-800 text-white'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Non mutualiste
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditPatientData({ ...editPatientData, isMutualiste: true })}
+                  className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                    editPatientData.isMutualiste
+                      ? 'bg-emerald-600 text-white'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Mutualiste
+                </button>
+              </div>
+              {editPatientData.isMutualiste && (
+                <select
+                  value={editPatientData.organismeMutuelle || 'CNOPS'}
+                  onChange={(e) => setEditPatientData({ ...editPatientData, organismeMutuelle: e.target.value })}
+                  className="flex-1 p-2 border border-slate-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-primary-500"
+                >
+                  {ORGANISMES_MUTUELLE.map((org) => (
+                    <option key={org} value={org}>
+                      {org}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-slate-700">Antécédents & Notes</label>
             <textarea
-              value={editPatientData.atcd || ''}
-              onChange={(e) => setEditPatientData({ ...editPatientData, atcd: e.target.value })}
+              value={editPatientData.cleanAtcd ?? ''}
+              onChange={(e) => setEditPatientData({ ...editPatientData, cleanAtcd: e.target.value })}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 min-h-[80px]"
             />
           </div>
