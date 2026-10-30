@@ -83,7 +83,7 @@ export default function App() {
         );
       case 'finance':
         return (
-          <ProtectedRoute allowedPermissions={['finance_recettes', 'finance_depenses_view', 'finance_depenses_edit']}>
+          <ProtectedRoute allowedPermissions={['finance_stats', 'finance_recettes', 'finance_depenses_view', 'finance_depenses_edit']}>
             <Finance />
           </ProtectedRoute>
         );

@@ -173,6 +173,24 @@ export function parseExercisesFromPatient(rawNotesAntecedents: any, patientId?: 
 }
 
 /**
+ * Extracts a normalized YYYY-MM-DD calendar date key from a pain log date string.
+ */
+export function extractPainDayKey(dateStr: string): string {
+  if (!dateStr) return '';
+  const trimmed = String(dateStr).trim();
+  const isoMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) return isoMatch[1];
+  const parsed = new Date(trimmed);
+  if (!isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return trimmed.split('T')[0];
+}
+
+/**
  * Safely parses pain evaluation logs stored in the database (notes_antecedents + follow_up_status + localStorage).
  */
 export function parsePainLogsFromPatient(rawInput: any, patientId?: string): PainLogItem[] {

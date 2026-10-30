@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { Activity } from 'lucide-react';
+import { parseCollaboratorProfile, resolveOrBindCollaboratorSession } from '../../lib/teamUtils';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -31,9 +32,12 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
   const checkAuth = async () => {
     setLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
       
-      if (!session) {
+      if (sessionError || !session) {
+        if (sessionError) {
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+        }
         window.location.hash = 'login';
         return;
       }
@@ -42,11 +46,10 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
       const checkPerms = allowedPermissions && allowedPermissions.length > 0;
 
       if (checkRoles || checkPerms) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role, permissions')
-          .eq('id', session.user.id)
-          .single();
+        const profile = await resolveOrBindCollaboratorSession(supabase, {
+          id: session.user.id,
+          email: session.user.email,
+        });
 
         if (profile) {
           let roleOk = true;
@@ -57,17 +60,11 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
           }
           
           if (checkPerms) {
-            // Admin has all permissions implicitly; secretaire & therapeute always have agenda & patients
             if (profile.role === 'admin') {
               permOk = true;
             } else {
-              const defaultRolePerms =
-                profile.role === 'secretaire' || profile.role === 'therapeute'
-                  ? ['agenda', 'patients']
-                  : [];
-              const userPerms = Array.from(new Set([...(profile.permissions || []), ...defaultRolePerms]));
-              // Check if user has at least one of the allowed permissions
-              permOk = allowedPermissions.some(p => userPerms.includes(p));
+              const parsed = parseCollaboratorProfile(profile);
+              permOk = allowedPermissions.some(p => parsed.permissions.includes(p));
             }
           }
 

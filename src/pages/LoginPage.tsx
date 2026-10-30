@@ -1,27 +1,56 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Activity, Lock, Mail, AlertCircle } from 'lucide-react';
+import { Activity, Lock, Mail, AlertCircle, CheckCircle } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
+import { resolveOrBindCollaboratorSession } from '../lib/teamUtils';
 
 export function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
   const [error, setError] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
+
+  const handleForgotPassword = async () => {
+    setError('');
+    setInfoMessage('');
+    const trimmedInput = email.trim().toLowerCase();
+
+    if (!trimmedInput || !trimmedInput.includes('@')) {
+      setError("Veuillez d'abord saisir votre adresse email dans le champ ci-dessus pour réinitialiser le mot de passe.");
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(trimmedInput, {
+        redirectTo: window.location.origin,
+      });
+      if (resetErr) throw resetErr;
+      setInfoMessage(`Un lien de réinitialisation a été envoyé à ${trimmedInput} (vérifiez également vos spams).`);
+    } catch (err: any) {
+      setError(err.message || "Impossible d'envoyer l'email de réinitialisation.");
+    } finally {
+      setResetLoading(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setInfoMessage('');
 
     try {
-      // Determine if input is email or phone
-      let loginEmail = email;
-      if (!email.includes('@')) {
-        // Assume it's a phone number
-        const cleanPhone = email.replace(/\s+/g, '');
+      const trimmedInput = email.trim();
+      let loginEmail = trimmedInput;
+      if (!trimmedInput.includes('@')) {
+        const cleanPhone = trimmedInput.replace(/\s+/g, '');
         loginEmail = `${cleanPhone}@patient.reforme.center`;
+      } else {
+        loginEmail = trimmedInput.toLowerCase();
       }
 
       // 1. Authentification via Supabase
@@ -41,32 +70,45 @@ export function LoginPage() {
       }
 
       if (authData.user) {
-        // 2. Récupération du rôle dans la table profiles
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', authData.user.id)
-          .single();
+        // 2. Récupération ou rattachement automatique du profil collaborateur
+        const profile = await resolveOrBindCollaboratorSession(supabase, {
+          id: authData.user.id,
+          email: authData.user.email || loginEmail,
+        });
 
         const isPatientAccount = loginEmail.toLowerCase().endsWith('@patient.reforme.center');
-        if ((profileError || !profile) && !isPatientAccount) {
-          throw new Error('Profil introuvable ou rôle non défini.');
+        if (!profile && !isPatientAccount) {
+          throw new Error("Profil introuvable ou accès révoqué. Contactez l'administrateur du cabinet.");
         }
 
-        // 3. Redirection Intelligente selon le rôle
+        // 3. Redirection intelligente selon le rôle et les permissions
         const role = profile?.role || (isPatientAccount ? 'patient' : '');
         if (role === 'admin') {
           try { sessionStorage.removeItem('reforme_portal_patient_phone'); } catch {}
           window.location.hash = 'dashboard';
-        } else if (role === 'therapeute') {
+        } else if (role === 'therapeute' || role === 'secretaire') {
           try { sessionStorage.removeItem('reforme_portal_patient_phone'); } catch {}
-          window.location.hash = 'agenda';
-        } else if (role === 'secretaire') {
-          try { sessionStorage.removeItem('reforme_portal_patient_phone'); } catch {}
-          window.location.hash = 'agenda';
+          const perms: string[] = Array.isArray(profile?.permissions) ? profile.permissions : [];
+          const hasConfigured = perms.includes('__meta_configured:1');
+          const cleanPerms = perms.filter(
+            (p) => typeof p === 'string' && !p.startsWith('__meta_') && !p.startsWith('__pending_collab:')
+          );
+          const effectivePerms = !hasConfigured && cleanPerms.length === 0 ? ['agenda', 'patients'] : cleanPerms;
+
+          if (effectivePerms.includes('agenda')) {
+            window.location.hash = 'agenda';
+          } else if (effectivePerms.includes('patients')) {
+            window.location.hash = 'patients';
+          } else if (effectivePerms.some((p) => p.startsWith('finance_'))) {
+            window.location.hash = 'finance';
+          } else if (effectivePerms.includes('settings')) {
+            window.location.hash = 'settings';
+          } else {
+            window.location.hash = 'agenda';
+          }
         } else if (role === 'patient') {
           try {
-            const patientPhone = cleanInput.replace(/@patient\.reforme\.center$/i, '');
+            const patientPhone = loginEmail.replace(/@patient\.reforme\.center$/i, '');
             sessionStorage.setItem('reforme_portal_patient_phone', patientPhone);
           } catch {}
           window.location.hash = 'espace-patient';
@@ -104,6 +146,13 @@ export function LoginPage() {
                 </div>
               )}
 
+              {infoMessage && (
+                <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 p-4 rounded-xl flex items-start gap-3 text-sm">
+                  <CheckCircle className="h-5 w-5 flex-shrink-0 mt-0.5" />
+                  <p className="font-medium">{infoMessage}</p>
+                </div>
+              )}
+
               <div className="space-y-4">
                 <div className="space-y-1.5">
                   <label className="text-sm font-semibold text-slate-700">Email ou Numéro de téléphone</label>
@@ -125,9 +174,14 @@ export function LoginPage() {
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <label className="text-sm font-semibold text-slate-700">Mot de passe</label>
-                    <a href="#" className="text-xs font-medium text-mint-600 hover:text-mint-700">
-                      Mot de passe oublié ?
-                    </a>
+                    <button
+                      type="button"
+                      disabled={resetLoading}
+                      onClick={handleForgotPassword}
+                      className="text-xs font-medium text-mint-600 hover:text-mint-700 disabled:opacity-50"
+                    >
+                      {resetLoading ? 'Envoi...' : 'Mot de passe oublié ?'}
+                    </button>
                   </div>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -145,9 +199,9 @@ export function LoginPage() {
                 </div>
               </div>
 
-              <Button 
-                type="submit" 
-                className="w-full h-12 text-base font-semibold bg-mint-600 hover:bg-mint-700 text-white rounded-xl shadow-sm transition-all" 
+              <Button
+                type="submit"
+                className="w-full h-12 text-base font-semibold bg-mint-600 hover:bg-mint-700 text-white rounded-xl shadow-sm transition-all"
                 disabled={loading}
               >
                 {loading ? 'Connexion en cours...' : 'Se connecter'}
@@ -155,7 +209,7 @@ export function LoginPage() {
             </form>
           </CardContent>
         </Card>
-        
+
         <p className="text-center text-sm text-slate-500 mt-8">
           © {new Date().getFullYear()} Re Forme Center. Tous droits réservés.
         </p>

@@ -6,6 +6,7 @@ import { Button } from '../components/ui/button';
 import { Modal } from '../components/ui/modal';
 import * as XLSX from 'xlsx';
 import { fetchAllRows, getBillDate, getDateRange, isDateInRange } from '../lib/financeUtils';
+import { resolveOrBindCollaboratorSession, parseCollaboratorProfile } from '../lib/teamUtils';
 
 export function Finance() {
   const [activeTab, setActiveTab] = useState('recettes');
@@ -34,15 +35,15 @@ export function Finance() {
       // Fetch user profile for permissions
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-        if (profile) {
-          setUserProfile(profile);
+        const rawProfile = await resolveOrBindCollaboratorSession(supabase, {
+          id: session.user.id,
+          email: session.user.email,
+        });
+        if (rawProfile) {
+          const parsed = parseCollaboratorProfile(rawProfile, [], session.user);
+          setUserProfile(parsed);
           // Set default tab based on permissions
-          const hasRecettes = profile.role === 'admin' || profile.permissions?.includes('finance_recettes');
+          const hasRecettes = parsed.role === 'admin' || parsed.permissions?.includes('finance_recettes');
           if (!hasRecettes) {
             setActiveTab('depenses');
           }

@@ -3,6 +3,7 @@ import { LayoutDashboard, CalendarDays, Users, FileText, Settings, X, User, Acti
 import { Button } from '../ui/button';
 import { supabase } from '../../lib/supabaseClient';
 import { useAppointmentNotifications } from '../../contexts/AppointmentNotificationsContext';
+import { parseCollaboratorProfile, resolveOrBindCollaboratorSession } from '../../lib/teamUtils';
 
 interface SidebarProps {
   onClose: () => void;
@@ -17,23 +18,27 @@ export function Sidebar({ onClose }: SidebarProps) {
     const handleHashChange = () => {
       setCurrentHash(window.location.hash || '#dashboard');
     };
+    const handleProfileUpdated = () => fetchUserProfile();
     window.addEventListener('hashchange', handleHashChange);
+    window.addEventListener('reforme-team-updated', handleProfileUpdated);
     
     fetchUserProfile();
     
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener('reforme-team-updated', handleProfileUpdated);
+    };
   }, []);
 
   const fetchUserProfile = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (session) {
-      const { data } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
+      const data = await resolveOrBindCollaboratorSession(supabase, {
+        id: session.user.id,
+        email: session.user.email,
+      });
       if (data) {
-        setUserProfile(data);
+        setUserProfile(parseCollaboratorProfile(data, [], session.user));
       }
     }
   };
@@ -41,9 +46,6 @@ export function Sidebar({ onClose }: SidebarProps) {
   const hasPermission = (permission: string) => {
     if (!userProfile) return false;
     if (userProfile.role === 'admin') return true;
-    if ((userProfile.role === 'secretaire' || userProfile.role === 'therapeute') && (permission === 'agenda' || permission === 'patients')) {
-      return true;
-    }
     return userProfile.permissions?.includes(permission);
   };
 
@@ -51,8 +53,8 @@ export function Sidebar({ onClose }: SidebarProps) {
     { icon: LayoutDashboard, label: 'Dashboard', href: '#dashboard', show: userProfile?.role === 'admin' },
     { icon: CalendarDays, label: 'Agenda', href: '#agenda', show: hasPermission('agenda') },
     { icon: Users, label: 'Patients', href: '#patients', show: hasPermission('patients') },
-    { icon: FileText, label: 'Facturation', href: '#billing', show: hasPermission('finance_recettes') },
-    { icon: Activity, label: 'Finance', href: '#finance', show: hasPermission('finance_recettes') || hasPermission('finance_depenses_view') || hasPermission('finance_depenses_edit') },
+    { icon: FileText, label: 'Facturation', href: '#finance', show: hasPermission('finance_recettes') },
+    { icon: Activity, label: 'Finance', href: '#finance', show: hasPermission('finance_stats') || hasPermission('finance_recettes') || hasPermission('finance_depenses_view') || hasPermission('finance_depenses_edit') },
     { icon: User, label: 'Espace Patient (Démo)', href: '#espace-patient', show: true },
     { icon: Settings, label: 'Paramètres', href: '#settings', show: hasPermission('settings') },
   ];
