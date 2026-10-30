@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { Activity, Lock, Mail, AlertCircle, CheckCircle } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { resolveOrBindCollaboratorSession } from '../lib/teamUtils';
+import { isEmailBlocked, resolveOrBindCollaboratorSession } from '../lib/teamUtils';
 
 export function LoginPage() {
   const [email, setEmail] = useState('');
@@ -12,6 +12,16 @@ export function LoginPage() {
   const [resetLoading, setResetLoading] = useState(false);
   const [error, setError] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
+
+  useEffect(() => {
+    try {
+      const blockedNotice = sessionStorage.getItem('reforme_auth_blocked_msg');
+      if (blockedNotice) {
+        setError(blockedNotice);
+        sessionStorage.removeItem('reforme_auth_blocked_msg');
+      }
+    } catch {}
+  }, []);
 
   const handleForgotPassword = async () => {
     setError('');
@@ -25,6 +35,11 @@ export function LoginPage() {
 
     setResetLoading(true);
     try {
+      const blocked = await isEmailBlocked(supabase, trimmedInput);
+      if (blocked) {
+        throw new Error("Accès bloqué : ce compte a été désactivé par l'administrateur du cabinet.");
+      }
+
       const { error: resetErr } = await supabase.auth.resetPasswordForEmail(trimmedInput, {
         redirectTo: window.location.origin,
       });
@@ -53,6 +68,17 @@ export function LoginPage() {
         loginEmail = trimmedInput.toLowerCase();
       }
 
+      const isPatientAccount = loginEmail.toLowerCase().endsWith('@patient.reforme.center');
+
+      // 0. Vérification immédiate de la liste noire (comptes bloqués)
+      if (!isPatientAccount) {
+        const blocked = await isEmailBlocked(supabase, loginEmail);
+        if (blocked) {
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          throw new Error("Accès bloqué : ce compte a été désactivé par l'administrateur du cabinet.");
+        }
+      }
+
       // 1. Authentification via Supabase
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: loginEmail,
@@ -76,9 +102,14 @@ export function LoginPage() {
           email: authData.user.email || loginEmail,
         });
 
-        const isPatientAccount = loginEmail.toLowerCase().endsWith('@patient.reforme.center');
+        if (profile?.__blocked) {
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          throw new Error("Accès bloqué : ce compte a été désactivé par l'administrateur du cabinet.");
+        }
+
         if (!profile && !isPatientAccount) {
-          throw new Error("Profil introuvable ou accès révoqué. Contactez l'administrateur du cabinet.");
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          throw new Error("Accès révoqué ou profil introuvable. Contactez l'administrateur du cabinet.");
         }
 
         // 3. Redirection intelligente selon le rôle et les permissions
@@ -91,9 +122,18 @@ export function LoginPage() {
           const perms: string[] = Array.isArray(profile?.permissions) ? profile.permissions : [];
           const hasConfigured = perms.includes('__meta_configured:1');
           const cleanPerms = perms.filter(
-            (p) => typeof p === 'string' && !p.startsWith('__meta_') && !p.startsWith('__pending_collab:')
+            (p) =>
+              typeof p === 'string' &&
+              !p.startsWith('__meta_') &&
+              !p.startsWith('__pending_collab:') &&
+              !p.startsWith('__blocked_email:')
           );
           const effectivePerms = !hasConfigured && cleanPerms.length === 0 ? ['agenda', 'patients'] : cleanPerms;
+
+          if (effectivePerms.length === 0) {
+            await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+            throw new Error("Aucune permission d'accès n'est activée sur votre compte. Contactez l'administrateur.");
+          }
 
           if (effectivePerms.includes('agenda')) {
             window.location.hash = 'agenda';
@@ -113,6 +153,7 @@ export function LoginPage() {
           } catch {}
           window.location.hash = 'espace-patient';
         } else {
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
           throw new Error('Rôle non reconnu.');
         }
       }

@@ -24,6 +24,8 @@ import {
   EyeOff,
   User,
   KeyRound,
+  Ban,
+  Unlock,
 } from 'lucide-react';
 import { Modal } from '../components/ui/modal';
 import Papa from 'papaparse';
@@ -38,11 +40,17 @@ import {
   getDefaultPermissionsForRole,
   upsertPendingCollaboratorInAdmin,
   removePendingCollaboratorFromAdmin,
+  extractBlockedEmails,
+  blockCollaboratorEmail,
+  unblockCollaboratorEmail,
 } from '../lib/teamUtils';
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState<'equipe' | 'praticiens' | 'create' | 'import'>('equipe');
   const [profiles, setProfiles] = useState<ParsedCollaboratorProfile[]>([]);
+  const [blockedEmails, setBlockedEmails] = useState<string[]>([]);
+  const [emailToBlockInput, setEmailToBlockInput] = useState('');
+  const [blockActionLoading, setBlockActionLoading] = useState(false);
   const [therapists, setTherapists] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<{ id: string; email?: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -172,6 +180,7 @@ export function Settings() {
       } else if (profilesRes.data) {
         const parsedList = parseAllTeamProfiles(profilesRes.data, loadedTherapists, sessionUser);
         setProfiles(parsedList);
+        setBlockedEmails(extractBlockedEmails(profilesRes.data));
 
         // Auto-save current logged-in user's email/name metadata once so other sessions see it too
         if (sessionUser?.email) {
@@ -217,6 +226,7 @@ export function Settings() {
       if (data) {
         const thList = overrideTherapists ?? therapists;
         setProfiles(parseAllTeamProfiles(data, thList, currentUser));
+        setBlockedEmails(extractBlockedEmails(data));
       }
     } catch (err) {
       console.error('Fetch profiles failed:', err);
@@ -689,6 +699,69 @@ export function Settings() {
     }
   };
 
+  const handleBlockEmailSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const target = emailToBlockInput.trim().toLowerCase();
+    if (!target || !target.includes('@')) {
+      showTeamToast('error', 'Veuillez saisir une adresse email valide à bloquer.');
+      return;
+    }
+    if (currentUser?.email && currentUser.email.trim().toLowerCase() === target) {
+      showTeamToast('error', 'Vous ne pouvez pas bloquer votre propre adresse email administrateur.');
+      return;
+    }
+
+    setBlockActionLoading(true);
+    try {
+      await blockCollaboratorEmail(supabase, target);
+      setEmailToBlockInput('');
+      await fetchProfiles();
+      showTeamToast('success', `L'accès pour ${target} est désormais bloqué.`);
+    } catch (err: any) {
+      showTeamToast('error', err.message || 'Erreur lors du blocage de cette adresse email.');
+    } finally {
+      setBlockActionLoading(false);
+    }
+  };
+
+  const handleBlockCollaboratorRow = async (profile: ParsedCollaboratorProfile) => {
+    if (!profile.email) {
+      showTeamToast('error', "Veuillez d'abord renseigner l'email de ce collaborateur ou supprimer directement son profil.");
+      return;
+    }
+    if (currentUser?.id === profile.id) {
+      showTeamToast('error', 'Vous ne pouvez pas bloquer votre propre compte administrateur.');
+      return;
+    }
+
+    setBlockActionLoading(true);
+    try {
+      await blockCollaboratorEmail(supabase, profile.email);
+      if (!profile.isPendingBind) {
+        await supabase.from('profiles').delete().eq('id', profile.id);
+      }
+      await fetchProfiles();
+      showTeamToast('success', `L'accès de ${profile.email} a été immédiatement bloqué.`);
+    } catch (err: any) {
+      showTeamToast('error', err.message || 'Erreur lors du blocage du collaborateur.');
+    } finally {
+      setBlockActionLoading(false);
+    }
+  };
+
+  const handleUnblockEmail = async (targetEmail: string) => {
+    setBlockActionLoading(true);
+    try {
+      await unblockCollaboratorEmail(supabase, targetEmail);
+      await fetchProfiles();
+      showTeamToast('success', `Le blocage de ${targetEmail} a été levé.`);
+    } catch (err: any) {
+      showTeamToast('error', err.message || 'Erreur lors du déblocage.');
+    } finally {
+      setBlockActionLoading(false);
+    }
+  };
+
   // ============================================================================
   // 3. NOUVEAU COLLABORATEUR (CRÉATION DE COMPTE + PROFIL + PRATICIEN)
   // ============================================================================
@@ -717,6 +790,13 @@ export function Settings() {
 
     if (!cleanEmail || !cleanEmail.includes('@')) {
       setMessage({ type: 'error', text: 'Veuillez saisir une adresse email valide (ex: nom@cabinet.ma).' });
+      return;
+    }
+    if (blockedEmails.includes(cleanEmail)) {
+      setMessage({
+        type: 'error',
+        text: `L'adresse ${cleanEmail} figure dans les accès bloqués. Débloquez-la d'abord dans « Gestion de l'équipe » si vous souhaitez lui redonner accès.`,
+      });
       return;
     }
     if (!password || password.length < 6) {
@@ -1261,6 +1341,7 @@ export function Settings() {
           {/* TAB 1 : GESTION DE L'ÉQUIPE                                    */}
           {/* ============================================================== */}
           {activeTab === 'equipe' && (
+            <div className="space-y-6">
             <Card className="border-0 shadow-sm rounded-2xl overflow-hidden">
               <CardHeader className="bg-white border-b border-slate-100 pb-5">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -1393,6 +1474,20 @@ export function Settings() {
                                   <Pencil className="h-4 w-4" />
                                 </Button>
 
+                                {!isSelf && profile.email && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    disabled={blockActionLoading}
+                                    onClick={() => handleBlockCollaboratorRow(profile)}
+                                    className="text-amber-600 hover:bg-amber-50 hover:text-amber-700"
+                                    title="Bloquer immédiatement cet email"
+                                  >
+                                    <Ban className="h-4 w-4" />
+                                  </Button>
+                                )}
+
                                 {!isSelf && (
                                   <Button
                                     type="button"
@@ -1455,6 +1550,76 @@ export function Settings() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Blocked Emails / Revoked Access Section */}
+            <Card className="border-0 shadow-sm rounded-2xl overflow-hidden">
+              <CardHeader className="bg-white border-b border-slate-100 pb-5">
+                <CardTitle className="text-lg flex items-center gap-2 text-slate-900">
+                  <Ban className="h-5 w-5 text-rose-500" />
+                  Accès bloqués ({blockedEmails.length})
+                </CardTitle>
+                <p className="text-sm text-slate-500 mt-1">
+                  Toute adresse email figurant dans cette liste est immédiatement déconnectée et ne peut plus accéder à l'application.
+                </p>
+              </CardHeader>
+              <CardContent className="p-6 space-y-5">
+                <form onSubmit={handleBlockEmailSubmit} className="flex flex-col sm:flex-row gap-3">
+                  <div className="relative flex-1">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <Mail className="h-4 w-4 text-slate-400" />
+                    </div>
+                    <input
+                      type="email"
+                      value={emailToBlockInput}
+                      onChange={(e) => setEmailToBlockInput(e.target.value)}
+                      placeholder="Ex: ancien.collaborateur@reforme.com"
+                      className="block w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none"
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={blockActionLoading || !emailToBlockInput.trim()}
+                    className="bg-rose-600 hover:bg-rose-700 text-white gap-2"
+                  >
+                    <Ban className="h-4 w-4" />
+                    Bloquer cet email
+                  </Button>
+                </form>
+
+                {blockedEmails.length === 0 ? (
+                  <p className="text-sm text-slate-500">Aucune adresse email bloquée actuellement.</p>
+                ) : (
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+                    {blockedEmails.map((blockedMail) => (
+                      <div
+                        key={blockedMail}
+                        className="px-4 py-3 bg-rose-50/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <Ban className="h-4 w-4 text-rose-600 flex-shrink-0" />
+                          <span className="text-sm font-semibold text-slate-800">{blockedMail}</span>
+                          <span className="bg-rose-100 text-rose-800 text-[11px] font-bold px-2 py-0.5 rounded-full">
+                            Accès bloqué
+                          </span>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={blockActionLoading}
+                          onClick={() => handleUnblockEmail(blockedMail)}
+                          className="bg-white border-slate-200 text-slate-700 hover:bg-slate-50 gap-1.5 self-end sm:self-center"
+                        >
+                          <Unlock className="h-3.5 w-3.5" />
+                          Débloquer
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            </div>
           )}
 
           {/* ============================================================== */}

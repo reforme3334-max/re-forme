@@ -30,6 +30,7 @@ export interface ParsedCollaboratorProfile {
 }
 
 export const PENDING_COLLAB_PREFIX = '__pending_collab:';
+export const BLOCKED_EMAIL_PREFIX = '__blocked_email:';
 
 export const PERMISSIONS_LIST = [
   { id: 'agenda', label: 'Agenda' },
@@ -52,6 +53,14 @@ export function getDefaultPermissionsForRole(role: string): string[] {
     return ['agenda', 'patients'];
   }
   return [];
+}
+
+function isInternalSystemTag(value: string): boolean {
+  return (
+    value.startsWith('__meta_') ||
+    value.startsWith(PENDING_COLLAB_PREFIX) ||
+    value.startsWith(BLOCKED_EMAIL_PREFIX)
+  );
 }
 
 /**
@@ -82,7 +91,7 @@ export function parseCollaboratorProfile(
       metaPhone = item.slice('__meta_phone:'.length).trim();
     } else if (item === '__meta_configured:1') {
       configured = true;
-    } else if (!item.startsWith('__meta_') && !item.startsWith(PENDING_COLLAB_PREFIX)) {
+    } else if (!isInternalSystemTag(item)) {
       cleanPermissions.push(item);
     }
   }
@@ -139,7 +148,7 @@ export function parseCollaboratorProfile(
 /**
  * Serializes clean module permissions + collaborator metadata back into
  * the `profiles.permissions` array column while preserving any `__pending_collab:`
- * registry entries stored on an admin profile.
+ * and `__blocked_email:` registry entries stored on an admin profile.
  */
 export function buildProfilePermissionsArray(
   modulePermissions: string[],
@@ -149,11 +158,7 @@ export function buildProfilePermissionsArray(
   const clean = Array.from(
     new Set(
       (modulePermissions || []).filter(
-        (p) =>
-          typeof p === 'string' &&
-          p.trim() !== '' &&
-          !p.startsWith('__meta_') &&
-          !p.startsWith(PENDING_COLLAB_PREFIX)
+        (p) => typeof p === 'string' && p.trim() !== '' && !isInternalSystemTag(p)
       )
     )
   );
@@ -171,23 +176,173 @@ export function buildProfilePermissionsArray(
     clean.push(`__meta_phone:${meta.phone.trim()}`);
   }
 
-  // Preserve any pending collaborator registry entries stored on this profile
-  const pendingTags = (existingRawPermissions || []).filter(
-    (item) => typeof item === 'string' && item.startsWith(PENDING_COLLAB_PREFIX)
+  // Preserve any pending collaborator or blocked email registry entries stored on this profile
+  const preservedRegistryTags = (existingRawPermissions || []).filter(
+    (item) =>
+      typeof item === 'string' &&
+      (item.startsWith(PENDING_COLLAB_PREFIX) || item.startsWith(BLOCKED_EMAIL_PREFIX))
   );
 
-  return [...clean, ...pendingTags];
+  return [...clean, ...preservedRegistryTags];
+}
+
+/**
+ * Extracts all blocked email addresses from admin profiles.
+ */
+export function extractBlockedEmails(rawProfiles: any[]): string[] {
+  const blocked = new Set<string>();
+  for (const raw of rawProfiles || []) {
+    const rawArr: string[] = Array.isArray(raw?.permissions) ? raw.permissions : [];
+    for (const item of rawArr) {
+      if (typeof item === 'string' && item.startsWith(BLOCKED_EMAIL_PREFIX)) {
+        const email = item.slice(BLOCKED_EMAIL_PREFIX.length).trim().toLowerCase();
+        if (email) blocked.add(email);
+      }
+    }
+  }
+  return Array.from(blocked);
+}
+
+/**
+ * Checks whether an email address is explicitly blocked by the cabinet administrator.
+ */
+export async function isEmailBlocked(
+  supabaseClient: SupabaseClient,
+  email?: string | null
+): Promise<boolean> {
+  const cleanEmail = (email || '').trim().toLowerCase();
+  if (!cleanEmail) return false;
+
+  const { data: admins, error } = await supabaseClient
+    .from('profiles')
+    .select('permissions')
+    .eq('role', 'admin');
+
+  if (error || !admins) return false;
+  const blockedList = extractBlockedEmails(admins);
+  return blockedList.includes(cleanEmail);
+}
+
+/**
+ * Blocks an email address completely:
+ * 1. Adds `__blocked_email:<email>` to the primary admin profile
+ * 2. Removes any pending collaborator invitation for that email
+ * 3. Deletes any non-admin `profiles` row matching that email so active sessions lose access immediately
+ */
+export async function blockCollaboratorEmail(
+  supabaseClient: SupabaseClient,
+  emailToBlock: string
+): Promise<void> {
+  const targetEmail = (emailToBlock || '').trim().toLowerCase();
+  if (!targetEmail || !targetEmail.includes('@')) {
+    throw new Error('Veuillez saisir une adresse email valide à bloquer.');
+  }
+
+  const { data: allStaffProfiles, error: fetchError } = await supabaseClient
+    .from('profiles')
+    .select('*')
+    .neq('role', 'patient')
+    .order('created_at', { ascending: true });
+
+  if (fetchError) throw fetchError;
+
+  const admins = (allStaffProfiles || []).filter((p) => p.role === 'admin');
+  if (admins.length === 0) {
+    throw new Error('Aucun profil administrateur trouvé.');
+  }
+
+  // Prevent blocking the primary admin's own email
+  for (const admin of admins) {
+    const parsedAdmin = parseCollaboratorProfile(admin);
+    if (parsedAdmin.email && parsedAdmin.email.toLowerCase() === targetEmail) {
+      throw new Error('Impossible de bloquer le compte administrateur principal du cabinet.');
+    }
+  }
+
+  // Remove any bound non-admin profile matching this email
+  for (const prof of allStaffProfiles || []) {
+    if (prof.role === 'admin') continue;
+    const parsed = parseCollaboratorProfile(prof);
+    if (parsed.email && parsed.email.toLowerCase() === targetEmail) {
+      await supabaseClient.from('profiles').delete().eq('id', prof.id);
+    }
+  }
+
+  // Update primary admin profile: remove any pending entry for targetEmail and add blocked tag
+  const primaryAdmin = admins[0];
+  const rawArr: string[] = Array.isArray(primaryAdmin.permissions)
+    ? primaryAdmin.permissions.filter((x: any) => typeof x === 'string')
+    : [];
+
+  const cleaned = rawArr.filter((item) => {
+    if (item === `${BLOCKED_EMAIL_PREFIX}${targetEmail}`) return false;
+    if (item.startsWith(PENDING_COLLAB_PREFIX)) {
+      try {
+        const data = JSON.parse(item.slice(PENDING_COLLAB_PREFIX.length));
+        if ((data?.email || '').trim().toLowerCase() === targetEmail) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  cleaned.push(`${BLOCKED_EMAIL_PREFIX}${targetEmail}`);
+
+  const { error: updateError } = await supabaseClient
+    .from('profiles')
+    .update({ permissions: cleaned })
+    .eq('id', primaryAdmin.id);
+
+  if (updateError) throw updateError;
+}
+
+/**
+ * Unblocks a previously blocked email address.
+ */
+export async function unblockCollaboratorEmail(
+  supabaseClient: SupabaseClient,
+  emailToUnblock: string
+): Promise<void> {
+  const targetEmail = (emailToUnblock || '').trim().toLowerCase();
+  if (!targetEmail) return;
+
+  const { data: admins, error } = await supabaseClient
+    .from('profiles')
+    .select('*')
+    .eq('role', 'admin');
+
+  if (error || !admins) throw error || new Error('Impossible de charger le profil administrateur.');
+
+  for (const admin of admins) {
+    const rawArr: string[] = Array.isArray(admin.permissions)
+      ? admin.permissions.filter((x: any) => typeof x === 'string')
+      : [];
+
+    const nextArr = rawArr.filter(
+      (item) => item.trim().toLowerCase() !== `${BLOCKED_EMAIL_PREFIX}${targetEmail}`
+    );
+
+    if (nextArr.length !== rawArr.length) {
+      const { error: updErr } = await supabaseClient
+        .from('profiles')
+        .update({ permissions: nextArr })
+        .eq('id', admin.id);
+      if (updErr) throw updErr;
+    }
+  }
 }
 
 /**
  * Extracts pre-authorized collaborator entries stored in admin `profiles.permissions`.
- * Used when an existing Supabase Auth account (e.g. soukaina@reforme.com) has not yet
- * bound its `auth.users` UUID into `public.profiles`.
  */
 export function extractPendingCollaborators(
   rawProfiles: any[],
   therapists: any[] = []
 ): ParsedCollaboratorProfile[] {
+  const blockedSet = new Set(extractBlockedEmails(rawProfiles));
   const byEmail = new Map<string, ParsedCollaboratorProfile>();
 
   for (const raw of rawProfiles || []) {
@@ -197,7 +352,7 @@ export function extractPendingCollaborators(
       try {
         const parsedJson: PendingCollaboratorEntry = JSON.parse(item.slice(PENDING_COLLAB_PREFIX.length));
         const cleanEmail = (parsedJson.email || '').trim().toLowerCase();
-        if (!cleanEmail) continue;
+        if (!cleanEmail || blockedSet.has(cleanEmail)) continue;
 
         let name = (parsedJson.name || '').trim();
         let phone = (parsedJson.phone || '').trim();
@@ -247,16 +402,18 @@ export function extractPendingCollaborators(
 
 /**
  * Combines bound `public.profiles` rows with pre-authorized pending collaborators
- * (deduplicated by email so once a collaborator logs in and binds, only their bound row shows).
+ * (excluding any blocked emails).
  */
 export function parseAllTeamProfiles(
   rawProfiles: any[],
   therapists: any[] = [],
   currentUser?: { id: string; email?: string } | null
 ): ParsedCollaboratorProfile[] {
-  const bound = (rawProfiles || []).map((raw) =>
-    parseCollaboratorProfile(raw, therapists, currentUser)
-  );
+  const blockedSet = new Set(extractBlockedEmails(rawProfiles));
+  const bound = (rawProfiles || [])
+    .map((raw) => parseCollaboratorProfile(raw, therapists, currentUser))
+    .filter((b) => !b.email || !blockedSet.has(b.email.trim().toLowerCase()) || b.role === 'admin');
+
   const boundEmails = new Set(
     bound.map((b) => b.email.trim().toLowerCase()).filter(Boolean)
   );
@@ -270,8 +427,7 @@ export function parseAllTeamProfiles(
 
 /**
  * Saves or updates a pre-authorized collaborator inside the primary admin profile's
- * `permissions` array so the collaborator is immediately visible & editable in Gestion de l'équipe
- * and automatically bound to `public.profiles` upon login.
+ * `permissions` array.
  */
 export async function upsertPendingCollaboratorInAdmin(
   supabaseClient: SupabaseClient,
@@ -376,9 +532,8 @@ export async function removePendingCollaboratorFromAdmin(
 }
 
 /**
- * Resolves a logged-in user's `public.profiles` row, or automatically binds
- * their `auth.users` UUID into `public.profiles` if they are pre-authorized in
- * the team registry (e.g. soukaina@reforme.com) or listed in `therapists`.
+ * Resolves a logged-in user's `public.profiles` row, or returns `{ __blocked: true }`
+ * if the user's email has been blocked by the administrator.
  */
 export async function resolveOrBindCollaboratorSession(
   supabaseClient: SupabaseClient,
@@ -387,6 +542,20 @@ export async function resolveOrBindCollaboratorSession(
   if (!authUser?.id) return null;
   const cleanEmail = (authUser.email || '').trim().toLowerCase();
 
+  // 1. Check explicit email blocklist first
+  if (cleanEmail && !cleanEmail.endsWith('@patient.reforme.center')) {
+    const blocked = await isEmailBlocked(supabaseClient, cleanEmail);
+    if (blocked) {
+      // Ensure any leftover non-admin profile row is purged
+      await supabaseClient
+        .from('profiles')
+        .delete()
+        .eq('id', authUser.id)
+        .neq('role', 'admin');
+      return { __blocked: true };
+    }
+  }
+
   const { data: existingProfile } = await supabaseClient
     .from('profiles')
     .select('*')
@@ -394,7 +563,6 @@ export async function resolveOrBindCollaboratorSession(
     .maybeSingle();
 
   if (existingProfile) {
-    // Ensure email metadata is stored on staff profiles so Gestion de l'équipe always displays it
     if (cleanEmail && existingProfile.role !== 'patient' && !cleanEmail.endsWith('@patient.reforme.center')) {
       const rawPerms: string[] = Array.isArray(existingProfile.permissions) ? existingProfile.permissions : [];
       const hasEmailMeta = rawPerms.some(
