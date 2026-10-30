@@ -4,8 +4,14 @@ import { fetchAllRows } from '@/lib/financeUtils';
 import { getMoroccoNow, parseClinicDate } from '@/lib/timeUtils';
 import {
   ORGANISMES_MUTUELLE,
+  SPORTS_DISCIPLINES,
+  PartnerClub,
   parsePatientMutuelle,
   serializeAtcdWithMutuelle,
+  serializeAtcdWithClubOnly,
+  fetchPartnerClubs,
+  upsertPartnerClub,
+  removePartnerClub,
 } from '@/lib/mutuelleUtils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -23,6 +29,11 @@ import {
   Trash2,
   ShieldCheck,
   ShieldOff,
+  Trophy,
+  Plus,
+  CheckSquare,
+  Square,
+  X,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import Papa from 'papaparse';
@@ -61,6 +72,8 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const [atcd, setAtcd] = useState('');
   const [isMutualiste, setIsMutualiste] = useState(false);
   const [organismeMutuelle, setOrganismeMutuelle] = useState('CNOPS');
+  const [selectedFormClub, setSelectedFormClub] = useState('');
+  const [customFormClub, setCustomFormClub] = useState('');
 
   // UI states
   const [loading, setLoading] = useState(false);
@@ -70,6 +83,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
   // Data state
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [partnerClubs, setPartnerClubs] = useState<PartnerClub[]>([]);
   const [appointments, setAppointments] = useState<any[]>([]);
   const [treatments, setTreatments] = useState<any[]>([]);
   const [mutuelleBillingIds, setMutuelleBillingIds] = useState<Set<string>>(new Set());
@@ -78,17 +92,40 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [mutuelleFilter, setMutuelleFilter] = useState<'all' | 'mutualiste' | 'non_mutualiste'>('all');
   const [organismeFilter, setOrganismeFilter] = useState<string>('all');
+  const [clubFilter, setClubFilter] = useState<string>('all'); // 'all' | 'any_club' | 'no_club' | 'club:<name>'
   const [searchDateNaissance, setSearchDateNaissance] = useState('');
   const [searchTelephone, setSearchTelephone] = useState('');
   const [searchPathologie, setSearchPathologie] = useState('');
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
 
-  // Quick Mutuelle Edit Modal state (from table badge)
+  // Multi-select bulk club grouping states
+  const [selectedPatientIds, setSelectedPatientIds] = useState<Set<string>>(new Set());
+  const [bulkClubChoice, setBulkClubChoice] = useState<string>('');
+  const [bulkNewClubName, setBulkNewClubName] = useState<string>('');
+  const [bulkAssignLoading, setBulkAssignLoading] = useState(false);
+
+  // Quick Mutuelle + Club Edit Modal state (from table badges)
   const [isMutuelleModalOpen, setIsMutuelleModalOpen] = useState(false);
   const [patientForMutuelle, setPatientForMutuelle] = useState<Patient | null>(null);
   const [modalIsMutualiste, setModalIsMutualiste] = useState(false);
   const [modalOrganisme, setModalOrganisme] = useState('CNOPS');
+  const [modalClubSelect, setModalClubSelect] = useState('');
+  const [modalCustomClub, setModalCustomClub] = useState('');
   const [savingMutuelle, setSavingMutuelle] = useState(false);
+
+  // Manage Partner Clubs Modal state
+  const [isClubsModalOpen, setIsClubsModalOpen] = useState(false);
+  const [newClubForm, setNewClubForm] = useState({
+    name: '',
+    sport: 'Football',
+    tarifConvention: '',
+    note: '',
+  });
+  const [clubSaving, setClubSaving] = useState(false);
+  const [clubModalMessage, setClubModalMessage] = useState<{ type: '' | 'success' | 'error'; text: string }>({
+    type: '',
+    text: '',
+  });
 
   // Import state
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -99,7 +136,6 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const [patientToDelete, setPatientToDelete] = useState<Patient | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
-  // Fetch patients on component mount
   useEffect(() => {
     fetchPatients();
   }, []);
@@ -126,19 +162,22 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         );
       }
 
-      setPatients((pData as Patient[]) || []);
+      const loadedPatients = (pData as Patient[]) || [];
+      setPatients(loadedPatients);
 
-      const [appData, treatData, billData] = await Promise.all([
+      const [appData, treatData, billData, clubsList] = await Promise.all([
         fetchAllRows('appointments', 'patient_id, statut, date_heure', {
           column: 'date_heure',
           ascending: false,
         }),
         fetchAllRows('treatments', 'patient_id, statut, nombre_seances_prescrites'),
         fetchAllRows('billings', 'patient_id, type_paiement'),
+        fetchPartnerClubs(supabase, loadedPatients),
       ]);
 
       setAppointments(appData || []);
       setTreatments(treatData || []);
+      setPartnerClubs(clubsList);
 
       const mutIds = new Set<string>();
       for (const b of billData || []) {
@@ -154,6 +193,154 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
       setError(`Erreur lors du chargement : ${err.message}`);
     } finally {
       setFetching(false);
+    }
+  };
+
+  // Partner Clubs Management Handlers
+  const handleAddPartnerClub = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = newClubForm.name.trim();
+    if (!cleanName) {
+      setClubModalMessage({ type: 'error', text: 'Veuillez saisir le nom du club sportif.' });
+      return;
+    }
+
+    setClubSaving(true);
+    setClubModalMessage({ type: '', text: '' });
+    try {
+      await upsertPartnerClub(supabase, {
+        name: cleanName,
+        sport: newClubForm.sport,
+        tarifConvention: newClubForm.tarifConvention ? Number(newClubForm.tarifConvention) : null,
+        note: newClubForm.note.trim(),
+      });
+      const refreshed = await fetchPartnerClubs(supabase, patients);
+      setPartnerClubs(refreshed);
+      setNewClubForm({ name: '', sport: 'Football', tarifConvention: '', note: '' });
+      setClubModalMessage({
+        type: 'success',
+        text: `Le club « ${cleanName} » a été ajouté aux clubs conventionnés.`,
+      });
+    } catch (err: any) {
+      setClubModalMessage({
+        type: 'error',
+        text: err.message || "Erreur lors de l'enregistrement du club.",
+      });
+    } finally {
+      setClubSaving(false);
+    }
+  };
+
+  const handleDeletePartnerClub = async (clubName: string) => {
+    setClubSaving(true);
+    setClubModalMessage({ type: '', text: '' });
+    try {
+      await removePartnerClub(supabase, clubName, patients);
+      if (clubFilter === `club:${clubName}`) {
+        setClubFilter('all');
+      }
+      await fetchPatients();
+      setClubModalMessage({
+        type: 'success',
+        text: `Le club « ${clubName} » a été retiré.`,
+      });
+    } catch (err: any) {
+      setClubModalMessage({
+        type: 'error',
+        text: err.message || 'Erreur lors de la suppression du club.',
+      });
+    } finally {
+      setClubSaving(false);
+    }
+  };
+
+  // Multi-select bulk club grouping handler
+  const handleToggleSelectPatient = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedPatientIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleSelectAllFiltered = () => {
+    if (filteredPatients.length === 0) return;
+    const allSelected = filteredPatients.every((p) => selectedPatientIds.has(p.id));
+    if (allSelected) {
+      setSelectedPatientIds((prev) => {
+        const next = new Set(prev);
+        for (const p of filteredPatients) next.delete(p.id);
+        return next;
+      });
+    } else {
+      setSelectedPatientIds((prev) => {
+        const next = new Set(prev);
+        for (const p of filteredPatients) next.add(p.id);
+        return next;
+      });
+    }
+  };
+
+  const handleBulkAssignClub = async (detach = false) => {
+    if (selectedPatientIds.size === 0) return;
+
+    let targetClub = '';
+    if (!detach) {
+      targetClub =
+        bulkClubChoice === '__new__' ? bulkNewClubName.trim() : bulkClubChoice.trim();
+      if (!targetClub) {
+        setError('Veuillez choisir un club conventionné ou saisir le nom du nouveau club.');
+        return;
+      }
+    }
+
+    setBulkAssignLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      // If creating a new club inline, register it in partner clubs automatically
+      if (!detach && targetClub) {
+        const exists = partnerClubs.some(
+          (c) => c.name.toLowerCase() === targetClub.toLowerCase()
+        );
+        if (!exists) {
+          await upsertPartnerClub(supabase, {
+            name: targetClub,
+            sport: 'Omnisports',
+            tarifConvention: null,
+            note: '',
+          });
+        }
+      }
+
+      const targets = patients.filter((p) => selectedPatientIds.has(p.id));
+      await Promise.all(
+        targets.map((p) => {
+          const updatedAtcd = serializeAtcdWithClubOnly(p, detach ? '' : targetClub);
+          return supabase.from('patients').update({ atcd: updatedAtcd }).eq('id', p.id);
+        })
+      );
+
+      setSelectedPatientIds(new Set());
+      setBulkNewClubName('');
+      await fetchPatients();
+
+      setSuccess(
+        detach
+          ? `${targets.length} patient(s) retiré(s) des clubs sportifs.`
+          : `${targets.length} patient(s) regroupé(s) dans le club « ${targetClub} » !`
+      );
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (err: any) {
+      setError(`Erreur lors de l'affectation groupée : ${err.message}`);
+    } finally {
+      setBulkAssignLoading(false);
     }
   };
 
@@ -188,6 +375,8 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
               const adresseVal = findVal(['adresse', 'address']) || null;
               const mutuelleVal =
                 findVal(['mutuelle', 'mutualiste', 'assurance', 'organisme', 'couverture']) || '';
+              const clubVal =
+                findVal(['club', 'club sportif', 'equipe', 'équipe', 'convention']) || '';
               const atcdRaw = findVal(['atcd', 'antécédents', 'antecedents']) || '';
 
               let formattedDate = null;
@@ -208,10 +397,12 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                 hasMutuelleInCsv && !['oui', 'yes', '1', 'true', 'mutualiste'].includes(mutLow)
                   ? String(mutuelleVal).trim()
                   : '';
+              const cleanClubCsv = String(clubVal || '').trim();
 
-              const finalAtcd = mutLow
-                ? serializeAtcdWithMutuelle(atcdRaw, hasMutuelleInCsv, orgInCsv)
-                : atcdRaw || null;
+              const finalAtcd =
+                mutLow || cleanClubCsv
+                  ? serializeAtcdWithMutuelle(atcdRaw, hasMutuelleInCsv, orgInCsv, cleanClubCsv)
+                  : atcdRaw || null;
 
               return {
                 nom: nomVal,
@@ -260,48 +451,67 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     setError(null);
     setSuccess(null);
 
-    const serializedAtcd = serializeAtcdWithMutuelle(
-      atcd,
-      isMutualiste,
-      isMutualiste ? organismeMutuelle : ''
-    );
+    try {
+      const chosenClub =
+        selectedFormClub === '__new__' ? customFormClub.trim() : selectedFormClub.trim();
 
-    const { error: insertError } = await supabase.from('patients').insert([
-      {
-        nom,
-        prenom,
-        telephone: tel,
-        email,
-        date_naissance: dateNaissance || null,
-        cin,
-        adresse,
-        pathologie,
-        nombre_seances: nombreSeances ? parseInt(nombreSeances, 10) : null,
-        atcd: serializedAtcd,
-      },
-    ]);
+      if (selectedFormClub === '__new__' && chosenClub) {
+        await upsertPartnerClub(supabase, {
+          name: chosenClub,
+          sport: 'Omnisports',
+          tarifConvention: null,
+          note: '',
+        });
+      }
 
-    setLoading(false);
+      const serializedAtcd = serializeAtcdWithMutuelle(
+        atcd,
+        isMutualiste,
+        isMutualiste ? organismeMutuelle : '',
+        chosenClub
+      );
 
-    if (insertError) {
-      setError(`Erreur d'ajout : ${insertError.message}`);
-    } else {
-      setSuccess('Patient ajouté avec succès !');
-      setNom('');
-      setPrenom('');
-      setTel('');
-      setEmail('');
-      setDateNaissance('');
-      setCin('');
-      setAdresse('');
-      setPathologie('');
-      setNombreSeances('');
-      setAtcd('');
-      setIsMutualiste(false);
-      setOrganismeMutuelle('CNOPS');
-      fetchPatients();
+      const { error: insertError } = await supabase.from('patients').insert([
+        {
+          nom,
+          prenom,
+          telephone: tel,
+          email,
+          date_naissance: dateNaissance || null,
+          cin,
+          adresse,
+          pathologie,
+          nombre_seances: nombreSeances ? parseInt(nombreSeances, 10) : null,
+          atcd: serializedAtcd,
+        },
+      ]);
 
-      setTimeout(() => setSuccess(null), 3000);
+      if (insertError) {
+        setError(`Erreur d'ajout : ${insertError.message}`);
+      } else {
+        setSuccess('Patient ajouté avec succès !');
+        setNom('');
+        setPrenom('');
+        setTel('');
+        setEmail('');
+        setDateNaissance('');
+        setCin('');
+        setAdresse('');
+        setPathologie('');
+        setNombreSeances('');
+        setAtcd('');
+        setIsMutualiste(false);
+        setOrganismeMutuelle('CNOPS');
+        setSelectedFormClub('');
+        setCustomFormClub('');
+        fetchPatients();
+
+        setTimeout(() => setSuccess(null), 3000);
+      }
+    } catch (err: any) {
+      setError(`Erreur : ${err.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -312,6 +522,8 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     setPatientForMutuelle(patient);
     setModalIsMutualiste(info.isMutualiste);
     setModalOrganisme(info.organisme || 'CNOPS');
+    setModalClubSelect(info.club || '');
+    setModalCustomClub('');
     setIsMutuelleModalOpen(true);
   };
 
@@ -321,11 +533,24 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
     setSavingMutuelle(true);
     try {
+      const chosenClub =
+        modalClubSelect === '__new__' ? modalCustomClub.trim() : modalClubSelect.trim();
+
+      if (modalClubSelect === '__new__' && chosenClub) {
+        await upsertPartnerClub(supabase, {
+          name: chosenClub,
+          sport: 'Omnisports',
+          tarifConvention: null,
+          note: '',
+        });
+      }
+
       const info = parsePatientMutuelle(patientForMutuelle, mutuelleBillingIds);
       const updatedAtcd = serializeAtcdWithMutuelle(
         info.cleanAtcd,
         modalIsMutualiste,
-        modalIsMutualiste ? modalOrganisme : ''
+        modalIsMutualiste ? modalOrganisme : '',
+        chosenClub
       );
 
       const { error: updErr } = await supabase
@@ -335,13 +560,11 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
       if (updErr) throw updErr;
 
-      setPatients((prev) =>
-        prev.map((p) => (p.id === patientForMutuelle.id ? { ...p, atcd: updatedAtcd } : p))
-      );
+      await fetchPatients();
       setIsMutuelleModalOpen(false);
       setPatientForMutuelle(null);
     } catch (err: any) {
-      setError(`Impossible de mettre à jour le statut mutuelle : ${err.message}`);
+      setError(`Impossible de mettre à jour le patient : ${err.message}`);
     } finally {
       setSavingMutuelle(false);
     }
@@ -435,10 +658,17 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     return null;
   };
 
-  // Counts for Mutuelle filter pills
-  const mutuelleCounts = useMemo(() => {
+  // Counts for Mutuelle & Club filter pills
+  const statsCounts = useMemo(() => {
     let mutualistes = 0;
     let nonMutualistes = 0;
+    let clubAthletes = 0;
+    const perClub = new Map<string, number>();
+
+    for (const c of partnerClubs) {
+      perClub.set(c.name, 0);
+    }
+
     for (const p of patients) {
       const info = parsePatientMutuelle(p, mutuelleBillingIds);
       if (info.isMutualiste) {
@@ -446,17 +676,25 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
       } else {
         nonMutualistes++;
       }
+      if (info.club) {
+        clubAthletes++;
+        perClub.set(info.club, (perClub.get(info.club) || 0) + 1);
+      }
     }
+
     return {
       total: patients.length,
       mutualistes,
       nonMutualistes,
+      clubAthletes,
+      particuliers: patients.length - clubAthletes,
+      perClub,
     };
-  }, [patients, mutuelleBillingIds]);
+  }, [patients, mutuelleBillingIds, partnerClubs]);
 
   const filteredPatients = patients.filter((p) => {
-    const nomStr = (p.nom || '').toLowerCase();
-    const prenomStr = (p.prenom || '').toLowerCase();
+    const nomStr = (p.prenom ? `${p.nom || ''} ${p.prenom}` : p.nom || '').toLowerCase();
+    const revStr = `${p.prenom || ''} ${p.nom || ''}`.toLowerCase();
     const telStr = (p.telephone || '').toLowerCase();
     const cinStr = (p.cin || '').toLowerCase();
     const queryStr = searchQuery.trim().toLowerCase();
@@ -465,11 +703,12 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
     const matchQuery =
       !queryStr ||
-      `${nomStr} ${prenomStr}`.includes(queryStr) ||
-      `${prenomStr} ${nomStr}`.includes(queryStr) ||
+      nomStr.includes(queryStr) ||
+      revStr.includes(queryStr) ||
       telStr.includes(queryStr) ||
       cinStr.includes(queryStr) ||
-      (mutInfo.organisme && mutInfo.organisme.toLowerCase().includes(queryStr));
+      (mutInfo.organisme && mutInfo.organisme.toLowerCase().includes(queryStr)) ||
+      (mutInfo.club && mutInfo.club.toLowerCase().includes(queryStr));
 
     const matchMutuelle =
       mutuelleFilter === 'all'
@@ -484,24 +723,58 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         : mutInfo.isMutualiste &&
           mutInfo.organisme.toLowerCase() === organismeFilter.toLowerCase();
 
+    let matchClub = true;
+    if (clubFilter === 'any_club') {
+      matchClub = Boolean(mutInfo.club);
+    } else if (clubFilter === 'no_club') {
+      matchClub = !mutInfo.club;
+    } else if (clubFilter.startsWith('club:')) {
+      const targetClub = clubFilter.slice('club:'.length).toLowerCase();
+      matchClub = Boolean(mutInfo.club) && mutInfo.club.toLowerCase() === targetClub;
+    }
+
     const matchDate = searchDateNaissance ? p.date_naissance === searchDateNaissance : true;
     const matchTel = searchTelephone ? Boolean(p.telephone?.includes(searchTelephone)) : true;
     const matchPatho = searchPathologie
       ? Boolean(p.pathologie?.toLowerCase().includes(searchPathologie.toLowerCase()))
       : true;
 
-    return matchQuery && matchMutuelle && matchOrganisme && matchDate && matchTel && matchPatho;
+    return (
+      matchQuery &&
+      matchMutuelle &&
+      matchOrganisme &&
+      matchClub &&
+      matchDate &&
+      matchTel &&
+      matchPatho
+    );
   });
 
+  const allFilteredSelected =
+    filteredPatients.length > 0 && filteredPatients.every((p) => selectedPatientIds.has(p.id));
+
   return (
-    <div className="space-y-8 max-w-5xl mx-auto">
+    <div className="space-y-8 max-w-6xl mx-auto">
       {/* Formulaire d'ajout */}
       <Card className="border-primary-100 shadow-sm">
-        <CardHeader className="bg-primary-50/50 border-b border-primary-100 pb-4">
+        <CardHeader className="bg-primary-50/50 border-b border-primary-100 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <CardTitle className="flex items-center gap-2 text-primary-700">
             <UserPlus className="h-5 w-5" />
             Nouveau Patient
           </CardTitle>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setClubModalMessage({ type: '', text: '' });
+              setIsClubsModalOpen(true);
+            }}
+            className="gap-2 bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-50 self-start sm:self-center"
+          >
+            <Trophy className="h-4 w-4 text-indigo-600" />
+            Gérer les clubs conventionnés ({partnerClubs.length})
+          </Button>
         </CardHeader>
         <CardContent className="pt-6">
           <form onSubmit={handleSubmit} className="space-y-6">
@@ -631,46 +904,43 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                 />
               </div>
 
-              {/* Couverture Médicale / Mutuelle */}
-              <div className="space-y-2 md:col-span-2 p-4 rounded-xl bg-slate-50 border border-slate-200">
-                <label className="block text-sm font-semibold text-slate-700">
-                  Couverture médicale (Mutuelle)
-                </label>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                  <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1">
-                    <button
-                      type="button"
-                      onClick={() => setIsMutualiste(false)}
-                      className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all ${
-                        !isMutualiste
-                          ? 'bg-slate-800 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Non mutualiste
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsMutualiste(true)}
-                      className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all ${
-                        isMutualiste
-                          ? 'bg-emerald-600 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Patient mutualiste
-                    </button>
-                  </div>
+              {/* Couverture Médicale & Club Sportif Conventionné */}
+              <div className="space-y-3 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Couverture médicale (Mutuelle)
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1">
+                      <button
+                        type="button"
+                        onClick={() => setIsMutualiste(false)}
+                        className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                          !isMutualiste
+                            ? 'bg-slate-800 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Non mutualiste
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsMutualiste(true)}
+                        className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                          isMutualiste
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Mutualiste
+                      </button>
+                    </div>
 
-                  {isMutualiste && (
-                    <div className="flex items-center gap-2 flex-1">
-                      <label className="text-xs font-semibold text-slate-600 whitespace-nowrap">
-                        Organisme :
-                      </label>
+                    {isMutualiste && (
                       <select
                         value={organismeMutuelle}
                         onChange={(e) => setOrganismeMutuelle(e.target.value)}
-                        className="block w-full sm:w-56 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                        className="flex-1 min-w-[140px] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none"
                       >
                         {ORGANISMES_MUTUELLE.map((org) => (
                           <option key={org} value={org}>
@@ -678,8 +948,39 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                           </option>
                         ))}
                       </select>
-                    </div>
-                  )}
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-indigo-50/50 border border-indigo-100 space-y-2.5">
+                  <label className="block text-sm font-semibold text-indigo-900 flex items-center gap-1.5">
+                    <Trophy className="h-4 w-4 text-indigo-600" />
+                    Club sportif conventionné (Facultatif)
+                  </label>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <select
+                      value={selectedFormClub}
+                      onChange={(e) => setSelectedFormClub(e.target.value)}
+                      className="flex-1 rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-sm text-slate-800 focus:border-indigo-500 focus:outline-none"
+                    >
+                      <option value="">Aucun club (Patient particulier)</option>
+                      {partnerClubs.map((c) => (
+                        <option key={c.name} value={c.name}>
+                          {c.name} ({c.sport})
+                        </option>
+                      ))}
+                      <option value="__new__">+ Créer un nouveau club...</option>
+                    </select>
+                    {selectedFormClub === '__new__' && (
+                      <input
+                        type="text"
+                        value={customFormClub}
+                        onChange={(e) => setCustomFormClub(e.target.value)}
+                        placeholder="Nom du club..."
+                        className="flex-1 rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none"
+                      />
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -715,7 +1016,20 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
             <Users className="h-5 w-5 text-primary-500" />
             Base de données Patients ({filteredPatients.length})
           </CardTitle>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setClubModalMessage({ type: '', text: '' });
+                setIsClubsModalOpen(true);
+              }}
+              className="gap-1.5 bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100"
+            >
+              <Trophy className="h-4 w-4 text-amber-600" />
+              <span>Clubs ({partnerClubs.length})</span>
+            </Button>
             <input
               type="file"
               ref={fileInputRef}
@@ -765,14 +1079,14 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
               </div>
               <input
                 type="text"
-                placeholder="Rechercher par nom, prénom, téléphone, CIN ou mutuelle..."
+                placeholder="Rechercher par nom, prénom, téléphone, CIN, mutuelle ou club sportif..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="block w-full rounded-md border border-slate-300 bg-white pl-10 pr-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
               />
             </div>
 
-            {/* Quick Filter Bar: Tous / Mutualistes / Non mutualistes */}
+            {/* Row 1: Mutuelle Filter */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <button
@@ -781,13 +1095,13 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                     setMutuelleFilter('all');
                     setOrganismeFilter('all');
                   }}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                     mutuelleFilter === 'all'
                       ? 'bg-slate-900 text-white border-slate-900'
                       : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
                   }`}
                 >
-                  Tous les patients
+                  Tous
                   <span
                     className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${
                       mutuelleFilter === 'all'
@@ -795,14 +1109,14 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                         : 'bg-slate-100 text-slate-700'
                     }`}
                   >
-                    {mutuelleCounts.total}
+                    {statsCounts.total}
                   </span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setMutuelleFilter('mutualiste')}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                     mutuelleFilter === 'mutualiste'
                       ? 'bg-emerald-600 text-white border-emerald-600'
                       : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
@@ -817,7 +1131,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                         : 'bg-emerald-50 text-emerald-800'
                     }`}
                   >
-                    {mutuelleCounts.mutualistes}
+                    {statsCounts.mutualistes}
                   </span>
                 </button>
 
@@ -827,7 +1141,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                     setMutuelleFilter('non_mutualiste');
                     setOrganismeFilter('all');
                   }}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                     mutuelleFilter === 'non_mutualiste'
                       ? 'bg-slate-700 text-white border-slate-700'
                       : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
@@ -842,16 +1156,11 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                         : 'bg-slate-100 text-slate-700'
                     }`}
                   >
-                    {mutuelleCounts.nonMutualistes}
+                    {statsCounts.nonMutualistes}
                   </span>
                 </button>
-              </div>
 
-              {mutuelleFilter === 'mutualiste' && (
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-medium text-slate-600 whitespace-nowrap">
-                    Organisme :
-                  </label>
+                {mutuelleFilter === 'mutualiste' && (
                   <select
                     value={organismeFilter}
                     onChange={(e) => setOrganismeFilter(e.target.value)}
@@ -864,26 +1173,76 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                       </option>
                     ))}
                   </select>
-                </div>
-              )}
+                )}
+              </div>
+
+              {/* Row 1 Right: Clubs Sportifs Conventionnés Filter */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Trophy className="h-4 w-4 text-indigo-600 hidden sm:inline" />
+                <select
+                  value={clubFilter}
+                  onChange={(e) => setClubFilter(e.target.value)}
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-semibold focus:outline-none transition-colors ${
+                    clubFilter !== 'all'
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-slate-700 border-slate-300 hover:border-indigo-300'
+                  }`}
+                >
+                  <option value="all" className="bg-white text-slate-800">
+                    Clubs : Tous ({statsCounts.total})
+                  </option>
+                  <option value="any_club" className="bg-white text-slate-800">
+                    Tous les clubs conventionnés ({statsCounts.clubAthletes})
+                  </option>
+                  <option value="no_club" className="bg-white text-slate-800">
+                    Patients hors club ({statsCounts.particuliers})
+                  </option>
+                  {partnerClubs.map((c) => (
+                    <option key={c.name} value={`club:${c.name}`} className="bg-white text-slate-800">
+                      Club : {c.name} ({statsCounts.perClub.get(c.name) || 0})
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
+            {/* Active Partner Clubs Quick Chips */}
+            {partnerClubs.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Clubs :
+                </span>
+                {partnerClubs.map((club) => {
+                  const isSelected = clubFilter === `club:${club.name}`;
+                  const count = statsCounts.perClub.get(club.name) || 0;
+                  return (
+                    <button
+                      key={club.name}
+                      type="button"
+                      onClick={() => setClubFilter(isSelected ? 'all' : `club:${club.name}`)}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-indigo-50/70 text-indigo-800 border-indigo-200 hover:bg-indigo-100'
+                      }`}
+                    >
+                      <Trophy className="h-3 w-3" />
+                      <span>{club.name}</span>
+                      <span
+                        className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                          isSelected ? 'bg-white/20 text-white' : 'bg-white text-indigo-700'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {showAdvancedSearch && (
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 pt-2 border-t border-slate-200/70">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-slate-600">Statut Mutuelle</label>
-                  <select
-                    value={mutuelleFilter}
-                    onChange={(e) =>
-                      setMutuelleFilter(e.target.value as 'all' | 'mutualiste' | 'non_mutualiste')
-                    }
-                    className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
-                  >
-                    <option value="all">Tous</option>
-                    <option value="mutualiste">Mutualistes uniquement</option>
-                    <option value="non_mutualiste">Non mutualistes uniquement</option>
-                  </select>
-                </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-slate-200/70">
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-slate-600">Date de naissance</label>
                   <input
@@ -916,23 +1275,105 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
               </div>
             )}
           </div>
+
+          {/* Bulk Club Grouping Bar when 1+ patients selected */}
+          {selectedPatientIds.size > 0 && (
+            <div className="px-4 py-3 bg-indigo-900 text-white flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 text-sm font-semibold">
+                <Trophy className="h-4 w-4 text-amber-400 flex-shrink-0" />
+                <span>
+                  {selectedPatientIds.size} patient(s) sélectionné(s) — Regrouper dans un club sportif :
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={bulkClubChoice}
+                  onChange={(e) => setBulkClubChoice(e.target.value)}
+                  className="rounded-lg bg-white text-slate-900 px-3 py-1.5 text-xs font-semibold outline-none"
+                >
+                  <option value="">Choisir un club...</option>
+                  {partnerClubs.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name} ({c.sport})
+                    </option>
+                  ))}
+                  <option value="__new__">+ Nouveau club...</option>
+                </select>
+
+                {bulkClubChoice === '__new__' && (
+                  <input
+                    type="text"
+                    value={bulkNewClubName}
+                    onChange={(e) => setBulkNewClubName(e.target.value)}
+                    placeholder="Nom du club sportif..."
+                    className="rounded-lg bg-white text-slate-900 px-3 py-1.5 text-xs font-medium outline-none"
+                  />
+                )}
+
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={bulkAssignLoading}
+                  onClick={() => handleBulkAssignClub(false)}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs h-8 font-bold"
+                >
+                  {bulkAssignLoading ? 'Enregistrement...' : 'Affecter au club'}
+                </Button>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={bulkAssignLoading}
+                  onClick={() => handleBulkAssignClub(true)}
+                  className="bg-white/10 border-white/20 text-white hover:bg-white/20 text-xs h-8"
+                >
+                  Retirer du club
+                </Button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedPatientIds(new Set())}
+                  className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10"
+                  title="Désélectionner tout"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-200">
                 <tr>
-                  <th className="px-6 py-4 font-medium">Patient</th>
-                  <th className="px-6 py-4 font-medium">Contact</th>
-                  <th className="px-6 py-4 font-medium">Mutuelle</th>
-                  <th className="px-6 py-4 font-medium">Accès Portail</th>
-                  <th className="px-6 py-4 font-medium">Détails Médicaux</th>
-                  <th className="px-6 py-4 font-medium">Date d'ajout</th>
-                  <th className="px-6 py-4 font-medium text-right font-semibold">Actions</th>
+                  <th className="pl-4 pr-2 py-4 w-10">
+                    <button
+                      type="button"
+                      onClick={handleToggleSelectAllFiltered}
+                      className="text-slate-400 hover:text-indigo-600 flex items-center"
+                      title="Tout sélectionner pour regrouper dans un club"
+                    >
+                      {allFilteredSelected ? (
+                        <CheckSquare className="h-4 w-4 text-indigo-600" />
+                      ) : (
+                        <Square className="h-4 w-4" />
+                      )}
+                    </button>
+                  </th>
+                  <th className="px-4 py-4 font-medium">Patient</th>
+                  <th className="px-4 py-4 font-medium">Contact</th>
+                  <th className="px-4 py-4 font-medium">Club & Mutuelle</th>
+                  <th className="px-4 py-4 font-medium">Accès Portail</th>
+                  <th className="px-4 py-4 font-medium">Détails Médicaux</th>
+                  <th className="px-4 py-4 font-medium">Date d'ajout</th>
+                  <th className="px-4 py-4 font-medium text-right font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredPatients.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-8 text-center text-slate-500">
+                    <td colSpan={8} className="px-6 py-8 text-center text-slate-500">
                       {fetching ? 'Chargement des patients...' : 'Aucun patient correspondant à ce filtre.'}
                     </td>
                   </tr>
@@ -940,18 +1381,29 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                   filteredPatients.map((patient) => {
                     const alertBadge = getPatientAlertBadge(patient);
                     const mutInfo = parsePatientMutuelle(patient, mutuelleBillingIds);
+                    const isChecked = selectedPatientIds.has(patient.id);
 
                     return (
                       <tr
                         key={patient.id}
-                        className={`bg-white hover:bg-slate-50 transition-colors ${
-                          onSelectPatient ? 'cursor-pointer' : ''
-                        }`}
+                        className={`transition-colors ${
+                          isChecked ? 'bg-indigo-50/50' : 'bg-white hover:bg-slate-50'
+                        } ${onSelectPatient ? 'cursor-pointer' : ''}`}
                         onClick={() => onSelectPatient && onSelectPatient(patient.id)}
                       >
-                        <td className="px-6 py-4">
+                        <td
+                          className="pl-4 pr-2 py-4"
+                          onClick={(e) => handleToggleSelectPatient(patient.id, e)}
+                        >
+                          {isChecked ? (
+                            <CheckSquare className="h-4 w-4 text-indigo-600" />
+                          ) : (
+                            <Square className="h-4 w-4 text-slate-300 hover:text-slate-500" />
+                          )}
+                        </td>
+                        <td className="px-4 py-4">
                           <div className="flex items-center gap-3">
-                            <div className="h-9 w-9 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold text-sm">
+                            <div className="h-9 w-9 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold text-sm flex-shrink-0">
                               {patient.prenom?.[0]}
                               {patient.nom?.[0]}
                             </div>
@@ -975,7 +1427,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                             </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-4">
                           <div className="space-y-1">
                             {patient.telephone && (
                               <div className="flex items-center gap-2 text-slate-600">
@@ -984,7 +1436,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                             )}
                             {patient.adresse && (
                               <div
-                                className="text-xs text-slate-500 truncate max-w-[150px]"
+                                className="text-xs text-slate-500 truncate max-w-[140px]"
                                 title={patient.adresse}
                               >
                                 {patient.adresse}
@@ -992,35 +1444,59 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                             )}
                           </div>
                         </td>
-                        <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            onClick={(e) => handleOpenMutuelleModal(patient, e)}
-                            title="Cliquer pour modifier le statut mutuelle"
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
-                              mutInfo.isMutualiste
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                                : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
-                            }`}
-                          >
-                            {mutInfo.isMutualiste ? (
-                              <>
-                                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-                                <span>
-                                  {mutInfo.organisme && mutInfo.organisme !== 'Mutuelle'
-                                    ? mutInfo.organisme
-                                    : 'Mutualiste'}
-                                </span>
-                              </>
+                        <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex flex-col items-start gap-1.5">
+                            {mutInfo.club ? (
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenMutuelleModal(patient, e)}
+                                title="Modifier le club sportif ou la mutuelle"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors"
+                              >
+                                <Trophy className="h-3 w-3 text-indigo-600" />
+                                <span>{mutInfo.club}</span>
+                              </button>
                             ) : (
-                              <>
-                                <ShieldOff className="h-3.5 w-3.5 text-slate-400" />
-                                <span>Non mutualiste</span>
-                              </>
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenMutuelleModal(patient, e)}
+                                title="Affecter ce patient à un club sportif conventionné"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium text-indigo-600 hover:bg-indigo-50 border border-dashed border-indigo-200 transition-colors"
+                              >
+                                <Plus className="h-3 w-3" />
+                                <span>Club</span>
+                              </button>
                             )}
-                          </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenMutuelleModal(patient, e)}
+                              title="Modifier le statut mutuelle"
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-semibold border transition-colors ${
+                                mutInfo.isMutualiste
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                  : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                              }`}
+                            >
+                              {mutInfo.isMutualiste ? (
+                                <>
+                                  <ShieldCheck className="h-3 w-3 text-emerald-600" />
+                                  <span>
+                                    {mutInfo.organisme && mutInfo.organisme !== 'Mutuelle'
+                                      ? mutInfo.organisme
+                                      : 'Mutualiste'}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <ShieldOff className="h-3 w-3 text-slate-400" />
+                                  <span>Non mutualiste</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-4">
                           {(patient as any).has_access ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-mint-50 text-mint-700 border border-mint-200">
                               <CheckCircle2 className="h-3 w-3" /> Actif
@@ -1031,11 +1507,11 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                             </span>
                           )}
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-4">
                           <div className="space-y-1">
                             {patient.pathologie ? (
                               <div
-                                className="text-sm font-medium text-slate-700 truncate max-w-[150px]"
+                                className="text-sm font-medium text-slate-700 truncate max-w-[140px]"
                                 title={patient.pathologie}
                               >
                                 {patient.pathologie}
@@ -1081,14 +1557,14 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                               })()}
                           </div>
                         </td>
-                        <td className="px-6 py-4 text-slate-500">
+                        <td className="px-4 py-4 text-slate-500">
                           {new Date(patient.created_at).toLocaleDateString('fr-FR', {
                             day: '2-digit',
                             month: 'short',
                             year: 'numeric',
                           })}
                         </td>
-                        <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
+                        <td className="px-4 py-4 text-right" onClick={(e) => e.stopPropagation()}>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -1114,7 +1590,145 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         </CardContent>
       </Card>
 
-      {/* Modal modification rapide du statut Mutuelle */}
+      {/* Modal : Gérer les Clubs Sportifs Conventionnés */}
+      <Modal
+        isOpen={isClubsModalOpen}
+        onClose={() => {
+          if (!clubSaving) setIsClubsModalOpen(false);
+        }}
+        title="Clubs sportifs conventionnés"
+      >
+        <div className="space-y-5">
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Ajoutez vos clubs partenaires pour y regrouper vos athlètes et suivre automatiquement leur comptabilité dans l'onglet <strong>Finance → Clubs Conventionnés</strong>.
+          </p>
+
+          {clubModalMessage.text && (
+            <div
+              className={`p-3 rounded-xl text-sm flex items-center gap-2 ${
+                clubModalMessage.type === 'error'
+                  ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                  : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              }`}
+            >
+              {clubModalMessage.type === 'error' ? (
+                <AlertCircle className="h-4 w-4 flex-shrink-0" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+              )}
+              <span>{clubModalMessage.text}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleAddPartnerClub} className="space-y-3 p-4 rounded-xl bg-slate-50 border border-slate-200">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+              Nouveau club conventionné
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-700">Nom du club *</label>
+                <input
+                  type="text"
+                  required
+                  value={newClubForm.name}
+                  onChange={(e) => setNewClubForm({ ...newClubForm, name: e.target.value })}
+                  placeholder="Ex: HUSA Agadir"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 outline-none"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-700">Discipline</label>
+                <select
+                  value={newClubForm.sport}
+                  onChange={(e) => setNewClubForm({ ...newClubForm, sport: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 outline-none"
+                >
+                  {SPORTS_DISCIPLINES.map((sp) => (
+                    <option key={sp} value={sp}>
+                      {sp}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-700">
+                  Tarif séance conventionné (DH)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={newClubForm.tarifConvention}
+                  onChange={(e) => setNewClubForm({ ...newClubForm, tarifConvention: e.target.value })}
+                  placeholder="Ex: 150"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 outline-none"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-700">Note / Contact</label>
+                <input
+                  type="text"
+                  value={newClubForm.note}
+                  onChange={(e) => setNewClubForm({ ...newClubForm, note: e.target.value })}
+                  placeholder="Ex: Facturation mensuelle"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end pt-1">
+              <Button type="submit" size="sm" disabled={clubSaving} className="gap-1.5">
+                <Plus className="h-4 w-4" />
+                {clubSaving ? 'Ajout...' : 'Ajouter le club'}
+              </Button>
+            </div>
+          </form>
+
+          <div className="space-y-2 max-h-60 overflow-y-auto">
+            {partnerClubs.length === 0 ? (
+              <p className="text-center text-sm text-slate-500 py-4">
+                Aucun club enregistré pour le moment.
+              </p>
+            ) : (
+              partnerClubs.map((club) => {
+                const count = statsCounts.perClub.get(club.name) || 0;
+                return (
+                  <div
+                    key={club.name}
+                    className="p-3 rounded-xl border border-slate-200 bg-white flex items-center justify-between gap-3"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Trophy className="h-4 w-4 text-indigo-600" />
+                        <span className="font-bold text-sm text-slate-900">{club.name}</span>
+                        <span className="text-[11px] font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                          {club.sport}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {count} patient(s) affilié(s)
+                        {club.tarifConvention ? ` • Tarif : ${club.tarifConvention} DH/séance` : ''}
+                        {club.note ? ` • ${club.note}` : ''}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      disabled={clubSaving}
+                      onClick={() => handleDeletePartnerClub(club.name)}
+                      className="text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+                      title="Supprimer ce club"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal modification rapide Club + Mutuelle */}
       <Modal
         isOpen={isMutuelleModalOpen}
         onClose={() => {
@@ -1123,9 +1737,9 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
             setPatientForMutuelle(null);
           }
         }}
-        title="Couverture médicale (Mutuelle)"
+        title="Club sportif & Couverture mutuelle"
       >
-        <form onSubmit={handleSaveQuickMutuelle} className="space-y-4">
+        <form onSubmit={handleSaveQuickMutuelle} className="space-y-5">
           <p className="text-sm text-slate-600">
             Patient :{' '}
             <strong className="text-slate-900">
@@ -1133,53 +1747,91 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
             </strong>
           </p>
 
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setModalIsMutualiste(false)}
-              className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-semibold transition-all ${
-                !modalIsMutualiste
-                  ? 'bg-slate-800 text-white border-slate-800 shadow-xs'
-                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-              }`}
+          {/* Club Sportif Conventionné */}
+          <div className="space-y-2 p-3.5 rounded-xl bg-indigo-50/60 border border-indigo-100">
+            <label className="text-sm font-semibold text-indigo-900 flex items-center gap-1.5">
+              <Trophy className="h-4 w-4 text-indigo-600" />
+              Club sportif conventionné
+            </label>
+            <select
+              value={modalClubSelect}
+              onChange={(e) => setModalClubSelect(e.target.value)}
+              className="w-full rounded-xl border border-indigo-200 px-3 py-2 text-sm bg-white focus:border-indigo-500 focus:outline-none"
             >
-              <ShieldOff className="h-4 w-4" />
-              Non mutualiste
-            </button>
-            <button
-              type="button"
-              onClick={() => setModalIsMutualiste(true)}
-              className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-semibold transition-all ${
-                modalIsMutualiste
-                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                  : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
-              }`}
-            >
-              <ShieldCheck className="h-4 w-4" />
-              Mutualiste
-            </button>
+              <option value="">Aucun club (Patient particulier)</option>
+              {partnerClubs.map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name} ({c.sport})
+                </option>
+              ))}
+              <option value="__new__">+ Créer un nouveau club...</option>
+            </select>
+
+            {modalClubSelect === '__new__' && (
+              <input
+                type="text"
+                required
+                value={modalCustomClub}
+                onChange={(e) => setModalCustomClub(e.target.value)}
+                placeholder="Nom du club sportif..."
+                className="w-full rounded-xl border border-indigo-300 px-3 py-2 text-sm bg-white focus:border-indigo-500 focus:outline-none"
+              />
+            )}
           </div>
 
-          {modalIsMutualiste && (
-            <div className="space-y-1.5">
-              <label className="text-sm font-semibold text-slate-700">
-                Organisme / Assurance
-              </label>
-              <select
-                value={modalOrganisme}
-                onChange={(e) => setModalOrganisme(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm bg-white focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+          {/* Couverture Mutuelle */}
+          <div className="space-y-3">
+            <label className="text-sm font-semibold text-slate-700 block">
+              Statut Mutuelle
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setModalIsMutualiste(false)}
+                className={`flex items-center justify-center gap-2 p-2.5 rounded-xl border text-sm font-semibold transition-all ${
+                  !modalIsMutualiste
+                    ? 'bg-slate-800 text-white border-slate-800 shadow-xs'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
               >
-                {ORGANISMES_MUTUELLE.map((org) => (
-                  <option key={org} value={org}>
-                    {org}
-                  </option>
-                ))}
-              </select>
+                <ShieldOff className="h-4 w-4" />
+                Non mutualiste
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalIsMutualiste(true)}
+                className={`flex items-center justify-center gap-2 p-2.5 rounded-xl border text-sm font-semibold transition-all ${
+                  modalIsMutualiste
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                    : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
+                }`}
+              >
+                <ShieldCheck className="h-4 w-4" />
+                Mutualiste
+              </button>
             </div>
-          )}
 
-          <div className="flex justify-end gap-3 pt-3">
+            {modalIsMutualiste && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600">
+                  Organisme / Assurance
+                </label>
+                <select
+                  value={modalOrganisme}
+                  onChange={(e) => setModalOrganisme(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm bg-white focus:border-primary-500 focus:outline-none"
+                >
+                  {ORGANISMES_MUTUELLE.map((org) => (
+                    <option key={org} value={org}>
+                      {org}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2">
             <Button
               type="button"
               variant="outline"

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -12,7 +12,7 @@ import * as XLSX from 'xlsx';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
-import { ORGANISMES_MUTUELLE, parsePatientMutuelle, serializeAtcdWithMutuelle } from '../lib/mutuelleUtils';
+import { ORGANISMES_MUTUELLE, SPORTS_DISCIPLINES, PartnerClub, parsePatientMutuelle, serializeAtcdWithMutuelle, fetchPartnerClubs, upsertPartnerClub } from '../lib/mutuelleUtils';
 
 interface PatientDetailProps {
   patientId?: string;
@@ -83,6 +83,9 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
   const [editPatientData, setEditPatientData] = useState<any>({});
   const [editPatientLoading, setEditPatientLoading] = useState(false);
   const [editPatientMessage, setEditPatientMessage] = useState({ type: '', text: '' });
+  const [partnerClubs, setPartnerClubs] = useState<PartnerClub[]>([]);
+  const [newInlineClubName, setNewInlineClubName] = useState('');
+  const [newInlineClubSport, setNewInlineClubSport] = useState('Football');
 
   // New Appointment Modal State
   const [isNewAppointmentModalOpen, setIsNewAppointmentModalOpen] = useState(false);
@@ -331,6 +334,10 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     if (therData) {
       setTherapists(therData);
     }
+
+    // Fetch partner sports clubs
+    const loadedClubs = await fetchPartnerClubs(supabase, patientData ? [patientData] : []);
+    setPartnerClubs(loadedClubs);
 
     setLoading(false);
   };
@@ -629,10 +636,30 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
     setEditPatientLoading(true);
     setEditPatientMessage({ type: '', text: '' });
 
+    let resolvedClub = editPatientData.club || '';
+    if (resolvedClub === '__NEW__') {
+      const cleanNewName = newInlineClubName.replace(/[\[\]\|]/g, '').trim();
+      if (!cleanNewName) {
+        setEditPatientLoading(false);
+        setEditPatientMessage({ type: 'error', text: 'Veuillez saisir le nom du nouveau club sportif.' });
+        return;
+      }
+      try {
+        await upsertPartnerClub(supabase, {
+          name: cleanNewName,
+          sport: newInlineClubSport || 'Football',
+        });
+      } catch (clubErr: any) {
+        console.warn('Could not persist club in admin registry, saving on patient directly:', clubErr);
+      }
+      resolvedClub = cleanNewName;
+    }
+
     const serializedAtcd = serializeAtcdWithMutuelle(
       editPatientData.cleanAtcd ?? editPatientData.atcd ?? '',
       Boolean(editPatientData.isMutualiste),
-      editPatientData.isMutualiste ? editPatientData.organismeMutuelle || 'CNOPS' : ''
+      editPatientData.isMutualiste ? editPatientData.organismeMutuelle || 'CNOPS' : '',
+      resolvedClub
     );
 
     const updatePayload = {
@@ -658,7 +685,9 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
       setEditPatientMessage({ type: 'error', text: error.message });
     } else {
       setEditPatientMessage({ type: 'success', text: 'Patient modifié avec succès' });
-      setPatient({ ...patient, ...updatePayload });
+      const updatedPatient = { ...patient, ...updatePayload };
+      setPatient(updatedPatient);
+      fetchPartnerClubs(supabase, [updatedPatient]).then(setPartnerClubs);
       setTimeout(() => {
         setIsEditPatientModalOpen(false);
         setEditPatientMessage({ type: '', text: '' });
@@ -1059,7 +1088,18 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
             {patient.prenom?.[0]}{patient.nom?.[0]}
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">{patient.prenom} {patient.nom}</h1>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h1 className="text-2xl font-bold text-slate-900">{patient.prenom} {patient.nom}</h1>
+              {(() => {
+                const mutInfo = parsePatientMutuelle(patient);
+                return mutInfo.club ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                    <Trophy className="h-3.5 w-3.5 text-indigo-600" />
+                    {mutInfo.club}
+                  </span>
+                ) : null;
+              })()}
+            </div>
             <div className="flex flex-wrap items-center gap-4 mt-2 text-sm text-slate-500">
               {patient.date_naissance && (
                 <span className="flex items-center gap-1.5"><Calendar className="h-4 w-4" /> {new Date(patient.date_naissance).toLocaleDateString('fr-FR')}</span>
@@ -1085,11 +1125,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           </Button>
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => {
             const mutInfo = parsePatientMutuelle(patient);
+            setNewInlineClubName('');
             setEditPatientData({
               ...patient,
               cleanAtcd: mutInfo.cleanAtcd,
               isMutualiste: mutInfo.isMutualiste,
               organismeMutuelle: mutInfo.organisme || 'CNOPS',
+              club: mutInfo.club || '',
             });
             setIsEditPatientModalOpen(true);
           }}>Modifier</Button>
@@ -1187,11 +1229,13 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                     className="h-8 text-primary-600 hover:text-primary-700 hover:bg-primary-50 font-bold"
                     onClick={() => {
                       const mutInfo = parsePatientMutuelle(patient);
+                      setNewInlineClubName('');
                       setEditPatientData({
                         ...patient,
                         cleanAtcd: mutInfo.cleanAtcd,
                         isMutualiste: mutInfo.isMutualiste,
                         organismeMutuelle: mutInfo.organisme || 'CNOPS',
+                        club: mutInfo.club || '',
                       });
                       setIsEditPatientModalOpen(true);
                     }}
@@ -1224,6 +1268,22 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
                       ) : (
                         <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">
                           Non mutualiste
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Club Sportif Conventionné</h4>
+                    {(() => {
+                      const mutInfo = parsePatientMutuelle(patient);
+                      return mutInfo.club ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                          <Trophy className="h-3.5 w-3.5 text-indigo-600" />
+                          {mutInfo.club}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-medium bg-slate-50 text-slate-500 border border-slate-200">
+                          Particulier (Hors club)
                         </span>
                       );
                     })()}
@@ -2157,6 +2217,52 @@ return (
               onChange={(e) => setEditPatientData({ ...editPatientData, adresse: e.target.value })}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             />
+          </div>
+          <div className="p-3.5 rounded-xl bg-indigo-50/60 border border-indigo-200/80 space-y-2.5">
+            <label className="text-sm font-semibold text-indigo-950 flex items-center gap-1.5">
+              <Trophy className="h-4 w-4 text-indigo-600" />
+              Club sportif conventionné
+            </label>
+            <select
+              value={editPatientData.club || ''}
+              onChange={(e) => setEditPatientData({ ...editPatientData, club: e.target.value })}
+              className="w-full p-2 border border-indigo-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">Aucun club (Patient particulier)</option>
+              {partnerClubs.map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name} ({c.sport}{c.tarifConvention ? ` • ${c.tarifConvention} DH/séance` : ''})
+                </option>
+              ))}
+              {editPatientData.club &&
+                editPatientData.club !== '__NEW__' &&
+                !partnerClubs.some((c) => c.name.toLowerCase() === String(editPatientData.club).toLowerCase()) && (
+                  <option value={editPatientData.club}>{editPatientData.club}</option>
+                )}
+              <option value="__NEW__">+ Créer un nouveau club conventionné...</option>
+            </select>
+            {editPatientData.club === '__NEW__' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                <input
+                  type="text"
+                  placeholder="Nom du club (ex: Hassania Agadir)"
+                  value={newInlineClubName}
+                  onChange={(e) => setNewInlineClubName(e.target.value)}
+                  className="p-2 border border-indigo-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500"
+                />
+                <select
+                  value={newInlineClubSport}
+                  onChange={(e) => setNewInlineClubSport(e.target.value)}
+                  className="p-2 border border-indigo-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500"
+                >
+                  {SPORTS_DISCIPLINES.map((sp) => (
+                    <option key={sp} value={sp}>
+                      {sp}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
             <label className="text-sm font-semibold text-slate-700 block">Couverture médicale (Mutuelle)</label>

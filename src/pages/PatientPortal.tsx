@@ -512,11 +512,15 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
     setProfileLoading(true);
     try {
       const existingMut = parsePatientMutuelle(patient);
+      const cleanProfileAtcd = (profileForm.atcd || '').trim();
+      const preservedAtcd = existingMut.hasExplicitTag
+        ? serializeAtcdWithMutuelle(cleanProfileAtcd, existingMut.isMutualiste, existingMut.organisme, existingMut.club)
+        : existingMut.hasClubTag && existingMut.club
+          ? [cleanProfileAtcd, `[[CLUB:${existingMut.club}]]`].filter(Boolean).join(' ')
+          : cleanProfileAtcd;
       const payloadToSave = {
         ...profileForm,
-        atcd: existingMut.hasExplicitTag
-          ? serializeAtcdWithMutuelle(profileForm.atcd, existingMut.isMutualiste, existingMut.organisme)
-          : profileForm.atcd,
+        atcd: preservedAtcd,
       };
       const { error } = await supabase.from('patients').update(payloadToSave).eq('id', patient.id);
       if (error) throw error;
