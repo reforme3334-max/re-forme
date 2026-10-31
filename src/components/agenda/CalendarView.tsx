@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { format, addDays, subDays, startOfWeek, isSameDay, setHours, setMinutes, isSameMonth } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight, Bell } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight, Bell, FolderOpen, Trophy } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -9,6 +9,7 @@ import { Modal } from '@/components/ui/modal';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAppointmentNotifications } from '@/contexts/AppointmentNotificationsContext';
 import { getMoroccoNow, parseClinicDate, toClinicIsoString } from '@/lib/timeUtils';
+import { parsePatientMutuelle } from '@/lib/mutuelleUtils';
 
 interface Patient {
   id: string;
@@ -31,7 +32,7 @@ interface Appointment {
   duree: number;
   statut: string;
   notes_seance: string; // Utilisé pour stocker "Bilan" ou "Séance"
-  patients?: { nom: string; prenom: string };
+  patients?: { nom: string; prenom: string; telephone?: string; pathologie?: string; atcd?: string };
   therapists?: { nom: string; prenom: string };
 }
 
@@ -53,9 +54,18 @@ const MOTIFS_SEANCE = [
   'Clinique Chiekhe Essaadi Agadir'
 ];
 
-export function CalendarView() {
+export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: string) => void }) {
   const { requests, pendingCount, approveRequest } = useAppointmentNotifications();
-  const [currentDate, setCurrentDate] = useState(() => getMoroccoNow());
+  const [currentDate, setCurrentDate] = useState<Date>(() => {
+    try {
+      const saved = sessionStorage.getItem('reforme_agenda_current_date');
+      if (saved) {
+        const parsed = new Date(saved);
+        if (!isNaN(parsed.getTime())) return parsed;
+      }
+    } catch {}
+    return getMoroccoNow();
+  });
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [therapists, setTherapists] = useState<Therapist[]>([]);
@@ -138,11 +148,29 @@ export function CalendarView() {
   }, [selectedAppointment]);
 
   useEffect(() => {
+    try {
+      sessionStorage.setItem('reforme_agenda_current_date', currentDate.toISOString());
+    } catch {}
     fetchAppointments();
     fetchPatients();
     fetchTherapists();
     fetchMotifs();
   }, [currentDate]);
+
+  const handleOpenPatientDossier = (patientId?: string) => {
+    if (!patientId) return;
+    try {
+      sessionStorage.setItem('reforme_agenda_current_date', currentDate.toISOString());
+      sessionStorage.setItem('reforme_patient_return_route', 'agenda');
+      localStorage.setItem('reforme_preview_patient_id', patientId);
+    } catch {}
+    setIsBillingModalOpen(false);
+    if (onSelectPatient) {
+      onSelectPatient(patientId);
+    } else {
+      window.location.hash = 'patient-detail';
+    }
+  };
 
   const fetchTherapists = async () => {
     const { data, error } = await supabase
@@ -187,7 +215,7 @@ export function CalendarView() {
       .lte('date_heure', endRange);
     
     if (!appError && appData) {
-      const { data: patData } = await supabase.from('patients').select('id, nom, prenom');
+      const { data: patData } = await supabase.from('patients').select('id, nom, prenom, telephone, pathologie, atcd');
       const { data: therData } = await supabase.from('therapists').select('id, nom, prenom');
       
       const patientsMap = new Map(patData ? patData.map(p => [p.id, p]) : []);
@@ -775,6 +803,8 @@ export function CalendarView() {
                             }
                             
                             const isNarrow = count > 1;
+                            const isRightEdgeNarrow = isNarrow && index > 0 && dayIdx === displayedDays.length - 1;
+                            const clubInfo = app.patients ? parsePatientMutuelle(app.patients) : null;
                             
                             return (
                               <motion.div 
@@ -782,7 +812,7 @@ export function CalendarView() {
                                 initial={{ opacity: 0, scale: 0.95 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 exit={{ opacity: 0, scale: 0.95 }}
-                                className={`absolute rounded-xl ${isNarrow ? 'p-1.5' : 'px-2.5 py-2'} text-[11px] border shadow-md z-10 overflow-hidden transition-all duration-200 cursor-pointer group/app ${statusStyles} hover:!z-50 hover:!h-auto hover:!min-h-[60px] hover:!w-[140px] hover:shadow-xl`}
+                                className={`absolute rounded-xl ${isNarrow ? 'p-1.5' : 'px-2.5 py-1.5'} text-[11px] border shadow-md z-10 overflow-hidden transition-all duration-200 cursor-pointer group/app ${statusStyles} hover:!z-50 hover:!h-auto hover:!min-h-[82px] ${isNarrow ? 'hover:!w-[185px]' : ''} ${isRightEdgeNarrow ? 'hover:!right-1 hover:!left-auto' : ''} hover:shadow-xl`}
                                 style={{
                                   top: `${(startMin / 60) * 100}%`,
                                   height: `calc(${((app.duree || 30) / 60) * 100}% - 4px)`,
@@ -803,25 +833,61 @@ export function CalendarView() {
                                 }}
                               >
                                 <div className={`absolute left-0 top-0 bottom-0 ${isNarrow ? 'w-0.5' : 'w-1'} ${accentColor}`} />
-                                <div className={`font-bold flex items-start justify-between ${isNarrow ? 'mb-0' : 'mb-1'} gap-1 pl-1`}>
+                                <div className={`font-bold flex items-start justify-between ${isNarrow ? 'mb-0' : 'mb-0.5'} gap-1 pl-1`}>
                                   <span className={`${isNarrow ? 'line-clamp-2 text-[10px] leading-tight break-words group-hover/app:line-clamp-none group-hover/app:text-[11px]' : 'truncate'}`}>
                                     {app.patients ? `${app.patients.prenom} ${app.patients.nom}` : (app.patient_id ? `Chargement...` : 'Patient inconnu')}
                                   </span>
-                                  <div className={`flex shrink-0 gap-1 ${isNarrow ? 'hidden group-hover/app:flex' : ''}`}>
-                                    {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-emerald-500" />}
-                                    {app.statut === 'Impayé' && <AlertCircle className="h-3 w-3 text-rose-500 animate-pulse" />}
-                                    {isPending && <Bell className="h-3 w-3 text-amber-600 animate-bounce" />}
+                                  <div className="flex items-center shrink-0 gap-1">
+                                    {app.patient_id && (
+                                      <button
+                                        type="button"
+                                        title="Visualiser le dossier du patient"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenPatientDossier(app.patient_id);
+                                        }}
+                                        className={`${isNarrow ? 'hidden group-hover/app:inline-flex' : 'inline-flex'} items-center justify-center h-5 w-5 rounded-md bg-white/85 hover:bg-primary-600 text-slate-600 hover:text-white border border-slate-200/80 hover:border-primary-600 shadow-2xs transition-colors`}
+                                      >
+                                        <FolderOpen className="h-3 w-3" />
+                                      </button>
+                                    )}
+                                    <div className={`flex shrink-0 gap-1 ${isNarrow ? 'hidden group-hover/app:flex' : ''}`}>
+                                      {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-emerald-500" />}
+                                      {app.statut === 'Impayé' && <AlertCircle className="h-3 w-3 text-rose-500 animate-pulse" />}
+                                      {isPending && <Bell className="h-3 w-3 text-amber-600 animate-bounce" />}
+                                    </div>
                                   </div>
                                 </div>
                                 {app.therapists && (
-                                  <div className={`text-[9px] font-bold uppercase tracking-tighter text-slate-500/60 mb-1 pl-1 ${isNarrow ? 'hidden group-hover/app:block' : ''}`}>
+                                  <div className={`text-[9px] font-bold uppercase tracking-tighter text-slate-500/70 mb-0.5 pl-1 ${isNarrow ? 'hidden group-hover/app:block' : ''}`}>
                                     Praticien: {app.therapists.prenom} {app.therapists.nom}
                                   </div>
                                 )}
-                                <div className={`${isNarrow ? 'hidden group-hover/app:flex' : 'flex'} items-center gap-1.5 opacity-70 font-medium pl-1 mt-1`}>
+                                <div className={`${isNarrow ? 'hidden group-hover/app:flex' : 'flex'} items-center gap-1.5 opacity-75 font-medium pl-1 mt-0.5`}>
                                   <Clock className="h-3 w-3 shrink-0" />
                                   <span className="truncate">{format(parseClinicDate(app.date_heure), 'HH:mm')} {app.notes_seance ? `• ${app.notes_seance}` : ''}</span>
                                 </div>
+                                {clubInfo?.club && (
+                                  <div className="hidden group-hover/app:flex items-center gap-1 text-[9px] font-bold text-indigo-700 pl-1 mt-1 truncate">
+                                    <Trophy className="h-2.5 w-2.5 shrink-0 text-indigo-600" />
+                                    <span className="truncate">{clubInfo.club}</span>
+                                  </div>
+                                )}
+                                {app.patient_id && (
+                                  <div className="hidden group-hover/app:flex pt-1.5 mt-1.5 border-t border-slate-900/10 pl-1">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenPatientDossier(app.patient_id);
+                                      }}
+                                      className="w-full inline-flex items-center justify-center gap-1.5 px-2 py-1 rounded-lg bg-slate-900 hover:bg-primary-600 text-white text-[10px] font-bold shadow-xs transition-colors"
+                                    >
+                                      <FolderOpen className="h-3 w-3 shrink-0" />
+                                      <span>Voir le dossier</span>
+                                    </button>
+                                  </div>
+                                )}
                               </motion.div>
                             );
                           })}
@@ -1101,16 +1167,34 @@ export function CalendarView() {
           )}
           
           {selectedAppointment && (
-            <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100 shadow-inner">
-              <div className="h-12 w-12 rounded-2xl bg-white shadow-sm border border-slate-200 flex items-center justify-center text-primary-500 font-black text-lg">
-                {selectedAppointment.patients?.nom[0]}{selectedAppointment.patients?.prenom[0]}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 shadow-inner">
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="h-12 w-12 rounded-2xl bg-white shadow-sm border border-slate-200 flex items-center justify-center text-primary-500 font-black text-lg shrink-0 uppercase">
+                  {selectedAppointment.patients?.nom?.[0]}{selectedAppointment.patients?.prenom?.[0]}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Patient</p>
+                  <p className="font-black text-slate-900 text-lg truncate">
+                    {selectedAppointment.patients?.prenom} {selectedAppointment.patients?.nom}
+                  </p>
+                  {selectedAppointment.patients?.pathologie && (
+                    <p className="text-xs text-slate-500 font-medium truncate">
+                      {selectedAppointment.patients.pathologie}
+                    </p>
+                  )}
+                </div>
               </div>
-              <div>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Patient</p>
-                <p className="font-black text-slate-900 text-lg">
-                  {selectedAppointment.patients?.prenom} {selectedAppointment.patients?.nom}
-                </p>
-              </div>
+              {selectedAppointment.patient_id && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => handleOpenPatientDossier(selectedAppointment.patient_id)}
+                  className="rounded-xl bg-primary-600 hover:bg-primary-700 text-white font-bold gap-1.5 shrink-0 shadow-sm"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  Voir le dossier
+                </Button>
+              )}
             </div>
           )}
 

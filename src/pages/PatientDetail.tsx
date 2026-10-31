@@ -16,6 +16,7 @@ import { ORGANISMES_MUTUELLE, SPORTS_DISCIPLINES, PartnerClub, parsePatientMutue
 
 interface PatientDetailProps {
   patientId?: string;
+  returnRoute?: string;
 }
 
 const MOTIFS_SEANCE = [
@@ -36,7 +37,7 @@ const MOTIFS_SEANCE = [
   'Clinique Chiekhe Essaadi Agadir'
 ];
 
-export function PatientDetail({ patientId }: PatientDetailProps) {
+export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [activeTab, setActiveTab] = useState('dossier');
   const [patient, setPatient] = useState<any>(null);
   const [appointments, setAppointments] = useState<any[]>([]);
@@ -1120,8 +1121,16 @@ export function PatientDetail({ patientId }: PatientDetailProps) {
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => setIsAccessModalOpen(true)}>
             <Key className="h-4 w-4 mr-2" /> Accès
           </Button>
-          <Button variant="outline" className="flex-1 md:flex-none" onClick={() => window.location.hash = 'patients'}>
-            <ArrowLeft className="h-4 w-4 mr-2" /> Retour
+          <Button
+            variant="outline"
+            className="flex-1 md:flex-none"
+            onClick={() => {
+              const target = returnRoute || 'patients';
+              window.location.hash = target;
+            }}
+          >
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            {returnRoute === 'agenda' ? "Retour à l'agenda" : returnRoute === 'dashboard' ? 'Retour au tableau de bord' : 'Retour'}
           </Button>
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => {
             const mutInfo = parsePatientMutuelle(patient);

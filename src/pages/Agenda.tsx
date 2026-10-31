@@ -1,6 +1,6 @@
 import { CalendarView } from '../components/agenda/CalendarView';
 
-export function Agenda() {
+export function Agenda({ onSelectPatient }: { onSelectPatient?: (id: string) => void }) {
   return (
     <div className="h-full flex flex-col space-y-4">
       <div>
@@ -9,7 +9,7 @@ export function Agenda() {
       </div>
       
       <div className="flex-1 min-h-0">
-        <CalendarView />
+        <CalendarView onSelectPatient={onSelectPatient} />
       </div>
     </div>
   );

@@ -21,6 +21,14 @@ export default function App() {
     }
   });
 
+  const [returnRoute, setReturnRoute] = useState<string>(() => {
+    try {
+      return sessionStorage.getItem('reforme_patient_return_route') || 'patients';
+    } catch {
+      return 'patients';
+    }
+  });
+
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#', '') || 'login';
@@ -39,9 +47,13 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, [selectedPatientId]);
 
-  const handleSelectPatient = (id: string) => {
+  const handleSelectPatient = (id: string, fromRoute?: string) => {
+    if (!id) return;
+    const origin = fromRoute || (currentRoute && currentRoute !== 'patient-detail' ? currentRoute : 'patients');
+    setReturnRoute(origin);
     setSelectedPatientId(id);
     try {
+      sessionStorage.setItem('reforme_patient_return_route', origin);
       localStorage.setItem('reforme_preview_patient_id', id);
     } catch {}
     window.location.hash = 'patient-detail';
@@ -50,8 +62,8 @@ export default function App() {
   const renderContent = () => {
     if (currentRoute === 'patient-detail' && selectedPatientId) {
       return (
-        <ProtectedRoute allowedPermissions={['patients']}>
-          <PatientDetail patientId={selectedPatientId} />
+        <ProtectedRoute allowedPermissions={['patients', 'agenda']}>
+          <PatientDetail patientId={selectedPatientId} returnRoute={returnRoute} />
         </ProtectedRoute>
       );
     }
@@ -60,19 +72,19 @@ export default function App() {
       case 'dashboard':
         return (
           <ProtectedRoute allowedRoles={['admin']}>
-            <Dashboard onSelectPatient={handleSelectPatient} />
+            <Dashboard onSelectPatient={(id) => handleSelectPatient(id, 'dashboard')} />
           </ProtectedRoute>
         );
       case 'agenda':
         return (
           <ProtectedRoute allowedPermissions={['agenda']}>
-            <Agenda />
+            <Agenda onSelectPatient={(id) => handleSelectPatient(id, 'agenda')} />
           </ProtectedRoute>
         );
       case 'patients':
         return (
           <ProtectedRoute allowedPermissions={['patients']}>
-            <Patients onSelectPatient={handleSelectPatient} />
+            <Patients onSelectPatient={(id) => handleSelectPatient(id, 'patients')} />
           </ProtectedRoute>
         );
       case 'settings':
@@ -90,7 +102,7 @@ export default function App() {
       default:
         return (
           <ProtectedRoute allowedPermissions={['agenda']}>
-            <Agenda />
+            <Agenda onSelectPatient={(id) => handleSelectPatient(id, 'agenda')} />
           </ProtectedRoute>
         );
     }
