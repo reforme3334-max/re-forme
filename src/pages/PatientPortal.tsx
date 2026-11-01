@@ -7,10 +7,17 @@ import { ReviewSection } from '../components/reviews/ReviewSection';
 import { Modal } from '../components/ui/modal';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseExercisesFromPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
-import { jsPDF } from 'jspdf';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 import { parsePatientMutuelle, serializeAtcdWithMutuelle } from '../lib/mutuelleUtils';
 import { sanitizeBillings, formatMoney, sumMoney, isUnpaidBillingStatus, isPaidBillingStatus, getBillDate } from '../lib/financeUtils';
+import {
+  fetchDocumentTemplates,
+  getCachedDocumentTemplates,
+  fetchCustomInvoiceRefs,
+  getCachedCustomInvoiceRefs,
+  getBillingDisplayReference,
+  exportPatientReceiptPDF,
+} from '../lib/documentTemplates';
 
 export function PatientPortal() {
   const [patient, setPatient] = useState<any>(null);
@@ -536,53 +543,17 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
     }
   };
 
-  const downloadReceipt = (billing: any, appt: any) => {
-    const doc = new jsPDF();
-    const receiptDate = getBillDate(billing).toLocaleDateString('fr-FR');
-    const sessionDate = appt?.date_heure
-      ? parseClinicDate(appt.date_heure).toLocaleDateString('fr-FR')
-      : receiptDate;
-
-    doc.setFontSize(20);
-    doc.setTextColor(13, 148, 136);
-    doc.text('ReForme Center', 20, 25);
-
-    doc.setFontSize(11);
-    doc.setTextColor(100, 116, 139);
-    doc.text('Centre de Kinésithérapie & Rééducation', 20, 32);
-
-    doc.setFontSize(16);
-    doc.setTextColor(15, 23, 42);
-    doc.text('REÇU DE PAIEMENT', 190, 25, { align: 'right' });
-    doc.setFontSize(10);
-    doc.setTextColor(100, 116, 139);
-    doc.text(`Date : ${receiptDate}`, 190, 32, { align: 'right' });
-
-    doc.setDrawColor(226, 232, 240);
-    doc.line(20, 40, 190, 40);
-
-    doc.setFontSize(12);
-    doc.setTextColor(15, 23, 42);
-    doc.text(`Patient : ${patient.prenom} ${patient.nom}`, 20, 54);
-    doc.text(`Séance du : ${sessionDate}`, 20, 64);
-    doc.text(`Motif : ${appt?.notes_seance || 'Soins de kinésithérapie'}`, 20, 74);
-    doc.text(`Mode de règlement : ${billing.type_paiement || 'Direct'}`, 20, 84);
-
-    doc.line(20, 94, 190, 94);
-    doc.setFontSize(14);
-    doc.setTextColor(13, 148, 136);
-    doc.text(`Montant Réglé : ${formatMoney(billing.montant)} DH`, 20, 106);
-
-    doc.setFontSize(9);
-    doc.setTextColor(100, 116, 139);
-    doc.text(
-      'Ce document tient lieu de reçu pour le paiement des soins dispensés.',
-      105,
-      128,
-      { align: 'center' }
-    );
-
-    doc.save(`Recu_${patient.nom}_${sessionDate.replace(/\//g, '-')}.pdf`);
+  const downloadReceipt = async (billing: any, appt: any) => {
+    const [tpl, customRefs] = await Promise.all([
+      fetchDocumentTemplates(supabase).catch(() => getCachedDocumentTemplates()),
+      fetchCustomInvoiceRefs(supabase).catch(() => getCachedCustomInvoiceRefs()),
+    ]);
+    exportPatientReceiptPDF(tpl, {
+      patient,
+      billing,
+      appointment: appt,
+      receiptNumber: getBillingDisplayReference(billing, tpl, customRefs),
+    });
   };
 
   if (loading) {

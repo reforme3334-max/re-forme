@@ -1,13 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy, Lock, Wallet } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy, Lock, Wallet, LayoutTemplate } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Modal } from '../components/ui/modal';
 import { createClient } from '@supabase/supabase-js';
 import { supabase, supabaseUrl, supabaseAnonKey } from '../lib/supabaseClient';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
@@ -15,6 +13,24 @@ import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString }
 import { ORGANISMES_MUTUELLE, SPORTS_DISCIPLINES, PartnerClub, parsePatientMutuelle, serializeAtcdWithMutuelle, fetchPartnerClubs, upsertPartnerClub } from '../lib/mutuelleUtils';
 import { resolveOrBindCollaboratorSession } from '../lib/teamUtils';
 import { roundMoney, sumMoney, formatMoney, sanitizeBillings, isPaidBillingStatus, isUnpaidBillingStatus, getBillDate } from '../lib/financeUtils';
+import {
+  DocumentTemplatesConfig,
+  CustomInvoiceRefsStore,
+  getCachedDocumentTemplates,
+  fetchDocumentTemplates,
+  getCachedCustomInvoiceRefs,
+  fetchCustomInvoiceRefs,
+  savePatientCustomInvoiceRef,
+  saveBillingCustomInvoiceRef,
+  incrementInvoiceSequence,
+  formatInvoiceReference,
+  getBillingDisplayReference,
+  exportPatientInvoicePDF,
+  exportPatientInvoiceExcel,
+  exportCareCalendarPDF,
+  exportPatientReceiptPDF,
+} from '../lib/documentTemplates';
+import { DocumentTemplateEditor } from '../components/settings/DocumentTemplateEditor';
 
 interface PatientDetailProps {
   patientId?: string;
@@ -134,6 +150,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [isEditBillingModalOpen, setIsEditBillingModalOpen] = useState(false);
   const [billingToEdit, setBillingToEdit] = useState<any | null>(null);
   const [editBillingForm, setEditBillingForm] = useState({
+    reference: '',
     montant: '',
     type_paiement: 'Patient',
     statut: 'Payé',
@@ -145,10 +162,31 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [isDeletePatientModalOpen, setIsDeletePatientModalOpen] = useState(false);
   const [deletePatientLoading, setDeletePatientLoading] = useState(false);
 
+  // Document Template Config & Custom Invoice References State
+  const [docTemplates, setDocTemplates] = useState<DocumentTemplatesConfig>(() =>
+    getCachedDocumentTemplates()
+  );
+  const [customInvoiceRefs, setCustomInvoiceRefs] = useState<CustomInvoiceRefsStore>(() =>
+    getCachedCustomInvoiceRefs()
+  );
+  const [invoiceRefInput, setInvoiceRefInput] = useState<string>('');
+  const [invoiceDateInput, setInvoiceDateInput] = useState<string>(() => getMoroccoTodayStr());
+  const [invoiceRefDirty, setInvoiceRefDirty] = useState(false);
+  const [invoiceRefSavedMsg, setInvoiceRefSavedMsg] = useState('');
+  const [inlineRefBillId, setInlineRefBillId] = useState<string | null>(null);
+  const [inlineRefValue, setInlineRefValue] = useState<string>('');
+  const [isDocTemplateModalOpen, setIsDocTemplateModalOpen] = useState(false);
+
   useEffect(() => {
-    const loadRole = async () => {
+    const loadRoleAndTemplates = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const [{ data: { session } }, loadedTemplates, loadedRefs] = await Promise.all([
+          supabase.auth.getSession(),
+          fetchDocumentTemplates(supabase),
+          fetchCustomInvoiceRefs(supabase),
+        ]);
+        setDocTemplates(loadedTemplates);
+        setCustomInvoiceRefs(loadedRefs);
         if (session) {
           const profile = await resolveOrBindCollaboratorSession(supabase, {
             id: session.user.id,
@@ -157,11 +195,23 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
           setIsAdmin(profile?.role === 'admin');
         }
       } catch (err) {
-        console.warn('Could not determine user role in PatientDetail:', err);
+        console.warn('Could not determine user role or templates in PatientDetail:', err);
       }
     };
-    loadRole();
+    loadRoleAndTemplates();
   }, []);
+
+  useEffect(() => {
+    if (!patientId) return;
+    const savedCustom = customInvoiceRefs.patients?.[patientId]?.trim();
+    if (savedCustom) {
+      setInvoiceRefInput(savedCustom);
+      setInvoiceRefDirty(false);
+    } else if (!invoiceRefDirty) {
+      const refDate = invoiceDateInput ? parseClinicDate(invoiceDateInput) : new Date();
+      setInvoiceRefInput(formatInvoiceReference(docTemplates, { date: refDate }));
+    }
+  }, [patientId, docTemplates, customInvoiceRefs]);
 
   useEffect(() => {
     if (patientId) {
@@ -848,6 +898,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     if (!isAdmin) return;
     setBillingToEdit(bill);
     setEditBillingForm({
+      reference: getBillingDisplayReference(bill, docTemplates, customInvoiceRefs),
       montant: String(bill.montant ?? '0'),
       type_paiement: bill.type_paiement || 'Patient',
       statut: bill.statut === 'En attente' || bill.statut === 'Impayé' ? 'En attente' : 'Payé',
@@ -882,6 +933,12 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
         .eq('id', billingToEdit.id);
 
       if (billErr) throw billErr;
+
+      const defaultRef = getBillingDisplayReference(billingToEdit, docTemplates, null);
+      const trimmedRef = (editBillingForm.reference || '').trim();
+      const refToStore = trimmedRef && trimmedRef !== defaultRef ? trimmedRef : '';
+      const updatedRefs = await saveBillingCustomInvoiceRef(supabase, billingToEdit.id, refToStore);
+      setCustomInvoiceRefs(updatedRefs);
 
       const linkedAppId =
         billingToEdit.appointment_id ||
@@ -1040,97 +1097,141 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const totalPatientUnpaid = sumMoney(unpaidPatientBillings, (b) => b.montant);
   const totalPatientBilled = roundMoney(totalPatientPaid + totalPatientUnpaid);
 
-  const generateInvoiceExcel = () => {
-    const ref = `FAC-${new Date().getFullYear()}-${Math.floor(Math.random() * 10000)}`;
-    const date = new Date().toLocaleDateString('fr-FR');
+  const flashInvoiceRefFeedback = (msg: string) => {
+    setInvoiceRefSavedMsg(msg);
+    setTimeout(() => {
+      setInvoiceRefSavedMsg((prev) => (prev === msg ? '' : prev));
+    }, 3000);
+  };
 
-    const wsData: any[][] = [
-      ["Re Forme Center"],
-      ["Centre de Kinésithérapie & Rééducation"],
-      [],
-      ["FACTURE / RELEVÉ DE RÈGLEMENTS"],
-      ["Réf :", ref],
-      ["Date :", date],
-      [],
-      ["Facturé à :", `${patient.prenom} ${patient.nom}`],
-      ["Email :", patient.email || "Non renseigné"],
-      ["Téléphone :", patient.telephone || "Non renseigné"],
-      [],
-      ["Désignation", "Quantité", "Statut", "Total"],
-      ["Séances de kinésithérapie réglées", paidPatientBillings.length, "Payé", `${formatMoney(totalPatientPaid)} DH`],
-    ];
+  const handleSaveCustomPatientRef = async () => {
+    if (!patient?.id) return;
+    const trimmed = invoiceRefInput.trim();
+    const updated = await savePatientCustomInvoiceRef(supabase, patient.id, trimmed);
+    setCustomInvoiceRefs(updated);
+    setInvoiceRefDirty(false);
+    flashInvoiceRefFeedback(trimmed ? 'Référence enregistrée' : 'Référence automatique rétablie');
+  };
 
-    if (unpaidPatientBillings.length > 0) {
-      wsData.push([
-        "Séances en attente de règlement",
-        unpaidPatientBillings.length,
-        "En attente",
-        `${formatMoney(totalPatientUnpaid)} DH`,
-      ]);
-    }
+  const handleResetPatientRefToAuto = async () => {
+    if (!patient?.id) return;
+    const updated = await savePatientCustomInvoiceRef(supabase, patient.id, '');
+    setCustomInvoiceRefs(updated);
+    const refDate = invoiceDateInput ? parseClinicDate(invoiceDateInput) : new Date();
+    const autoRef = formatInvoiceReference(docTemplates, { date: refDate });
+    setInvoiceRefInput(autoRef);
+    setInvoiceRefDirty(false);
+    flashInvoiceRefFeedback('Format automatique appliqué');
+  };
 
-    wsData.push(
-      [],
-      ["", "", "Total Facturé :", `${formatMoney(totalPatientBilled)} DH`],
-      ["", "", "Total Réglé :", `${formatMoney(totalPatientPaid)} DH`]
+  const handleIncrementInvoiceRef = async () => {
+    const refDate = invoiceDateInput ? parseClinicDate(invoiceDateInput) : new Date();
+    const { nextConfig, formattedRef } = await incrementInvoiceSequence(
+      supabase,
+      docTemplates,
+      refDate
     );
-
-    if (totalPatientUnpaid > 0) {
-      wsData.push(["", "", "Reste à Payer :", `${formatMoney(totalPatientUnpaid)} DH`]);
+    setDocTemplates(nextConfig);
+    setInvoiceRefInput(formattedRef);
+    if (patient?.id) {
+      const updated = await savePatientCustomInvoiceRef(supabase, patient.id, formattedRef);
+      setCustomInvoiceRefs(updated);
     }
+    setInvoiceRefDirty(false);
+    flashInvoiceRefFeedback(`Nouveau N° : ${formattedRef}`);
+  };
 
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 34 }, { wch: 15 }, { wch: 15 }, { wch: 18 }];
+  const handleSaveInlineBillingRef = async (bill: any) => {
+    if (!bill?.id) return;
+    const defaultRef = getBillingDisplayReference(bill, docTemplates, null);
+    const trimmed = inlineRefValue.trim();
+    const refToStore = trimmed && trimmed !== defaultRef ? trimmed : '';
+    const updated = await saveBillingCustomInvoiceRef(supabase, bill.id, refToStore);
+    setCustomInvoiceRefs(updated);
+    setInlineRefBillId(null);
+    setInlineRefValue('');
+  };
 
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Facture");
-    XLSX.writeFile(wb, `Facture_${patient.nom}_${patient.prenom}.xlsx`);
+  const handleDownloadBillingReceipt = async (bill: any) => {
+    const latest = await fetchDocumentTemplates(supabase);
+    setDocTemplates(latest);
+    const linkedAppt = Array.isArray(bill.appointments) ? bill.appointments[0] : bill.appointments;
+    const resolvedRef = getBillingDisplayReference(bill, latest, customInvoiceRefs);
+    exportPatientReceiptPDF(latest, {
+      patient,
+      billing: bill,
+      appointment: linkedAppt,
+      receiptNumber: resolvedRef,
+    });
+  };
+
+  const generateInvoicePDF = async () => {
+    const latest = await fetchDocumentTemplates(supabase);
+    setDocTemplates(latest);
+    const activeRef =
+      invoiceRefInput.trim() ||
+      formatInvoiceReference(latest, {
+        date: invoiceDateInput ? parseClinicDate(invoiceDateInput) : new Date(),
+      });
+    if (patient?.id && invoiceRefDirty && activeRef) {
+      const updated = await savePatientCustomInvoiceRef(supabase, patient.id, activeRef);
+      setCustomInvoiceRefs(updated);
+      setInvoiceRefDirty(false);
+    }
+    exportPatientInvoicePDF(latest, {
+      patient,
+      billings,
+      invoiceNumber: activeRef,
+      invoiceDate: invoiceDateInput,
+    });
+  };
+
+  const generateInvoiceExcel = async () => {
+    const latest = await fetchDocumentTemplates(supabase);
+    setDocTemplates(latest);
+    const activeRef =
+      invoiceRefInput.trim() ||
+      formatInvoiceReference(latest, {
+        date: invoiceDateInput ? parseClinicDate(invoiceDateInput) : new Date(),
+      });
+    if (patient?.id && invoiceRefDirty && activeRef) {
+      const updated = await savePatientCustomInvoiceRef(supabase, patient.id, activeRef);
+      setCustomInvoiceRefs(updated);
+      setInvoiceRefDirty(false);
+    }
+    exportPatientInvoiceExcel(latest, {
+      patient,
+      billings,
+      invoiceNumber: activeRef,
+      invoiceDate: invoiceDateInput,
+    });
   };
 
   const exportHistoryToExcel = () => {
-    const completedAppointments = appointments.filter(a => a.statut === 'Effectué');
-    const data = completedAppointments.map(app => ({
+    const completedAppointments = [...appointments]
+      .filter((a) => a.statut === 'Effectué')
+      .sort((a, b) => parseClinicDate(a.date_heure).getTime() - parseClinicDate(b.date_heure).getTime());
+    const data = completedAppointments.map((app, idx) => ({
+      'N°': idx + 1,
       'Date': parseClinicDate(app.date_heure).toLocaleDateString('fr-FR'),
-      'Heure': parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      'Thérapeute': 'Mr HADDAOUI Younes',
-      'Nature des soins': app.notes_seance || 'Séance de kinésithérapie'
+      'Nature des soins': app.notes_seance || 'Séance de kinésithérapie',
     }));
 
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Historique");
-    XLSX.writeFile(wb, `Historique_Soins_${patient.nom}_${patient.prenom}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, 'Calendrier_Soins');
+    XLSX.writeFile(wb, `Calendrier_Soins_${patient.nom}_${patient.prenom}.xlsx`);
   };
 
-  const generateCalendarPDF = () => {
-    const doc = new jsPDF();
-    
-    doc.setFontSize(18);
-    doc.setTextColor(13, 148, 136);
-    doc.text("Calendrier de Soins", 14, 20);
-    
-    doc.setFontSize(12);
-    doc.setTextColor(0);
-    doc.text(`Patient : ${patient.prenom} ${patient.nom}`, 14, 30);
-    
-    const completedAppointments = appointments.filter(a => a.statut === 'Effectué');
-    
-    const tableData = completedAppointments.map((app, index) => [
-      (index + 1).toString(),
-      parseClinicDate(app.date_heure).toLocaleDateString('fr-FR'),
-      parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      app.notes_seance || 'Seance de suivi'
-    ]);
-    
-    autoTable(doc, {
-      startY: 40,
-      head: [['N', 'Date', 'Heure', 'Nature des soins']],
-      body: tableData,
-      theme: 'grid',
-      headStyles: { fillColor: [13, 148, 136] }
+  const generateCalendarPDF = async () => {
+    const latest = await fetchDocumentTemplates(supabase);
+    setDocTemplates(latest);
+    exportCareCalendarPDF(latest, {
+      patient,
+      appointments,
+      treatments,
+      therapists,
     });
-    
-    doc.save(`Calendrier_Soins_${patient.nom}_${patient.prenom}.pdf`);
   };
 
   const getPatientAlert = () => {
@@ -1981,14 +2082,109 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             </Card>
           </div>
 
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={generateCalendarPDF} className="gap-2">
-              <Download className="h-4 w-4" /> Calendrier de Soins
-            </Button>
-            <Button onClick={generateInvoiceExcel} className="gap-2 bg-green-600 hover:bg-green-700 text-white">
-              <FileSpreadsheet className="h-4 w-4" /> Générer Facture Excel
-            </Button>
+          {/* Barre de personnalisation de la Référence & Édition de Facture */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col xl:flex-row xl:items-end justify-between gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-end gap-3 flex-1">
+              <div className="space-y-1 flex-1 max-w-md">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Référence de la facture (Réf)
+                  </label>
+                  {invoiceRefSavedMsg ? (
+                    <span className="text-[11px] font-medium text-emerald-600">
+                      {invoiceRefSavedMsg}
+                    </span>
+                  ) : customInvoiceRefs.patients?.[patient.id] ? (
+                    <button
+                      type="button"
+                      onClick={handleResetPatientRefToAuto}
+                      className="text-[11px] font-medium text-slate-500 hover:text-slate-800 underline cursor-pointer"
+                    >
+                      Rétablir format auto
+                    </button>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={invoiceRefInput}
+                    onChange={(e) => {
+                      setInvoiceRefInput(e.target.value);
+                      setInvoiceRefDirty(true);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleSaveCustomPatientRef();
+                      }
+                    }}
+                    placeholder="Ex: FAC-2026-0001"
+                    className="w-full h-9 px-3 border border-slate-200 rounded-lg text-sm font-mono font-semibold text-slate-900 outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20"
+                  />
+                  {invoiceRefDirty && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleSaveCustomPatientRef}
+                      className="h-9 px-3 text-xs font-semibold border-emerald-200 text-emerald-700 hover:bg-emerald-50 shrink-0"
+                    >
+                      Enregistrer
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleIncrementInvoiceRef}
+                    title="Générer le prochain numéro de facture (+1)"
+                    className="h-9 px-2.5 text-xs font-semibold text-slate-700 border-slate-200 hover:bg-slate-50 gap-1 shrink-0"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 text-slate-500" />
+                    +1
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-1 sm:w-40">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Date sur la facture
+                </label>
+                <input
+                  type="date"
+                  value={invoiceDateInput}
+                  onChange={(e) => setInvoiceDateInput(e.target.value)}
+                  className="w-full h-9 px-2.5 border border-slate-200 rounded-lg text-xs font-medium text-slate-800 outline-none focus:border-primary-500 tabular-nums"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {isAdmin && (
+                <Button
+                  variant="outline"
+                  onClick={() => setIsDocTemplateModalOpen(true)}
+                  className="gap-2 text-slate-700 border-slate-300 hover:bg-slate-50 h-9 text-xs sm:text-sm"
+                >
+                  <LayoutTemplate className="h-4 w-4 text-primary-600" />
+                  Mise en page
+                </Button>
+              )}
+              <Button variant="outline" onClick={generateCalendarPDF} className="gap-2 h-9 text-xs sm:text-sm">
+                <Download className="h-4 w-4" /> Calendrier de Soins (PDF)
+              </Button>
+              <Button onClick={generateInvoicePDF} className="gap-2 h-9 text-xs sm:text-sm">
+                <FileText className="h-4 w-4" /> Facture PDF
+              </Button>
+              <Button
+                onClick={generateInvoiceExcel}
+                className="gap-2 bg-green-600 hover:bg-green-700 text-white h-9 text-xs sm:text-sm"
+              >
+                <FileSpreadsheet className="h-4 w-4" /> Facture Excel
+              </Button>
+            </div>
           </div>
+
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -2001,6 +2197,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                 <table className="w-full text-sm text-left">
                   <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-200">
                     <tr>
+                      <th className="px-6 py-4 font-medium">Référence</th>
                       <th className="px-6 py-4 font-medium">Date</th>
                       <th className="px-6 py-4 font-medium">Montant</th>
                       <th className="px-6 py-4 font-medium">Type de paiement</th>
@@ -2011,7 +2208,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                   <tbody className="divide-y divide-slate-100">
                     {billings.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
+                        <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
                           Aucune facture trouvée.
                         </td>
                       </tr>
@@ -2024,79 +2221,155 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                         const displayDate = linkedAppt?.date_heure
                           ? parseClinicDate(linkedAppt.date_heure).toLocaleDateString('fr-FR')
                           : getBillDate(bill).toLocaleDateString('fr-FR');
+                        const rowRef = getBillingDisplayReference(
+                          bill,
+                          docTemplates,
+                          customInvoiceRefs
+                        );
+                        const isEditingRowRef = inlineRefBillId === bill.id;
                         return (
-                        <tr key={bill.id} className={`bg-white hover:bg-slate-50 transition-colors ${isUnpaid ? 'bg-rose-50/20' : ''}`}>
-                          <td className="px-6 py-4 font-medium text-slate-900">
-                            {displayDate}
-                          </td>
-                          <td className={`px-6 py-4 font-bold ${isUnpaid ? 'text-rose-600' : 'text-slate-900'}`}>
-                            {formatMoney(bill.montant)} DH
-                          </td>
-                          <td className="px-6 py-4 text-slate-600">
-                            {bill.type_paiement}
-                          </td>
-                          <td className="px-6 py-4">
-                            <Badge variant={isUnpaid ? 'outline' : 'success'} className={isUnpaid ? 'text-rose-600 border-rose-200 bg-rose-50' : ''}>
-                              {bill.statut}
-                            </Badge>
-                          </td>
-                          <td className="px-6 py-4 text-right flex items-center justify-end gap-2">
-                            {isUnpaid && (
-                              <Button 
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  handleSettleBilling(bill);
-                                }}
-                                disabled={isSettling === bill.id}
-                                size="sm"
-                                className="bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] h-7 px-3 uppercase font-bold"
+                          <tr
+                            key={bill.id}
+                            className={`bg-white hover:bg-slate-50 transition-colors ${
+                              isUnpaid ? 'bg-rose-50/20' : ''
+                            }`}
+                          >
+                            <td className="px-6 py-4">
+                              {isEditingRowRef ? (
+                                <div className="flex items-center gap-1.5 max-w-[210px]">
+                                  <input
+                                    type="text"
+                                    value={inlineRefValue}
+                                    onChange={(e) => setInlineRefValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        handleSaveInlineBillingRef(bill);
+                                      } else if (e.key === 'Escape') {
+                                        setInlineRefBillId(null);
+                                        setInlineRefValue('');
+                                      }
+                                    }}
+                                    autoFocus
+                                    className="w-full px-2 py-1 border border-primary-400 rounded text-xs font-mono font-semibold text-slate-900 outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaveInlineBillingRef(bill)}
+                                    className="px-2 py-1 rounded bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800 cursor-pointer shrink-0"
+                                  >
+                                    OK
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="inline-flex items-center gap-1.5 group">
+                                  <span className="font-mono text-xs font-semibold text-slate-700">
+                                    {rowRef}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setInlineRefBillId(bill.id);
+                                      setInlineRefValue(rowRef);
+                                    }}
+                                    title="Personnaliser la référence de cette ligne"
+                                    className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 opacity-70 group-hover:opacity-100 transition-opacity cursor-pointer"
+                                  >
+                                    <Edit2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 font-medium text-slate-900">{displayDate}</td>
+                            <td
+                              className={`px-6 py-4 font-bold ${
+                                isUnpaid ? 'text-rose-600' : 'text-slate-900'
+                              }`}
+                            >
+                              {formatMoney(bill.montant)} DH
+                            </td>
+                            <td className="px-6 py-4 text-slate-600">{bill.type_paiement}</td>
+                            <td className="px-6 py-4">
+                              <Badge
+                                variant={isUnpaid ? 'outline' : 'success'}
+                                className={
+                                  isUnpaid ? 'text-rose-600 border-rose-200 bg-rose-50' : ''
+                                }
                               >
-                                {isSettling === bill.id ? "..." : "Régler"}
-                              </Button>
-                            )}
-                            {isAdmin ? (
-                              <>
+                                {bill.statut}
+                              </Badge>
+                            </td>
+                            <td className="px-6 py-4 text-right flex items-center justify-end gap-2">
+                              {!isUnpaid && (
                                 <Button
+                                  type="button"
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => openEditBillingModal(bill)}
-                                  className="text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 gap-1 text-xs font-semibold"
-                                  title="Modifier le règlement (Administrateur)"
+                                  onClick={() => handleDownloadBillingReceipt(bill)}
+                                  className="text-slate-600 hover:text-slate-900 hover:bg-slate-100 gap-1 text-xs"
+                                  title="Télécharger le reçu PDF avec cette référence"
                                 >
-                                  <Edit2 className="h-3.5 w-3.5" />
-                                  Modifier
+                                  <Download className="h-3.5 w-3.5" />
+                                  Reçu
                                 </Button>
-                                <Button 
-                                  variant="ghost" 
-                                  size="sm" 
-                                  onClick={() => confirmDeleteBilling(bill.id)}
-                                  className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
-                                  title="Supprimer la facturation (Administrateur)"
+                              )}
+                              {isUnpaid && (
+                                <Button
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleSettleBilling(bill);
+                                  }}
+                                  disabled={isSettling === bill.id}
+                                  size="sm"
+                                  className="bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] h-7 px-3 uppercase font-bold"
                                 >
-                                  <Trash2 className="h-4 w-4" />
+                                  {isSettling === bill.id ? '...' : 'Régler'}
                                 </Button>
-                              </>
-                            ) : (
-                              !isUnpaid && (
-                                <span
-                                  className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400"
-                                  title="Modification réservée à l'administrateur"
-                                >
-                                  <Lock className="h-3 w-3" />
-                                  Verrouillé
-                                </span>
-                              )
-                            )}
-                          </td>
-                        </tr>
-                      )})
+                              )}
+                              {isAdmin ? (
+                                <>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => openEditBillingModal(bill)}
+                                    className="text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 gap-1 text-xs font-semibold"
+                                    title="Modifier le règlement (Administrateur)"
+                                  >
+                                    <Edit2 className="h-3.5 w-3.5" />
+                                    Modifier
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => confirmDeleteBilling(bill.id)}
+                                    className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                                    title="Supprimer la facturation (Administrateur)"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </>
+                              ) : (
+                                !isUnpaid && (
+                                  <span
+                                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400"
+                                    title="Modification du montant réservée à l'administrateur"
+                                  >
+                                    <Lock className="h-3 w-3" />
+                                    Verrouillé
+                                  </span>
+                                )
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                   {billings.length > 0 && (
                     <tfoot className="bg-slate-50 border-t-2 border-slate-200">
                       <tr>
-                        <td className="px-6 py-3.5 text-xs font-bold uppercase text-slate-700">
+                        <td colSpan={2} className="px-6 py-3.5 text-xs font-bold uppercase text-slate-700">
                           Somme des règlements ({paidPatientBillings.length} payé{paidPatientBillings.length > 1 ? 's' : ''}{unpaidPatientBillings.length > 0 ? ` • ${unpaidPatientBillings.length} impayé${unpaidPatientBillings.length > 1 ? 's' : ''}` : ''})
                         </td>
                         <td colSpan={4} className="px-6 py-3.5 text-sm font-black">
@@ -2750,6 +3023,21 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
           )}
 
           <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">
+              Référence de la facture / du reçu
+            </label>
+            <input
+              type="text"
+              value={editBillingForm.reference}
+              onChange={(e) =>
+                setEditBillingForm({ ...editBillingForm, reference: e.target.value })
+              }
+              placeholder="Ex: FAC-2026-0001"
+              className="w-full p-2.5 border border-slate-200 rounded-lg font-mono text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+            />
+          </div>
+
+          <div className="space-y-1.5">
             <label className="text-sm font-medium text-slate-700">Montant (DH)</label>
             <input
               type="number"
@@ -3071,6 +3359,24 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal Personnalisation Mise en Page Factures & Calendrier de Soins */}
+      <Modal
+        isOpen={isDocTemplateModalOpen}
+        onClose={async () => {
+          setIsDocTemplateModalOpen(false);
+          const [refreshed, refreshedRefs] = await Promise.all([
+            fetchDocumentTemplates(supabase),
+            fetchCustomInvoiceRefs(supabase),
+          ]);
+          setDocTemplates(refreshed);
+          setCustomInvoiceRefs(refreshedRefs);
+        }}
+        title="Personnaliser la mise en page (Factures & Calendrier de soins)"
+        maxWidth="6xl"
+      >
+        <DocumentTemplateEditor />
       </Modal>
 </div>
   );

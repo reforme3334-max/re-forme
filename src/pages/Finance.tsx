@@ -45,6 +45,16 @@ import {
   fetchPartnerClubs,
   upsertPartnerClub,
 } from '../lib/mutuelleUtils';
+import {
+  DocumentTemplatesConfig,
+  CustomInvoiceRefsStore,
+  getCachedDocumentTemplates,
+  fetchDocumentTemplates,
+  getCachedCustomInvoiceRefs,
+  fetchCustomInvoiceRefs,
+  saveBillingCustomInvoiceRef,
+  getBillingDisplayReference,
+} from '../lib/documentTemplates';
 
 export function Finance() {
   const [activeTab, setActiveTab] = useState<'recettes' | 'impayer' | 'clubs' | 'depenses'>('recettes');
@@ -99,12 +109,23 @@ export function Finance() {
   const [isEditBillModalOpen, setIsEditBillModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<any | null>(null);
   const [editBillForm, setEditBillForm] = useState({
+    reference: '',
     montant: '',
     type_paiement: 'Patient',
     statut: 'Payé',
   });
   const [savingBillEdit, setSavingBillEdit] = useState(false);
   const [confirmDeleteBill, setConfirmDeleteBill] = useState(false);
+
+  // Document templates & custom invoice references
+  const [docTemplates, setDocTemplates] = useState<DocumentTemplatesConfig>(() =>
+    getCachedDocumentTemplates()
+  );
+  const [customInvoiceRefs, setCustomInvoiceRefs] = useState<CustomInvoiceRefsStore>(() =>
+    getCachedCustomInvoiceRefs()
+  );
+  const [inlineRefBillId, setInlineRefBillId] = useState<string | null>(null);
+  const [inlineRefValue, setInlineRefValue] = useState<string>('');
 
   useEffect(() => {
     fetchFinancialData();
@@ -142,19 +163,25 @@ export function Finance() {
         }
       }
 
-      const [billingData, expenseData, patData, apptData] = await Promise.all([
-        fetchAllRows(
-          'billings',
-          '*, patients(id, nom, prenom, atcd), appointments(id, date_heure, statut)',
-          {
-            column: 'date_facturation',
-            ascending: false,
-          }
-        ),
-        fetchAllRows('expenses', '*', { column: 'date', ascending: false }),
-        fetchAllRows('patients', 'id, nom, prenom, telephone, atcd'),
-        fetchAllRows('appointments', 'id, patient_id, statut, date_heure'),
-      ]);
+      const [billingData, expenseData, patData, apptData, loadedTemplates, loadedRefs] =
+        await Promise.all([
+          fetchAllRows(
+            'billings',
+            '*, patients(id, nom, prenom, atcd), appointments(id, date_heure, statut)',
+            {
+              column: 'date_facturation',
+              ascending: false,
+            }
+          ),
+          fetchAllRows('expenses', '*', { column: 'date', ascending: false }),
+          fetchAllRows('patients', 'id, nom, prenom, telephone, atcd'),
+          fetchAllRows('appointments', 'id, patient_id, statut, date_heure'),
+          fetchDocumentTemplates(supabase),
+          fetchCustomInvoiceRefs(supabase),
+        ]);
+
+      setDocTemplates(loadedTemplates);
+      setCustomInvoiceRefs(loadedRefs);
 
       const safePatients = patData || [];
       const safeAppointments = apptData || [];
@@ -355,10 +382,10 @@ export function Finance() {
       const date = getBillDate(bill);
       return {
         Date: date.toLocaleDateString('fr-FR'),
-        Référence: `FAC-${date.getFullYear()}-${bill.id.substring(0, 4).toUpperCase()}`,
+        Référence: getBillingDisplayReference(bill, docTemplates, customInvoiceRefs),
         Patient: bill.patients ? `${bill.patients.prenom} ${bill.patients.nom}` : 'Client divers',
         'Club Sportif': getBillClub(bill) || 'Particulier',
-        'Nature des actes': 'Séance de kinésithérapie',
+        'Nature des actes': docTemplates.invoice.defaultActLabel || 'Séance de kinésithérapie',
         'Mode de paiement': bill.type_paiement,
         'Montant (DH)': roundMoney(bill.montant),
       };
@@ -538,10 +565,23 @@ export function Finance() {
     }
   };
 
+  const handleSaveInlineFinanceRef = async (bill: any) => {
+    if (!bill?.id) return;
+    const defaultRef = getBillingDisplayReference(bill, docTemplates, null);
+    const trimmed = inlineRefValue.trim();
+    const refToStore = trimmed && trimmed !== defaultRef ? trimmed : '';
+    const updated = await saveBillingCustomInvoiceRef(supabase, bill.id, refToStore);
+    setCustomInvoiceRefs(updated);
+    setInlineRefBillId(null);
+    setInlineRefValue('');
+    showNotice('success', 'Référence de la facture mise à jour.');
+  };
+
   const openEditBillModal = (bill: any) => {
     if (!isAdmin) return;
     setEditingBill(bill);
     setEditBillForm({
+      reference: getBillingDisplayReference(bill, docTemplates, customInvoiceRefs),
       montant: String(bill.montant ?? '0'),
       type_paiement: bill.type_paiement || 'Patient',
       statut: bill.statut === 'En attente' || bill.statut === 'Impayé' || bill.statut === 'Rejeté' ? 'En attente' : 'Payé',
@@ -575,6 +615,12 @@ export function Finance() {
 
       if (billErr) throw billErr;
 
+      const defaultRef = getBillingDisplayReference(editingBill, docTemplates, null);
+      const trimmedRef = (editBillForm.reference || '').trim();
+      const refToStore = trimmedRef && trimmedRef !== defaultRef ? trimmedRef : '';
+      const updatedRefs = await saveBillingCustomInvoiceRef(supabase, editingBill.id, refToStore);
+      setCustomInvoiceRefs(updatedRefs);
+
       const appId =
         editingBill.appointment_id ||
         (editingBill.appointments && !Array.isArray(editingBill.appointments)
@@ -591,7 +637,7 @@ export function Finance() {
       await fetchFinancialData();
       setIsEditBillModalOpen(false);
       setEditingBill(null);
-      showNotice('success', 'Règlement du patient mis à jour avec succès.');
+      showNotice('success', 'Règlement et référence mis à jour avec succès.');
     } catch (err: any) {
       showNotice('error', err.message || 'Erreur lors de la modification du règlement.');
     } finally {
@@ -1219,6 +1265,7 @@ export function Finance() {
                 <table className="w-full text-sm text-left">
                   <thead className="text-xs text-slate-500 uppercase bg-slate-50">
                     <tr>
+                      <th className="px-6 py-4 font-medium">Référence</th>
                       <th className="px-6 py-4 font-medium">Date</th>
                       <th className="px-6 py-4 font-medium">Patient</th>
                       <th className="px-6 py-4 font-medium">Club Sportif</th>
@@ -1239,8 +1286,60 @@ export function Finance() {
                           : null;
                         const billDateStr = date.toLocaleDateString('fr-FR');
                         const clubName = getBillClub(bill);
+                        const rowRef = getBillingDisplayReference(
+                          bill,
+                          docTemplates,
+                          customInvoiceRefs
+                        );
+                        const isEditingRowRef = inlineRefBillId === bill.id;
                         return (
                           <tr key={bill.id} className="hover:bg-rose-50/30 transition-colors">
+                            <td className="px-6 py-4">
+                              {isEditingRowRef ? (
+                                <div className="flex items-center gap-1.5 max-w-[190px]">
+                                  <input
+                                    type="text"
+                                    value={inlineRefValue}
+                                    onChange={(e) => setInlineRefValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        handleSaveInlineFinanceRef(bill);
+                                      } else if (e.key === 'Escape') {
+                                        setInlineRefBillId(null);
+                                        setInlineRefValue('');
+                                      }
+                                    }}
+                                    autoFocus
+                                    className="w-full px-2 py-1 border border-primary-400 rounded text-xs font-mono font-semibold text-slate-900 outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaveInlineFinanceRef(bill)}
+                                    className="px-2 py-1 rounded bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800 cursor-pointer shrink-0"
+                                  >
+                                    OK
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="inline-flex items-center gap-1.5 group">
+                                  <span className="font-mono text-xs font-semibold text-slate-700">
+                                    {rowRef}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setInlineRefBillId(bill.id);
+                                      setInlineRefValue(rowRef);
+                                    }}
+                                    title="Personnaliser la référence"
+                                    className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 opacity-70 group-hover:opacity-100 transition-opacity cursor-pointer"
+                                  >
+                                    <Edit2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
                             <td className="px-6 py-4 text-slate-600">
                               <div>{billDateStr}</div>
                               {apptDateStr && apptDateStr !== billDateStr && (
@@ -1315,7 +1414,7 @@ export function Finance() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                        <td colSpan={7} className="px-6 py-8 text-center text-slate-500">
                           Aucun impayé correspondant à ce filtre.
                         </td>
                       </tr>
@@ -1324,7 +1423,7 @@ export function Finance() {
                   {displayedUnpaid.length > 0 && (
                     <tfoot className="bg-rose-50/50 border-t-2 border-rose-100">
                       <tr>
-                        <td colSpan={4} className="px-6 py-3.5 text-xs font-bold uppercase text-rose-900">
+                        <td colSpan={5} className="px-6 py-3.5 text-xs font-bold uppercase text-rose-900">
                           Total des impayés affichés ({displayedUnpaid.length} séance{displayedUnpaid.length > 1 ? 's' : ''})
                         </td>
                         <td className="px-6 py-3.5 text-right text-base font-black text-rose-700">
@@ -1375,6 +1474,7 @@ export function Finance() {
                 <table className="w-full text-sm text-left">
                   <thead className="text-xs text-slate-500 uppercase bg-slate-50">
                     <tr>
+                      <th className="px-6 py-4 font-medium">Référence</th>
                       <th className="px-6 py-4 font-medium">Date</th>
                       <th className="px-6 py-4 font-medium">Patient</th>
                       <th className="px-6 py-4 font-medium">Club Sportif</th>
@@ -1396,8 +1496,60 @@ export function Finance() {
                           : null;
                         const billDateStr = date.toLocaleDateString('fr-FR');
                         const clubName = getBillClub(bill);
+                        const rowRef = getBillingDisplayReference(
+                          bill,
+                          docTemplates,
+                          customInvoiceRefs
+                        );
+                        const isEditingRowRef = inlineRefBillId === bill.id;
                         return (
                           <tr key={bill.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="px-6 py-4">
+                              {isEditingRowRef ? (
+                                <div className="flex items-center gap-1.5 max-w-[190px]">
+                                  <input
+                                    type="text"
+                                    value={inlineRefValue}
+                                    onChange={(e) => setInlineRefValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        handleSaveInlineFinanceRef(bill);
+                                      } else if (e.key === 'Escape') {
+                                        setInlineRefBillId(null);
+                                        setInlineRefValue('');
+                                      }
+                                    }}
+                                    autoFocus
+                                    className="w-full px-2 py-1 border border-primary-400 rounded text-xs font-mono font-semibold text-slate-900 outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaveInlineFinanceRef(bill)}
+                                    className="px-2 py-1 rounded bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800 cursor-pointer shrink-0"
+                                  >
+                                    OK
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="inline-flex items-center gap-1.5 group">
+                                  <span className="font-mono text-xs font-semibold text-slate-700">
+                                    {rowRef}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setInlineRefBillId(bill.id);
+                                      setInlineRefValue(rowRef);
+                                    }}
+                                    title="Personnaliser la référence"
+                                    className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 opacity-70 group-hover:opacity-100 transition-opacity cursor-pointer"
+                                  >
+                                    <Edit2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
                             <td className="px-6 py-4 text-slate-600">
                               <div>{billDateStr}</div>
                               {apptDateStr && apptDateStr !== billDateStr && (
@@ -1462,7 +1614,7 @@ export function Finance() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={isAdmin ? 7 : 6} className="px-6 py-8 text-center text-slate-500">
+                        <td colSpan={isAdmin ? 8 : 7} className="px-6 py-8 text-center text-slate-500">
                           Aucune recette enregistrée pour ce filtre.
                         </td>
                       </tr>
@@ -1471,7 +1623,7 @@ export function Finance() {
                   {filteredBillings.length > 0 && (
                     <tfoot className="bg-slate-50 border-t-2 border-slate-200">
                       <tr>
-                        <td colSpan={5} className="px-6 py-3.5 text-xs font-bold uppercase text-slate-700">
+                        <td colSpan={6} className="px-6 py-3.5 text-xs font-bold uppercase text-slate-700">
                           Total des recettes affichées ({filteredBillings.length} règlement{filteredBillings.length > 1 ? 's' : ''})
                         </td>
                         <td className="px-6 py-3.5 text-right text-base font-black text-emerald-700">
@@ -1736,6 +1888,19 @@ export function Finance() {
               </span>
             </div>
           )}
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">
+              Référence de la facture / du règlement
+            </label>
+            <input
+              type="text"
+              value={editBillForm.reference}
+              onChange={(e) => setEditBillForm({ ...editBillForm, reference: e.target.value })}
+              placeholder="Ex: FAC-2026-0001"
+              className="w-full p-2.5 border border-slate-200 rounded-lg font-mono text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+            />
+          </div>
 
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-slate-700">Montant (DH)</label>

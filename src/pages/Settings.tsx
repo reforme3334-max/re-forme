@@ -26,11 +26,13 @@ import {
   KeyRound,
   Ban,
   Unlock,
+  FileText,
 } from 'lucide-react';
 import { Modal } from '../components/ui/modal';
 import Papa from 'papaparse';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
+import { DocumentTemplateEditor } from '../components/settings/DocumentTemplateEditor';
 import {
   PERMISSIONS_LIST,
   ParsedCollaboratorProfile,
@@ -46,7 +48,16 @@ import {
 } from '../lib/teamUtils';
 
 export function Settings() {
-  const [activeTab, setActiveTab] = useState<'equipe' | 'praticiens' | 'create' | 'import'>('equipe');
+  const [activeTab, setActiveTab] = useState<'equipe' | 'praticiens' | 'create' | 'documents' | 'import'>(() => {
+    try {
+      const requested = sessionStorage.getItem('reforme_settings_tab');
+      if (requested === 'documents') {
+        sessionStorage.removeItem('reforme_settings_tab');
+        return 'documents';
+      }
+    } catch {}
+    return 'equipe';
+  });
   const [profiles, setProfiles] = useState<ParsedCollaboratorProfile[]>([]);
   const [blockedEmails, setBlockedEmails] = useState<string[]>([]);
   const [emailToBlockInput, setEmailToBlockInput] = useState('');
@@ -1246,12 +1257,12 @@ export function Settings() {
   };
 
   return (
-    <div className="p-4 sm:p-8 max-w-6xl mx-auto font-sans">
+    <div className="p-4 sm:p-8 max-w-7xl mx-auto font-sans">
       <div className="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Paramètres du cabinet</h1>
           <p className="text-slate-500 mt-1">
-            Gérez votre équipe, vos praticiens, les accès collaborateurs et les permissions.
+            Gérez votre équipe, vos praticiens, les permissions et la mise en page de vos documents.
           </p>
         </div>
         <Button
@@ -1319,6 +1330,19 @@ export function Settings() {
           >
             <UserPlus className={`h-5 w-5 ${activeTab === 'create' ? 'text-primary-600' : 'text-slate-400'}`} />
             Nouveau collaborateur
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('documents')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-colors ${
+              activeTab === 'documents'
+                ? 'bg-primary-50 text-primary-700'
+                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+            }`}
+          >
+            <FileText className={`h-5 w-5 ${activeTab === 'documents' ? 'text-primary-600' : 'text-slate-400'}`} />
+            Factures & Calendrier
           </button>
 
           <button
@@ -2178,6 +2202,8 @@ export function Settings() {
               </CardContent>
             </Card>
           )}
+
+          {activeTab === 'documents' && <DocumentTemplateEditor />}
         </div>
       </div>
 

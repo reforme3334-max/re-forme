@@ -60,7 +60,8 @@ function isInternalSystemTag(value: string): boolean {
     value.startsWith('__meta_') ||
     value.startsWith(PENDING_COLLAB_PREFIX) ||
     value.startsWith(BLOCKED_EMAIL_PREFIX) ||
-    value.startsWith('__club_conv:')
+    value.startsWith('__club_conv:') ||
+    value.startsWith('__doc_templates:')
   );
 }
 
@@ -177,13 +178,14 @@ export function buildProfilePermissionsArray(
     clean.push(`__meta_phone:${meta.phone.trim()}`);
   }
 
-  // Preserve any pending collaborator, blocked email, or partner club registry entries stored on this profile
+  // Preserve any pending collaborator, blocked email, partner club, or document template entries stored on this profile
   const preservedRegistryTags = (existingRawPermissions || []).filter(
     (item) =>
       typeof item === 'string' &&
       (item.startsWith(PENDING_COLLAB_PREFIX) ||
         item.startsWith(BLOCKED_EMAIL_PREFIX) ||
-        item.startsWith('__club_conv:'))
+        item.startsWith('__club_conv:') ||
+        item.startsWith('__doc_templates:'))
   );
 
   return [...clean, ...preservedRegistryTags];
