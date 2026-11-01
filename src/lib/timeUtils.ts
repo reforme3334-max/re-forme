@@ -124,6 +124,30 @@ export function formatUtcToMoroccoTime(utcInput: string | Date | null | undefine
 }
 
 /**
+ * Convertit un timestamp UTC réel (ex: date_facturation / created_at généré par Supabase)
+ * en objet Date calé sur le fuseau horaire du cabinet au Maroc.
+ * Si la chaîne est une date simple 'YYYY-MM-DD', conserve le jour exact sans décalage.
+ */
+export function parseUtcToMoroccoDate(utcInput: string | Date | null | undefined): Date {
+  if (!utcInput) return getMoroccoNow();
+  if (utcInput instanceof Date) return utcInput;
+
+  const str = String(utcInput).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return parseClinicDate(str);
+  }
+
+  const parsed = new Date(str);
+  if (isNaN(parsed.getTime())) {
+    return parseClinicDate(str);
+  }
+
+  const utcMs = parsed.getTime() + parsed.getTimezoneOffset() * 60000;
+  const offsetMin = getClinicOffsetMinutes();
+  return new Date(utcMs + offsetMin * 60000);
+}
+
+/**
  * Parse une date de rendez-vous stockée en base (ex: '2026-10-06T16:00:00+00:00')
  * en conservant l'heure murale exacte du cabinet (16:00 -> 16h00) sur tous les appareils
  * (PC en GMT+0 comme smartphones en GMT+1).

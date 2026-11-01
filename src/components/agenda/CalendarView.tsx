@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { format, addDays, subDays, startOfWeek, isSameDay, setHours, setMinutes, isSameMonth } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight, Bell, FolderOpen, Trophy } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight, Bell, FolderOpen, Trophy, Lock, ShieldCheck } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -10,6 +10,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useAppointmentNotifications } from '@/contexts/AppointmentNotificationsContext';
 import { getMoroccoNow, parseClinicDate, toClinicIsoString } from '@/lib/timeUtils';
 import { parsePatientMutuelle } from '@/lib/mutuelleUtils';
+import { resolveOrBindCollaboratorSession } from '@/lib/teamUtils';
+import { roundMoney, isPaidBillingStatus } from '@/lib/financeUtils';
 
 interface Patient {
   id: string;
@@ -90,6 +92,8 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
   // Manage Modal state
   const [isBillingModalOpen, setIsBillingModalOpen] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+  const [existingBilling, setExistingBilling] = useState<any | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [billingAmount, setBillingAmount] = useState('50');
   const [paymentType, setPaymentType] = useState('Patient');
   const [editDate, setEditDate] = useState('');
@@ -127,21 +131,48 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
   }, []);
 
   useEffect(() => {
+    const loadCurrentRole = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          const profile = await resolveOrBindCollaboratorSession(supabase, {
+            id: session.user.id,
+            email: session.user.email,
+          });
+          setIsAdmin(profile?.role === 'admin');
+        }
+      } catch (err) {
+        console.warn('Could not determine user role in CalendarView:', err);
+      }
+    };
+    loadCurrentRole();
+  }, []);
+
+  useEffect(() => {
     const fetchBillingForAppointment = async () => {
       if (selectedAppointment) {
-        const { data, error } = await supabase
+        const { data: rows, error } = await supabase
           .from('billings')
           .select('*')
           .eq('appointment_id', selectedAppointment.id)
-          .maybeSingle();
-        
-        if (!error && data) {
-          setBillingAmount(data.montant.toString());
-          setPaymentType(data.type_paiement);
+          .order('date_facturation', { ascending: false });
+
+        const primary =
+          !error && rows && rows.length > 0
+            ? rows.find((r) => isPaidBillingStatus(r.statut)) || rows[0]
+            : null;
+
+        if (primary) {
+          setExistingBilling(primary);
+          setBillingAmount(String(roundMoney(primary.montant ?? 50)));
+          setPaymentType(primary.type_paiement || 'Patient');
         } else {
+          setExistingBilling(null);
           setBillingAmount('50');
           setPaymentType('Patient');
         }
+      } else {
+        setExistingBilling(null);
       }
     };
     fetchBillingForAppointment();
@@ -358,6 +389,10 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
   const handleCancelAppointment = async () => {
     if (!selectedAppointment) return;
     setLoading(true);
+
+    // Supprimer tout règlement/impayé rattaché afin de ne laisser aucun montant fantôme dans la comptabilité
+    await supabase.from('billings').delete().eq('appointment_id', selectedAppointment.id);
+
     const { error } = await supabase
       .from('appointments')
       .update({ statut: 'Annulé' })
@@ -410,7 +445,32 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
 
     if (!selectedAppointment) return;
 
+    const rawAmount = parseFloat(billingAmount);
+    if (isNaN(rawAmount) || rawAmount < 0) {
+      setErrorMsg("Veuillez indiquer un montant valide.");
+      return;
+    }
+    const parsedAmount = roundMoney(rawAmount);
+
     setLoading(true);
+
+    // Check existing billing rows (array to safely clean up any accidental duplicates)
+    const { data: existingRows } = await supabase
+      .from('billings')
+      .select('*')
+      .eq('appointment_id', selectedAppointment.id)
+      .order('date_facturation', { ascending: false });
+
+    const existingBill =
+      existingRows && existingRows.length > 0
+        ? existingRows.find((r) => isPaidBillingStatus(r.statut)) || existingRows[0]
+        : null;
+
+    if (existingBill && isPaidBillingStatus(existingBill.statut) && !isAdmin) {
+      setLoading(false);
+      setErrorMsg("Seul l'administrateur est autorisé à modifier un règlement déjà validé.");
+      return;
+    }
 
     await ensureMotifExists(editMotif);
 
@@ -436,33 +496,40 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
       return;
     }
 
-    // 2. Vérifier si une facture existe déjà
-    const { data: existingBill } = await supabase
-      .from('billings')
-      .select('id')
-      .eq('appointment_id', selectedAppointment.id)
-      .maybeSingle();
-
     let billingError;
     if (existingBill) {
-      // Mettre à jour la facture existante
+      const updatePayload: any = isAdmin
+        ? {
+            montant: parsedAmount,
+            type_paiement: paymentType,
+            statut: 'Payé',
+          }
+        : {
+            statut: 'Payé',
+            date_facturation: new Date().toISOString(),
+          };
+
       const { error } = await supabase
         .from('billings')
-        .update({
-          montant: parseFloat(billingAmount),
-          type_paiement: paymentType,
-          statut: 'Payé'
-        })
+        .update(updatePayload)
         .eq('id', existingBill.id);
       billingError = error;
+
+      // Remove any duplicate ghost billing rows on the same appointment
+      if (!error && existingRows && existingRows.length > 1) {
+        const extraIds = existingRows.filter((r) => r.id !== existingBill.id).map((r) => r.id);
+        if (extraIds.length > 0) {
+          await supabase.from('billings').delete().in('id', extraIds);
+        }
+      }
     } else {
-      // Créer une nouvelle facture
+      // Créer une nouvelle facture (premier enregistrement)
       const { error } = await supabase
         .from('billings')
         .insert([{
           patient_id: selectedAppointment.patient_id,
           appointment_id: selectedAppointment.id,
-          montant: parseFloat(billingAmount),
+          montant: parsedAmount,
           type_paiement: paymentType,
           statut: 'Payé'
         }]);
@@ -483,13 +550,28 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
     setErrorMsg(null);
     if (!selectedAppointment) return;
 
-    const amount = parseFloat(billingAmount);
-    if (isNaN(amount) || amount <= 0) {
+    const rawAmount = parseFloat(billingAmount);
+    if (isNaN(rawAmount) || rawAmount <= 0) {
       setErrorMsg("Veuillez indiquer un montant valide à payer.");
       return;
     }
+    const amount = roundMoney(rawAmount);
 
     setLoading(true);
+
+    const { data: existingRows } = await supabase
+      .from('billings')
+      .select('*')
+      .eq('appointment_id', selectedAppointment.id)
+      .order('date_facturation', { ascending: false });
+
+    const existingBill = existingRows && existingRows.length > 0 ? existingRows[0] : null;
+
+    if (existingBill && !isAdmin) {
+      setLoading(false);
+      setErrorMsg("Seul l'administrateur est autorisé à modifier un règlement déjà enregistré.");
+      return;
+    }
 
     await ensureMotifExists(editMotif);
 
@@ -515,13 +597,6 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
       return;
     }
 
-    // 2. Create an unpaid billing (En attente) - Check if one already exists for this appointment
-    const { data: existingBill } = await supabase
-      .from('billings')
-      .select('id')
-      .eq('appointment_id', selectedAppointment.id)
-      .maybeSingle();
-
     let billError;
     if (existingBill) {
       const { error } = await supabase
@@ -533,6 +608,13 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
         })
         .eq('id', existingBill.id);
       billError = error;
+
+      if (!error && existingRows && existingRows.length > 1) {
+        const extraIds = existingRows.filter((r) => r.id !== existingBill.id).map((r) => r.id);
+        if (extraIds.length > 0) {
+          await supabase.from('billings').delete().in('id', extraIds);
+        }
+      }
     } else {
       const { error } = await supabase
         .from('billings')
@@ -1283,73 +1365,135 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
           </div>
 
           {/* Billing Section */}
-          {selectedAppointment?.statut !== 'Annulé' && (
-            <div className="space-y-4 bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Règlement</h4>
-                <Wallet className="h-4 w-4 text-slate-200" />
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Montant (DH)</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Wallet className="h-3 w-3 text-slate-400" />
+          {selectedAppointment?.statut !== 'Annulé' && (() => {
+            const hasRecordedBilling =
+              Boolean(existingBilling) ||
+              selectedAppointment?.statut === 'Effectué' ||
+              selectedAppointment?.statut === 'Impayé';
+            const canModifyBillingFields = !hasRecordedBilling || isAdmin;
+
+            return (
+              <div className="space-y-4 bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Règlement</h4>
+                  {hasRecordedBilling ? (
+                    isAdmin ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-bold">
+                        <ShieldCheck className="h-3 w-3" />
+                        Admin • Modification autorisée
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200 text-[10px] font-bold">
+                        <Lock className="h-3 w-3" />
+                        Modification réservée à l'admin
+                      </span>
+                    )
+                  ) : (
+                    <Wallet className="h-4 w-4 text-slate-200" />
+                  )}
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Montant (DH)</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <Wallet className="h-3 w-3 text-slate-400" />
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        onWheel={(e) => e.currentTarget.blur()}
+                        value={billingAmount}
+                        onChange={(e) => setBillingAmount(e.target.value)}
+                        disabled={!canModifyBillingFields}
+                        className="w-full rounded-xl border border-slate-200 pl-8 pr-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400"
+                      />
                     </div>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={billingAmount}
-                      onChange={(e) => setBillingAmount(e.target.value)}
-                      disabled={selectedAppointment?.statut === 'Effectué'}
-                      className="w-full rounded-xl border border-slate-200 pl-8 pr-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400"
-                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Paiement</label>
+                    <select
+                      value={paymentType}
+                      onChange={(e) => setPaymentType(e.target.value)}
+                      disabled={!canModifyBillingFields}
+                      className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400 appearance-none bg-slate-50/30"
+                    >
+                      <option value="Patient">Direct</option>
+                      <option value="Mutuelle">Mutuelle</option>
+                      <option value="Tiers-payant">Tiers-payant</option>
+                      <option value="Hors nomenclature">Hors nom.</option>
+                      {!['Patient', 'Mutuelle', 'Tiers-payant', 'Hors nomenclature'].includes(paymentType) && paymentType && (
+                        <option value={paymentType}>{paymentType}</option>
+                      )}
+                    </select>
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Paiement</label>
-                  <select
-                    value={paymentType}
-                    onChange={(e) => setPaymentType(e.target.value)}
-                    disabled={selectedAppointment?.statut === 'Effectué'}
-                    className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all disabled:bg-slate-50 disabled:text-slate-400 appearance-none bg-slate-50/30"
-                  >
-                    <option value="Patient">Direct</option>
-                    <option value="Mutuelle">Mutuelle</option>
-                    <option value="Tiers-payant">Tiers-payant</option>
-                    <option value="Hors nomenclature">Hors nom.</option>
-                  </select>
-                </div>
-              </div>
-
-              {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (
-                <div className="flex flex-col gap-3 mt-2">
-                  <Button 
-                    type="button" 
-                    onClick={handleSaveBilling} 
-                    disabled={loading} 
-                    className="w-full h-12 rounded-xl font-black bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-100 transition-all active:scale-95"
-                  >
-                    {loading ? 'Validation...' : 'Confirmer le règlement'}
-                  </Button>
-                  {selectedAppointment?.statut !== 'Impayé' && (
+                {/* Actions when appointment is NOT yet paid */}
+                {selectedAppointment?.statut !== 'Effectué' && selectedAppointment?.statut !== 'Annulé' && (
+                  <div className="flex flex-col gap-3 mt-2">
                     <Button 
                       type="button" 
-                      onClick={handleSaveUnpaid} 
+                      onClick={handleSaveBilling} 
                       disabled={loading} 
-                      variant="ghost" 
-                      className="w-full h-10 rounded-xl font-bold text-rose-600 hover:bg-rose-50 transition-colors"
+                      className="w-full h-12 rounded-xl font-black bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-100 transition-all active:scale-95"
                     >
-                      {loading ? '...' : `Marquer comme impayé (${billingAmount} DH)`}
+                      {loading ? 'Validation...' : 'Confirmer le règlement'}
                     </Button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                    {selectedAppointment?.statut !== 'Impayé' ? (
+                      <Button 
+                        type="button" 
+                        onClick={handleSaveUnpaid} 
+                        disabled={loading} 
+                        variant="ghost" 
+                        className="w-full h-10 rounded-xl font-bold text-rose-600 hover:bg-rose-50 transition-colors"
+                      >
+                        {loading ? '...' : `Marquer comme impayé (${billingAmount} DH)`}
+                      </Button>
+                    ) : (
+                      isAdmin && (
+                        <Button 
+                          type="button" 
+                          onClick={handleSaveUnpaid} 
+                          disabled={loading} 
+                          variant="outline" 
+                          className="w-full h-10 rounded-xl font-bold border-rose-200 text-rose-600 hover:bg-rose-50 transition-colors"
+                        >
+                          {loading ? '...' : `Enregistrer la modification de l'impayé (${billingAmount} DH)`}
+                        </Button>
+                      )
+                    )}
+                  </div>
+                )}
+
+                {/* Admin-only modification actions when appointment IS ALREADY paid ('Effectué') */}
+                {selectedAppointment?.statut === 'Effectué' && isAdmin && (
+                  <div className="flex flex-col gap-2.5 mt-2 pt-2 border-t border-slate-100">
+                    <Button
+                      type="button"
+                      onClick={handleSaveBilling}
+                      disabled={loading}
+                      className="w-full h-11 rounded-xl font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all"
+                    >
+                      {loading ? 'Enregistrement...' : 'Enregistrer la modification du règlement'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleSaveUnpaid}
+                      disabled={loading}
+                      className="w-full h-9 rounded-xl font-bold text-rose-600 hover:bg-rose-50 text-xs transition-colors"
+                    >
+                      {loading ? '...' : `Repasser en impayé (${billingAmount} DH)`}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Footer Actions */}
           <div className="pt-6 flex items-center justify-between gap-4">

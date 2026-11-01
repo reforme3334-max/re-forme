@@ -7,8 +7,10 @@ import { ReviewSection } from '../components/reviews/ReviewSection';
 import { Modal } from '../components/ui/modal';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseExercisesFromPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
+import { jsPDF } from 'jspdf';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 import { parsePatientMutuelle, serializeAtcdWithMutuelle } from '../lib/mutuelleUtils';
+import { sanitizeBillings, formatMoney, sumMoney, isUnpaidBillingStatus, isPaidBillingStatus, getBillDate } from '../lib/financeUtils';
 
 export function PatientPortal() {
   const [patient, setPatient] = useState<any>(null);
@@ -252,8 +254,9 @@ export function PatientPortal() {
         .eq('patient_id', patientData.id)
         .order('date_heure', { ascending: true });
 
+      let loadedAppts: any[] = [];
       if (appts) {
-        const mappedAppts = appts.map(app => {
+        loadedAppts = appts.map(app => {
           let cleanNotes = app.notes_seance || '';
           let resolvedTherapistId = app.therapist_id;
           
@@ -271,7 +274,7 @@ export function PatientPortal() {
             notes_seance: cleanNotes
           };
         });
-        setAppointments(mappedAppts);
+        setAppointments(loadedAppts);
       }
 
       const { data: bills } = await supabase
@@ -279,7 +282,7 @@ export function PatientPortal() {
         .select('*')
         .eq('patient_id', patientData.id);
 
-      if (bills) setBillings(bills);
+      if (bills) setBillings(sanitizeBillings(bills, loadedAppts));
 
     } catch (err) {
       console.error(err);
@@ -494,15 +497,14 @@ const handleLogout = async () => {
       setLocalDocs(updatedDocs);
       try {
         localStorage.setItem(`reforme_docs_${patient.id}`, JSON.stringify(updatedDocs));
-      } catch(err) {
-        alert('Stockage local saturé. Veuillez libérer de la mémoire.');
+      } catch (err) {
+        console.warn('Stockage local saturé.');
       }
     };
     reader.readAsDataURL(file);
   };
   
   const handleDeleteDoc = (id: string) => {
-    if (!confirm('Supprimer ce document ?')) return;
     const updatedDocs = localDocs.filter(d => d.id !== id);
     setLocalDocs(updatedDocs);
     localStorage.setItem(`reforme_docs_${patient.id}`, JSON.stringify(updatedDocs));
@@ -535,50 +537,52 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
   };
 
   const downloadReceipt = (billing: any, appt: any) => {
-    // Generate a simple text-based receipt or trigger print.
-    // A robust app would generate a PDF, but here we can open a styled print window.
-    const receiptContent = `
-      <html>
-        <head>
-          <title>Reçu de Paiement - ${billing.id}</title>
-          <style>
-            body { font-family: system-ui, sans-serif; padding: 40px; color: #1e293b; max-width: 600px; margin: 0 auto; }
-            h1 { color: #0d9488; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
-            .header { display: flex; justify-content: space-between; margin-bottom: 30px; }
-            .details { background: #f8fafc; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
-            .row { display: flex; justify-content: space-between; margin-bottom: 10px; }
-            .total { font-size: 1.25rem; font-weight: bold; border-top: 1px solid #e2e8f0; padding-top: 10px; margin-top: 10px; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <div>
-              <h1>ReForme Center</h1>
-              <p>Centre de Kinésithérapie</p>
-            </div>
-            <div style="text-align: right;">
-              <h2>REÇU</h2>
-              <p>Date: ${new Date(billing.date_facturation).toLocaleDateString('fr-FR')}</p>
-            </div>
-          </div>
-          <div class="details">
-            <div class="row"><span>Patient:</span> <strong>${patient.nom} ${patient.prenom}</strong></div>
-            <div class="row"><span>Séance du:</span> <strong>${new Date(appt.date_heure).toLocaleDateString('fr-FR')}</strong></div>
-            <div class="row"><span>Motif:</span> <strong>${appt.notes_seance || 'Soins de kinésithérapie'}</strong></div>
-            <div class="row total"><span>Montant Réglé:</span> <span>${billing.montant} DH</span></div>
-          </div>
-          <p style="text-align: center; color: #64748b; font-size: 0.875rem;">Ce document tient lieu de reçu pour le paiement des soins dispensés.</p>
-        </body>
-      </html>
-    `;
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(receiptContent);
-      printWindow.document.close();
-      printWindow.focus();
-      // Allow styles to load
-      setTimeout(() => { printWindow.print(); }, 250);
-    }
+    const doc = new jsPDF();
+    const receiptDate = getBillDate(billing).toLocaleDateString('fr-FR');
+    const sessionDate = appt?.date_heure
+      ? parseClinicDate(appt.date_heure).toLocaleDateString('fr-FR')
+      : receiptDate;
+
+    doc.setFontSize(20);
+    doc.setTextColor(13, 148, 136);
+    doc.text('ReForme Center', 20, 25);
+
+    doc.setFontSize(11);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Centre de Kinésithérapie & Rééducation', 20, 32);
+
+    doc.setFontSize(16);
+    doc.setTextColor(15, 23, 42);
+    doc.text('REÇU DE PAIEMENT', 190, 25, { align: 'right' });
+    doc.setFontSize(10);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Date : ${receiptDate}`, 190, 32, { align: 'right' });
+
+    doc.setDrawColor(226, 232, 240);
+    doc.line(20, 40, 190, 40);
+
+    doc.setFontSize(12);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`Patient : ${patient.prenom} ${patient.nom}`, 20, 54);
+    doc.text(`Séance du : ${sessionDate}`, 20, 64);
+    doc.text(`Motif : ${appt?.notes_seance || 'Soins de kinésithérapie'}`, 20, 74);
+    doc.text(`Mode de règlement : ${billing.type_paiement || 'Direct'}`, 20, 84);
+
+    doc.line(20, 94, 190, 94);
+    doc.setFontSize(14);
+    doc.setTextColor(13, 148, 136);
+    doc.text(`Montant Réglé : ${formatMoney(billing.montant)} DH`, 20, 106);
+
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+      'Ce document tient lieu de reçu pour le paiement des soins dispensés.',
+      105,
+      128,
+      { align: 'center' }
+    );
+
+    doc.save(`Recu_${patient.nom}_${sessionDate.replace(/\//g, '-')}.pdf`);
   };
 
   if (loading) {
@@ -621,10 +625,18 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
   const nextAppointment = upcomingAppointments[0] || null;
   
   const pastAppointments = appointments
-    .filter(a => parseClinicDate(a.date_heure) <= now || a.statut === 'Effectué')
+    .filter(
+      a =>
+        a.statut !== 'Annulé' &&
+        a.statut !== 'En attente' &&
+        !a.notes_seance?.includes('[DEMANDE') &&
+        (parseClinicDate(a.date_heure) <= now || a.statut === 'Effectué' || a.statut === 'Impayé')
+    )
     .sort((a, b) => parseClinicDate(b.date_heure).getTime() - parseClinicDate(a.date_heure).getTime());
-  
-  const unpaidAppointments = pastAppointments.filter(a => a.statut === 'Confirmé' || a.statut === 'Programmé');
+
+  const unpaidPortalBillings = billings.filter(b => isUnpaidBillingStatus(b.statut));
+  const unpaidPortalTotal = sumMoney(unpaidPortalBillings, b => b.montant);
+  const unpaidAppointments = pastAppointments.filter(a => a.statut !== 'Effectué');
 
   return (
     <div className="min-h-screen bg-slate-50 pb-20 font-sans">
@@ -828,13 +840,19 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                 );
               })}
 
-              {unpaidAppointments.length > 0 && (
+              {(unpaidPortalBillings.length > 0 || unpaidAppointments.length > 0) && (
                 <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4 flex items-start gap-3 shadow-sm">
                   <AlertCircle className="h-6 w-6 text-orange-500 flex-shrink-0 mt-0.5" />
                   <div>
                     <h3 className="font-semibold text-orange-800 text-base">Action requise</h3>
                     <p className="text-sm text-orange-700 mt-1 leading-relaxed">
-                      Vous avez <strong className="font-bold">{unpaidAppointments.length} séance{unpaidAppointments.length > 1 ? 's' : ''}</strong> en attente de règlement.
+                      Vous avez{' '}
+                      <strong className="font-bold">
+                        {unpaidPortalBillings.length || unpaidAppointments.length} séance
+                        {(unpaidPortalBillings.length || unpaidAppointments.length) > 1 ? 's' : ''}
+                      </strong>{' '}
+                      en attente de règlement
+                      {unpaidPortalTotal > 0 ? ` (${formatMoney(unpaidPortalTotal)} DH)` : ''}.
                     </p>
                   </div>
                 </div>
@@ -1088,8 +1106,8 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                   <div className="p-6 text-center text-sm text-slate-500">Aucun historique disponible.</div>
                 ) : (
                   pastAppointments.map(app => {
-                    const isPaid = app.statut === 'Effectué';
                     const billing = billings.find(b => b.appointment_id === app.id);
+                    const isPaid = app.statut === 'Effectué' || (billing && isPaidBillingStatus(billing.statut));
                     
                     return (
                       <div key={app.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-slate-50 transition-colors gap-3">
@@ -1104,11 +1122,11 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                         <div className="flex items-center justify-between sm:flex-col sm:items-end gap-2">
                           {isPaid ? (
                             <div className="flex items-center gap-1.5 text-mint-700 bg-mint-50 px-3 py-1.5 rounded-full text-xs font-bold border border-mint-100">
-                              <CheckCircle className="h-3.5 w-3.5" /> Réglé
+                              <CheckCircle className="h-3.5 w-3.5" /> Réglé{billing ? ` (${formatMoney(billing.montant)} DH)` : ''}
                             </div>
                           ) : (
                             <div className="flex items-center gap-1.5 text-orange-700 bg-orange-50 px-3 py-1.5 rounded-full text-xs font-bold border border-orange-100">
-                              <Clock className="h-3.5 w-3.5" /> En attente
+                              <Clock className="h-3.5 w-3.5" /> En attente{billing ? ` (${formatMoney(billing.montant)} DH)` : ''}
                             </div>
                           )}
                           {isPaid && billing && (
@@ -1116,7 +1134,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                               onClick={() => downloadReceipt(billing, app)}
                               className="text-xs font-medium text-slate-500 hover:text-mint-600 flex items-center gap-1 bg-white border border-slate-200 px-2 py-1 rounded shadow-sm"
                             >
-                              <Download className="h-3 w-3" /> Reçu ({billing.montant} DH)
+                              <Download className="h-3 w-3" /> Reçu ({formatMoney(billing.montant)} DH)
                             </button>
                           )}
                         </div>

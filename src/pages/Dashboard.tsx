@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { LineChart, Line, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { supabase } from '../lib/supabaseClient';
 import { Button } from '../components/ui/button';
+import { MultiMonthPicker } from '../components/ui/MultiMonthPicker';
 import { useAppointmentNotifications } from '../contexts/AppointmentNotificationsContext';
 import { 
   fetchAllRows, 
@@ -11,7 +12,13 @@ import {
   getDateRange, 
   getPreviousDateRange, 
   isDateInRange, 
-  calcTrend 
+  calcTrend,
+  roundMoney,
+  sumMoney,
+  formatMoney,
+  sanitizeBillings,
+  isPaidBillingStatus,
+  isUnpaidBillingStatus,
 } from '../lib/financeUtils';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate } from '../lib/timeUtils';
 
@@ -59,6 +66,11 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('month');
   const [customDate, setCustomDate] = useState(() => getMoroccoTodayStr());
+  const [selectedMonths, setSelectedMonths] = useState<string[]>(() => {
+    const now = getMoroccoNow();
+    return [`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`];
+  });
+  const [monthPickerTrigger, setMonthPickerTrigger] = useState(0);
   const [rawData, setRawData] = useState({ 
     billings: [] as any[], 
     patients: [] as any[], 
@@ -75,8 +87,8 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
     setLoading(true);
     try {
       const [patients, billings, rawAppointments, treatments, therapists] = await Promise.all([
-        fetchAllRows('patients', 'id, nom, prenom, created_at, pathologie, telephone, email, nombre_seances'),
-        fetchAllRows('billings', 'id, patient_id, appointment_id, montant, statut, date_facturation', { column: 'date_facturation', ascending: false }),
+        fetchAllRows('patients', 'id, nom, prenom, created_at, pathologie, telephone, email, nombre_seances, has_access'),
+        fetchAllRows('billings', 'id, patient_id, appointment_id, montant, statut, date_facturation, appointments(id, date_heure, statut)', { column: 'date_facturation', ascending: false }),
         fetchAllRows('appointments', 'id, patient_id, therapist_id, date_heure, statut, notes_seance', { column: 'date_heure', ascending: false }),
         fetchAllRows('treatments', '*'),
         fetchAllRows('therapists', 'id, nom, prenom, specialite')
@@ -117,21 +129,26 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
   const dashboardData = useMemo(() => {
     const now = getMoroccoNow();
-    const dateRange = getDateRange(filter, customDate);
-    const prevDateRange = getPreviousDateRange(filter, customDate);
+    const dateRange = getDateRange(filter, customDate, selectedMonths);
+    const prevDateRange = getPreviousDateRange(filter, customDate, selectedMonths);
     const filterLabel = dateRange.label;
 
+    const cleanBillings = sanitizeBillings(rawData.billings, rawData.appointments);
+    const nonCancelledAppointments = rawData.appointments.filter(a => a.statut !== 'Annulé');
+
     // 1. CA (selon filtre et période précédente)
-    const paidBillings = rawData.billings.filter(b => b.statut === 'Payé');
+    const paidBillings = cleanBillings.filter(b => isPaidBillingStatus(b.statut));
     
-    const ca = paidBillings
-      .filter(b => isDateInRange(getBillDate(b), dateRange))
-      .reduce((sum, b) => sum + (Number(b.montant) || 0), 0);
+    const ca = sumMoney(
+      paidBillings.filter(b => isDateInRange(getBillDate(b), dateRange)),
+      b => b.montant
+    );
       
     const prevCa = prevDateRange.startDate 
-      ? paidBillings
-          .filter(b => isDateInRange(getBillDate(b), prevDateRange))
-          .reduce((sum, b) => sum + (Number(b.montant) || 0), 0)
+      ? sumMoney(
+          paidBillings.filter(b => isDateInRange(getBillDate(b), prevDateRange)),
+          b => b.montant
+        )
       : undefined;
       
     const caTrend = calcTrend(ca, prevCa);
@@ -147,53 +164,48 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
     const patientsTrend = calcTrend(nouveauxPatients, prevNouveauxPatients);
 
     // 3. Taux de Présence au lieu de Taux d'Occupation
-    const presentAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange) && a.statut === 'Effectué').length;
-    const pastAppts = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange) && (parseClinicDate(a.date_heure) < now)).length;
+    const presentAppts = nonCancelledAppointments.filter(a => isDateInRange(a.date_heure, dateRange) && a.statut === 'Effectué').length;
+    const pastAppts = nonCancelledAppointments.filter(a => isDateInRange(a.date_heure, dateRange) && (parseClinicDate(a.date_heure) < now)).length;
     const occupation = pastAppts > 0 ? Math.round((presentAppts / pastAppts) * 100) : 100;
     
     // Total Séances (for the 6th card)
-    const booked = rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange)).length;
+    const booked = nonCancelledAppointments.filter(a => isDateInRange(a.date_heure, dateRange)).length;
     const prevBooked = prevDateRange.startDate
-      ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange)).length
+      ? nonCancelledAppointments.filter(a => isDateInRange(a.date_heure, prevDateRange)).length
       : undefined;
     const seancesTrend = calcTrend(booked, prevBooked);
     
     const prevPresentAppts = prevDateRange.startDate
-      ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && a.statut === 'Effectué').length
+      ? nonCancelledAppointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && a.statut === 'Effectué').length
       : 0;
     const prevPastAppts = prevDateRange.startDate
-      ? rawData.appointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && (parseClinicDate(a.date_heure) < now)).length
+      ? nonCancelledAppointments.filter(a => isDateInRange(a.date_heure, prevDateRange) && (parseClinicDate(a.date_heure) < now)).length
       : 0;
     const prevOccupation = prevPastAppts > 0 ? Math.round((prevPresentAppts / prevPastAppts) * 100) : 100;
     const occupationTrend = prevDateRange.startDate ? occupation - prevOccupation : undefined;
 
-    // 4. Impayés (Total global)
-    const unpaidBillings = rawData.billings.filter(b => b.statut === 'Impayé' || b.statut === 'En attente' || b.statut === 'Rejeté');
-    const billedAppIds = new Set(rawData.billings.map(b => b.appointment_id).filter(Boolean));
-    const extraUnpaidAppts = rawData.appointments.filter(a => a.statut === 'Impayé' && !billedAppIds.has(a.id));
-    const extraUnpaidAmount = extraUnpaidAppts.length * 200;
-
-    const impayesTotal = unpaidBillings.reduce((sum, b) => sum + (Number(b.montant) || 0), 0) + extraUnpaidAmount;
+    // 4. Impayés (Total global — source unique alignée avec l'onglet Finance)
+    const unpaidBillings = cleanBillings.filter(b => isUnpaidBillingStatus(b.statut));
+    const impayesTotal = sumMoney(unpaidBillings, b => b.montant);
 
     // 5. Patients sans accès
     const patientsSansAcces = rawData.patients.filter(p => !p.has_access);
 
     // LineChart: 6 derniers mois de chiffre d'affaires
-    const last6Months = [];
+    const last6Months: { month: number; year: number; name: string; DH: number }[] = [];
     for (let i = 5; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthBills = paidBillings.filter(b => {
+        const bd = getBillDate(b);
+        return bd.getMonth() === d.getMonth() && bd.getFullYear() === d.getFullYear();
+      });
       last6Months.push({
         month: d.getMonth(),
         year: d.getFullYear(),
         name: d.toLocaleDateString('fr-FR', { month: 'short' }),
-        DH: 0
+        DH: sumMoney(monthBills, b => b.montant),
       });
     }
-    paidBillings.forEach(b => {
-      const d = getBillDate(b);
-      const match = last6Months.find(m => m.month === d.getMonth() && m.year === d.getFullYear());
-      if (match) match.DH += Number(b.montant) || 0;
-    });
 
     // BarChart: Team workload
     const teamMap = new Map();
@@ -253,32 +265,21 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
     }
 
     // Top 5 Impayés
-    const unpaidMap = new Map();
+    const unpaidMap = new Map<string, { name: string; amount: number; sessions: number; email?: string; telephone?: string }>();
     const patientsMap = new Map(rawData.patients.map(p => [p.id, p]));
     
     unpaidBillings.forEach(b => {
       const p = (b.patients as any) || patientsMap.get(b.patient_id);
       if (p) {
         const pName = `${p.prenom} ${p.nom}`;
-        const current = unpaidMap.get(p.id) || { name: pName, amount: 0, sessions: 0, email: p.email };
-        current.amount += Number(b.montant) || 0;
+        const current = unpaidMap.get(p.id) || { name: pName, amount: 0, sessions: 0, email: p.email, telephone: p.telephone };
+        current.amount = roundMoney(current.amount + roundMoney(b.montant));
         current.sessions += 1;
         unpaidMap.set(p.id, current);
       }
     });
 
-    extraUnpaidAppts.forEach(a => {
-      const p = patientsMap.get(a.patient_id) as any;
-      if (p) {
-        const pName = `${p.prenom} ${p.nom}`;
-        const current = unpaidMap.get(p.id) || { name: pName, amount: 0, sessions: 0, email: p.email };
-        current.amount += 200;
-        current.sessions += 1;
-        unpaidMap.set(p.id, current);
-      }
-    });
-
-    const topUnpaidList = Array.from(unpaidMap.values()).sort((a: any, b: any) => b.amount - a.amount).slice(0, 5);
+    const topUnpaidList = Array.from(unpaidMap.values()).sort((a, b) => b.amount - a.amount).slice(0, 5);
 
     // Compute Attendance Alerts (Patients who stopped coming / did not complete their sessions)
     const attendanceAlerts: any[] = [];
@@ -388,15 +389,23 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       patientsSansAccesList: patientsSansAcces.slice(0, 10),
       attendanceAlerts: attendanceAlerts
     };
-  }, [rawData, filter, customDate]);
+  }, [rawData, filter, customDate, selectedMonths]);
 
   const [pieToggle, setPieToggle] = useState<'motifs' | 'pathologies'>('motifs');
+  const [dashboardNotice, setDashboardNotice] = useState<string>('');
+
+  const showDashboardNotice = (msg: string) => {
+    setDashboardNotice(msg);
+    setTimeout(() => {
+      setDashboardNotice((prev) => (prev === msg ? '' : prev));
+    }, 5000);
+  };
 
   const handleRelance = (patient: any) => {
     if (patient.email) {
-      window.location.href = `mailto:${patient.email}?subject=Relance de paiement - Re Forme Center&body=Bonjour ${patient.name},%0D%0A%0D%0ANous vous contactons concernant un solde en attente de ${patient.amount} DH pour vos ${patient.sessions} dernières séances.%0D%0A%0D%0AMerci de régulariser votre situation.%0D%0A%0D%0ACordialement,%0D%0AL'équipe Re Forme Center`;
+      window.location.href = `mailto:${patient.email}?subject=Relance de paiement - Re Forme Center&body=Bonjour ${patient.name},%0D%0A%0D%0ANous vous contactons concernant un solde en attente de ${formatMoney(patient.amount)} DH pour vos ${patient.sessions} dernières séances.%0D%0A%0D%0AMerci de régulariser votre situation.%0D%0A%0D%0ACordialement,%0D%0AL'équipe Re Forme Center`;
     } else {
-      alert(`Aucun email renseigné pour ${patient.name}. Veuillez le contacter par téléphone.`);
+      showDashboardNotice(`Aucun email renseigné pour ${patient.name}. Veuillez le contacter par téléphone${patient.telephone ? ` au ${patient.telephone}` : ''}.`);
     }
   };
 
@@ -406,7 +415,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       const text = `Bonjour ${alertItem.prenom} ${alertItem.nom},\n\nNous faisons le suivi de votre dossier thérapeutique chez Cabinet Re Forme.\n\n${alertItem.type === 'uncompleted' ? `Nous constatons que vous avez réalisé ${alertItem.completedCount} séances sur les ${alertItem.prescribedSessions} prescrites pour votre traitement en cours, et qu'aucun nouveau rendez-vous n'est planifié.` : `Votre dernière séance remonte au ${alertItem.lastSessionDate ? new Date(alertItem.lastSessionDate).toLocaleDateString('fr-FR') : 'quelques semaines'} et aucun rendez-vous de suivi n'est programmé.`}\n\nPour assurer la continuité des soins et l'efficacité de votre rétablissement, nous vous invitons à planifier vos prochaines séances.\n\nVous pouvez le faire directement en ligne sur votre Espace Patient ou en contactant notre secrétariat.\n\nBien cordialement,\nL'équipe Cabinet Re Forme`;
       window.location.href = `mailto:${alertItem.email}?subject=${subject}&body=${encodeURIComponent(text)}`;
     } else {
-      alert(`Aucun email enregistré pour ${alertItem.prenom} ${alertItem.nom}. Veuillez contacter directement le patient par téléphone au ${alertItem.telephone || 'Non renseigné'}.`);
+      showDashboardNotice(`Aucun email enregistré pour ${alertItem.prenom} ${alertItem.nom}. Veuillez contacter directement le patient par téléphone au ${alertItem.telephone || 'Non renseigné'}.`);
     }
   };
 
@@ -429,7 +438,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Dashboard Principal</h1>
           <p className="text-slate-500 mt-1">Vue d'ensemble des performances du cabinet.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {filter === 'exact' && (
             <input
               type="date"
@@ -442,7 +451,13 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
             <Calendar className="h-4 w-4 text-slate-400 ml-2" />
             <select
               value={filter}
-              onChange={(e) => setFilter(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setFilter(next);
+                if (next === 'months') {
+                  setMonthPickerTrigger((c) => c + 1);
+                }
+              }}
               className="bg-transparent border-none text-sm font-medium text-slate-700 focus:ring-0 cursor-pointer py-1 pr-8 pl-2 outline-none"
             >
               <option value="all">Tout le temps</option>
@@ -451,11 +466,26 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
               <option value="7days">7 derniers jours</option>
               <option value="week">Cette semaine</option>
               <option value="month">Ce mois</option>
+              <option value="months">Plusieurs mois</option>
               <option value="year">Cette année</option>
             </select>
           </div>
+          {filter === 'months' && (
+            <MultiMonthPicker
+              selectedMonths={selectedMonths}
+              onChange={setSelectedMonths}
+              openTrigger={monthPickerTrigger}
+            />
+          )}
         </div>
       </div>
+
+      {dashboardNotice && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm flex items-center gap-2.5">
+          <AlertCircle className="h-4 w-4 flex-shrink-0 text-amber-600" />
+          <span>{dashboardNotice}</span>
+        </div>
+      )}
 
       {/* Alerte Demandes de RDV & Reports en attente */}
       {pendingCount > 0 && (
@@ -533,7 +563,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard 
           title={`Chiffre d'Affaires (${dashboardData.filterLabel})`}
-          value={`${dashboardData.ca.toLocaleString()} DH`} 
+          value={`${formatMoney(dashboardData.ca)} DH`} 
           icon={Wallet} 
           description="Total encaissé"
           trend={dashboardData.caTrend}
@@ -569,7 +599,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
         />
         <StatCard 
           title="Impayés (Total global)" 
-          value={`${dashboardData.impayesTotal.toLocaleString()} DH`} 
+          value={`${formatMoney(dashboardData.impayesTotal)} DH`} 
           icon={AlertCircle} 
           description="En attente de paiement"
           trendType="negative"
@@ -600,10 +630,10 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                 <LineChart data={dashboardData.last6Months}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                   <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                  <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${value} DH`} />
+                  <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `${formatMoney(value)} DH`} />
                   <Tooltip 
                     contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} 
-                    formatter={(value: number) => [`${value} DH`, 'Revenus']}
+                    formatter={(value: number) => [`${formatMoney(value)} DH`, 'Revenus']}
                   />
                   <Line type="monotone" dataKey="DH" stroke="#6366f1" strokeWidth={3} dot={{r: 4, fill: '#6366f1', strokeWidth: 2, stroke: '#fff'}} activeDot={{r: 6}} />
                 </LineChart>
@@ -713,7 +743,7 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                       <td className="px-4 py-3 text-center text-slate-600">
                         <span className="bg-slate-100 px-2 py-1 rounded-md text-xs font-medium">{p.sessions}</span>
                       </td>
-                      <td className="px-4 py-3 text-right font-bold text-rose-600">{p.amount} DH</td>
+                      <td className="px-4 py-3 text-right font-bold text-rose-600">{formatMoney(p.amount)} DH</td>
                       <td className="px-4 py-3 text-center">
                         <Button 
                           size="sm" 

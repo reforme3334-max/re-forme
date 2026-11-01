@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy, Lock, Wallet } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -13,6 +13,8 @@ import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 import { ORGANISMES_MUTUELLE, SPORTS_DISCIPLINES, PartnerClub, parsePatientMutuelle, serializeAtcdWithMutuelle, fetchPartnerClubs, upsertPartnerClub } from '../lib/mutuelleUtils';
+import { resolveOrBindCollaboratorSession } from '../lib/teamUtils';
+import { roundMoney, sumMoney, formatMoney, sanitizeBillings, isPaidBillingStatus, isUnpaidBillingStatus, getBillDate } from '../lib/financeUtils';
 
 interface PatientDetailProps {
   patientId?: string;
@@ -123,15 +125,43 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [editAppTime, setEditAppTime] = useState('');
   const [editAppLoading, setEditAppLoading] = useState(false);
 
-  // Delete Billing Modal State
+  // Delete & Edit Billing Modal State (Admin-only modification)
+  const [isAdmin, setIsAdmin] = useState(false);
   const [isDeleteBillingModalOpen, setIsDeleteBillingModalOpen] = useState(false);
   const [billingToDelete, setBillingToDelete] = useState<string | null>(null);
   const [deleteBillingLoading, setDeleteBillingLoading] = useState(false);
   const [isSettling, setIsSettling] = useState<string | null>(null);
+  const [isEditBillingModalOpen, setIsEditBillingModalOpen] = useState(false);
+  const [billingToEdit, setBillingToEdit] = useState<any | null>(null);
+  const [editBillingForm, setEditBillingForm] = useState({
+    montant: '',
+    type_paiement: 'Patient',
+    statut: 'Payé',
+  });
+  const [editBillingLoading, setEditBillingLoading] = useState(false);
+  const [editBillingError, setEditBillingError] = useState('');
 
   // Delete Patient Modal State
   const [isDeletePatientModalOpen, setIsDeletePatientModalOpen] = useState(false);
   const [deletePatientLoading, setDeletePatientLoading] = useState(false);
+
+  useEffect(() => {
+    const loadRole = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          const profile = await resolveOrBindCollaboratorSession(supabase, {
+            id: session.user.id,
+            email: session.user.email,
+          });
+          setIsAdmin(profile?.role === 'admin');
+        }
+      } catch (err) {
+        console.warn('Could not determine user role in PatientDetail:', err);
+      }
+    };
+    loadRole();
+  }, []);
 
   useEffect(() => {
     if (patientId) {
@@ -295,12 +325,12 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     // Fetch billings
     const { data: billingData } = await supabase
       .from('billings')
-      .select('*, appointments(id, date_heure)')
+      .select('*, appointments(id, date_heure, statut)')
       .eq('patient_id', patientId)
-      .order('id', { ascending: false }); // Fallback order if created_at doesn't exist
+      .order('date_facturation', { ascending: false });
       
     if (billingData) {
-      setBillings(billingData);
+      setBillings(sanitizeBillings(billingData, apptData || []));
     }
 
     // Fetch treatments
@@ -790,12 +820,13 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   };
 
   const confirmDeleteBilling = (id: string) => {
+    if (!isAdmin) return;
     setBillingToDelete(id);
     setIsDeleteBillingModalOpen(true);
   };
 
   const executeDeleteBilling = async () => {
-    if (!billingToDelete) return;
+    if (!billingToDelete || !isAdmin) return;
     
     setDeleteBillingLoading(true);
     const { error } = await supabase
@@ -811,6 +842,68 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       console.error("Erreur lors de la suppression de la facture : " + error.message);
     }
     setDeleteBillingLoading(false);
+  };
+
+  const openEditBillingModal = (bill: any) => {
+    if (!isAdmin) return;
+    setBillingToEdit(bill);
+    setEditBillingForm({
+      montant: String(bill.montant ?? '0'),
+      type_paiement: bill.type_paiement || 'Patient',
+      statut: bill.statut === 'En attente' || bill.statut === 'Impayé' ? 'En attente' : 'Payé',
+    });
+    setEditBillingError('');
+    setIsEditBillingModalOpen(true);
+  };
+
+  const handleUpdateBilling = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!billingToEdit || !isAdmin) return;
+
+    const rawAmount = parseFloat(editBillingForm.montant);
+    if (isNaN(rawAmount) || rawAmount < 0) {
+      setEditBillingError('Veuillez saisir un montant valide.');
+      return;
+    }
+    const parsedAmount = roundMoney(rawAmount);
+
+    setEditBillingLoading(true);
+    setEditBillingError('');
+
+    try {
+      const nextStatut = editBillingForm.statut === 'En attente' ? 'En attente' : 'Payé';
+      const { error: billErr } = await supabase
+        .from('billings')
+        .update({
+          montant: parsedAmount,
+          type_paiement: editBillingForm.type_paiement,
+          statut: nextStatut,
+        })
+        .eq('id', billingToEdit.id);
+
+      if (billErr) throw billErr;
+
+      const linkedAppId =
+        billingToEdit.appointment_id ||
+        (billingToEdit.appointments && !Array.isArray(billingToEdit.appointments)
+          ? billingToEdit.appointments.id
+          : billingToEdit.appointments?.[0]?.id);
+
+      if (linkedAppId) {
+        await supabase
+          .from('appointments')
+          .update({ statut: nextStatut === 'Payé' ? 'Effectué' : 'Impayé' })
+          .eq('id', linkedAppId);
+      }
+
+      await fetchPatientDetails();
+      setIsEditBillingModalOpen(false);
+      setBillingToEdit(null);
+    } catch (err: any) {
+      setEditBillingError(err.message || 'Erreur lors de la modification du règlement.');
+    } finally {
+      setEditBillingLoading(false);
+    }
   };
 
   const executeDeletePatient = async () => {
@@ -840,7 +933,6 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       window.location.hash = 'patients';
     } catch (err: any) {
       console.error("Erreur lors de la suppression de la fiche patient :", err.message);
-      alert("Une erreur est survenue lors de la suppression : " + err.message);
     } finally {
       setDeletePatientLoading(false);
     }
@@ -848,9 +940,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
   const handleSettleBilling = async (bill: any) => {
     setIsSettling(bill.id);
-    // Be robust with appointment ID
     const appointmentId = bill.appointment_id || (bill.appointments && !Array.isArray(bill.appointments) ? bill.appointments.id : (bill.appointments?.[0]?.id));
-    console.log("Settling billing:", bill.id, "for appointment:", appointmentId);
 
     try {
       // 1. Update billing status
@@ -888,7 +978,6 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       await fetchPatientDetails();
     } catch (error: any) {
       console.error("Settle error:", error);
-      alert("Erreur lors du règlement : " + (error.message || "Erreur inconnue"));
     } finally {
       setIsSettling(null);
     }
@@ -945,18 +1034,21 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     }
   };
 
+  const paidPatientBillings = billings.filter((b) => isPaidBillingStatus(b.statut));
+  const unpaidPatientBillings = billings.filter((b) => isUnpaidBillingStatus(b.statut));
+  const totalPatientPaid = sumMoney(paidPatientBillings, (b) => b.montant);
+  const totalPatientUnpaid = sumMoney(unpaidPatientBillings, (b) => b.montant);
+  const totalPatientBilled = roundMoney(totalPatientPaid + totalPatientUnpaid);
+
   const generateInvoiceExcel = () => {
-    const totalPaid = billings.reduce((sum, b) => sum + Number(b.montant), 0);
-    const sessionsCount = billings.length;
     const ref = `FAC-${new Date().getFullYear()}-${Math.floor(Math.random() * 10000)}`;
     const date = new Date().toLocaleDateString('fr-FR');
 
-    const wsData = [
+    const wsData: any[][] = [
       ["Re Forme Center"],
-      ["123 Avenue de la Santé, 75000 Paris"],
-      ["Tel: 01 23 45 67 89"],
+      ["Centre de Kinésithérapie & Rééducation"],
       [],
-      ["FACTURE"],
+      ["FACTURE / RELEVÉ DE RÈGLEMENTS"],
       ["Réf :", ref],
       ["Date :", date],
       [],
@@ -964,16 +1056,31 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       ["Email :", patient.email || "Non renseigné"],
       ["Téléphone :", patient.telephone || "Non renseigné"],
       [],
-      ["Désignation", "Quantité", "Prix Unitaire", "Total"],
-      ["Séances de kinésithérapie", sessionsCount, "-", `${totalPaid} DH`],
-      [],
-      ["", "", "Total Payé :", `${totalPaid} DH`]
+      ["Désignation", "Quantité", "Statut", "Total"],
+      ["Séances de kinésithérapie réglées", paidPatientBillings.length, "Payé", `${formatMoney(totalPatientPaid)} DH`],
     ];
 
+    if (unpaidPatientBillings.length > 0) {
+      wsData.push([
+        "Séances en attente de règlement",
+        unpaidPatientBillings.length,
+        "En attente",
+        `${formatMoney(totalPatientUnpaid)} DH`,
+      ]);
+    }
+
+    wsData.push(
+      [],
+      ["", "", "Total Facturé :", `${formatMoney(totalPatientBilled)} DH`],
+      ["", "", "Total Réglé :", `${formatMoney(totalPatientPaid)} DH`]
+    );
+
+    if (totalPatientUnpaid > 0) {
+      wsData.push(["", "", "Reste à Payer :", `${formatMoney(totalPatientUnpaid)} DH`]);
+    }
+
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    
-    // Ajuster la largeur des colonnes pour une meilleure lisibilité
-    ws['!cols'] = [{ wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 15 }];
+    ws['!cols'] = [{ wch: 34 }, { wch: 15 }, { wch: 15 }, { wch: 18 }];
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Facture");
@@ -1653,17 +1760,27 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
               <CardHeader className="pb-2">
                 <CardTitle className="text-xs font-bold uppercase tracking-widest text-slate-400">Statistiques Patient</CardTitle>
               </CardHeader>
-              <CardContent className="pt-2 space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+              <CardContent className="pt-2 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
                   <div className="bg-white/5 p-3 rounded-lg">
                     <p className="text-xl font-black">{appointments.filter(a => a.statut === 'Effectué').length}</p>
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Séances effectuées</p>
                   </div>
                   <div className="bg-white/5 p-3 rounded-lg">
-                    <p className="text-xl font-black">{billings.length}</p>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Factures réglées</p>
+                    <p className="text-xl font-black text-emerald-400">{paidPatientBillings.length}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Séances réglées</p>
                   </div>
                 </div>
+                <div className="bg-white/5 p-3 rounded-lg flex items-center justify-between text-xs">
+                  <span className="text-slate-400 font-semibold uppercase tracking-wider">Total réglé</span>
+                  <span className="font-black text-emerald-400">{formatMoney(totalPatientPaid)} DH</span>
+                </div>
+                {totalPatientUnpaid > 0 && (
+                  <div className="bg-rose-500/15 border border-rose-500/30 p-3 rounded-lg flex items-center justify-between text-xs">
+                    <span className="text-rose-200 font-semibold uppercase tracking-wider">Reste à payer</span>
+                    <span className="font-black text-rose-300">{formatMoney(totalPatientUnpaid)} DH</span>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -1718,7 +1835,9 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                         </div>
                         <div>
                           <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Bilan Financier</p>
-                          <p className="text-slate-900 font-medium">Total facturé : {treatment.total_facture || 0} DH</p>
+                          <p className="text-slate-900 font-medium">
+                            Total réglé : {formatMoney(treatment.total_facture ? treatment.total_facture : (treatments.length === 1 ? totalPatientPaid : 0))} DH
+                          </p>
                         </div>
                         <div>
                           <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Médecin Prescripteur</p>
@@ -1820,6 +1939,48 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
       {activeTab === 'facturation' && (
         <div className="space-y-6">
+          {/* Cartes récapitulatives des sommes de règlement du patient */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <Card className="border-0 shadow-sm bg-emerald-50/50 border-l-4 border-l-emerald-500">
+              <CardContent className="p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Total Réglé</p>
+                  <p className="text-2xl font-black text-emerald-700 mt-1">{formatMoney(totalPatientPaid)} DH</p>
+                  <p className="text-xs text-emerald-700/80 mt-0.5">{paidPatientBillings.length} séance(s) payée(s)</p>
+                </div>
+                <div className="h-10 w-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700">
+                  <CheckCircle2 className="h-5 w-5" />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-0 shadow-sm bg-rose-50/50 border-l-4 border-l-rose-500">
+              <CardContent className="p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-rose-700">Reste à Payer (Impayés)</p>
+                  <p className="text-2xl font-black text-rose-600 mt-1">{formatMoney(totalPatientUnpaid)} DH</p>
+                  <p className="text-xs text-rose-700/80 mt-0.5">{unpaidPatientBillings.length} séance(s) en attente</p>
+                </div>
+                <div className="h-10 w-10 rounded-full bg-rose-100 flex items-center justify-center text-rose-600">
+                  <AlertCircle className="h-5 w-5" />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-0 shadow-sm bg-slate-50 border-l-4 border-l-slate-700">
+              <CardContent className="p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-600">Total Facturé</p>
+                  <p className="text-2xl font-black text-slate-900 mt-1">{formatMoney(totalPatientBilled)} DH</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{billings.length} règlement(s) enregistré(s)</p>
+                </div>
+                <div className="h-10 w-10 rounded-full bg-slate-200/80 flex items-center justify-center text-slate-700">
+                  <Wallet className="h-5 w-5" />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={generateCalendarPDF} className="gap-2">
               <Download className="h-4 w-4" /> Calendrier de Soins
@@ -1840,7 +2001,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                 <table className="w-full text-sm text-left">
                   <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-200">
                     <tr>
-                      <th className="px-6 py-4 font-medium">Date du RDV</th>
+                      <th className="px-6 py-4 font-medium">Date</th>
                       <th className="px-6 py-4 font-medium">Montant</th>
                       <th className="px-6 py-4 font-medium">Type de paiement</th>
                       <th className="px-6 py-4 font-medium">Statut</th>
@@ -1856,16 +2017,20 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                       </tr>
                     ) : (
                       billings.map((bill) => {
-                        const isUnpaid = bill.statut === 'En attente' || bill.statut === 'Impayé';
-                        
-  
-return (
+                        const isUnpaid = isUnpaidBillingStatus(bill.statut);
+                        const linkedAppt = Array.isArray(bill.appointments)
+                          ? bill.appointments[0]
+                          : bill.appointments;
+                        const displayDate = linkedAppt?.date_heure
+                          ? parseClinicDate(linkedAppt.date_heure).toLocaleDateString('fr-FR')
+                          : getBillDate(bill).toLocaleDateString('fr-FR');
+                        return (
                         <tr key={bill.id} className={`bg-white hover:bg-slate-50 transition-colors ${isUnpaid ? 'bg-rose-50/20' : ''}`}>
                           <td className="px-6 py-4 font-medium text-slate-900">
-                            {bill.appointments?.date_heure ? new Date(bill.appointments.date_heure).toLocaleDateString('fr-FR') : 'N/A'}
+                            {displayDate}
                           </td>
-                          <td className="px-6 py-4 font-medium text-slate-900">
-                            {bill.montant} DH
+                          <td className={`px-6 py-4 font-bold ${isUnpaid ? 'text-rose-600' : 'text-slate-900'}`}>
+                            {formatMoney(bill.montant)} DH
                           </td>
                           <td className="px-6 py-4 text-slate-600">
                             {bill.type_paiement}
@@ -1890,20 +2055,59 @@ return (
                                 {isSettling === bill.id ? "..." : "Régler"}
                               </Button>
                             )}
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              onClick={() => confirmDeleteBilling(bill.id)}
-                              className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
-                              title="Supprimer la facturation"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                            {isAdmin ? (
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => openEditBillingModal(bill)}
+                                  className="text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 gap-1 text-xs font-semibold"
+                                  title="Modifier le règlement (Administrateur)"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                  Modifier
+                                </Button>
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm" 
+                                  onClick={() => confirmDeleteBilling(bill.id)}
+                                  className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                                  title="Supprimer la facturation (Administrateur)"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </>
+                            ) : (
+                              !isUnpaid && (
+                                <span
+                                  className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400"
+                                  title="Modification réservée à l'administrateur"
+                                >
+                                  <Lock className="h-3 w-3" />
+                                  Verrouillé
+                                </span>
+                              )
+                            )}
                           </td>
                         </tr>
                       )})
                     )}
                   </tbody>
+                  {billings.length > 0 && (
+                    <tfoot className="bg-slate-50 border-t-2 border-slate-200">
+                      <tr>
+                        <td className="px-6 py-3.5 text-xs font-bold uppercase text-slate-700">
+                          Somme des règlements ({paidPatientBillings.length} payé{paidPatientBillings.length > 1 ? 's' : ''}{unpaidPatientBillings.length > 0 ? ` • ${unpaidPatientBillings.length} impayé${unpaidPatientBillings.length > 1 ? 's' : ''}` : ''})
+                        </td>
+                        <td colSpan={4} className="px-6 py-3.5 text-sm font-black">
+                          <span className="text-emerald-700">Réglé : {formatMoney(totalPatientPaid)} DH</span>
+                          {totalPatientUnpaid > 0 && (
+                            <span className="ml-4 text-rose-600">• Reste à payer : {formatMoney(totalPatientUnpaid)} DH</span>
+                          )}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             </CardContent>
@@ -2529,9 +2733,93 @@ return (
         </div>
       </Modal>
 
+      {/* Edit Billing Modal (Admin Only) */}
+      <Modal
+        isOpen={isEditBillingModalOpen && isAdmin}
+        onClose={() => {
+          if (!editBillingLoading) setIsEditBillingModalOpen(false);
+        }}
+        title="Modifier le règlement (Administrateur)"
+        maxWidth="sm"
+      >
+        <form onSubmit={handleUpdateBilling} className="space-y-4">
+          {editBillingError && (
+            <div className="p-3 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-sm">
+              {editBillingError}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Montant (DH)</label>
+            <input
+              type="number"
+              min="0"
+              step="any"
+              onWheel={(e) => e.currentTarget.blur()}
+              required
+              value={editBillingForm.montant}
+              onChange={(e) => setEditBillingForm({ ...editBillingForm, montant: e.target.value })}
+              className="w-full p-2.5 border border-slate-200 rounded-lg font-semibold text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Mode / Type de paiement</label>
+            <select
+              value={editBillingForm.type_paiement}
+              onChange={(e) => setEditBillingForm({ ...editBillingForm, type_paiement: e.target.value })}
+              className="w-full p-2.5 border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+            >
+              <option value="Patient">Direct (Patient)</option>
+              <option value="Mutuelle">Mutuelle</option>
+              <option value="Tiers-payant">Tiers-payant</option>
+              <option value="Hors nomenclature">Hors nomenclature</option>
+              <option value="Espèces">Espèces</option>
+              <option value="Carte bancaire">Carte bancaire</option>
+              <option value="Virement">Virement</option>
+              <option value="Chèque">Chèque</option>
+              {!['Patient', 'Mutuelle', 'Tiers-payant', 'Hors nomenclature', 'Espèces', 'Carte bancaire', 'Virement', 'Chèque'].includes(editBillingForm.type_paiement) &&
+                editBillingForm.type_paiement && (
+                  <option value={editBillingForm.type_paiement}>{editBillingForm.type_paiement}</option>
+                )}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Statut du règlement</label>
+            <select
+              value={editBillingForm.statut}
+              onChange={(e) => setEditBillingForm({ ...editBillingForm, statut: e.target.value })}
+              className="w-full p-2.5 border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+            >
+              <option value="Payé">Payé (Séance réglée)</option>
+              <option value="En attente">En attente / Impayé</option>
+            </select>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={editBillingLoading}
+              onClick={() => setIsEditBillingModalOpen(false)}
+            >
+              Annuler
+            </Button>
+            <Button
+              type="submit"
+              disabled={editBillingLoading}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white"
+            >
+              {editBillingLoading ? 'Enregistrement...' : 'Enregistrer'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
       {/* Delete Billing Modal */}
       <Modal
-        isOpen={isDeleteBillingModalOpen}
+        isOpen={isDeleteBillingModalOpen && isAdmin}
         onClose={() => setIsDeleteBillingModalOpen(false)}
         title="Supprimer la facture / le règlement"
       >

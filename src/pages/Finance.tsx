@@ -16,12 +16,27 @@ import {
   CheckCircle2,
   ChevronRight,
   ChevronDown,
+  Edit2,
+  Trash2,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Modal } from '../components/ui/modal';
+import { MultiMonthPicker } from '../components/ui/MultiMonthPicker';
 import * as XLSX from 'xlsx';
-import { fetchAllRows, getBillDate, getDateRange, isDateInRange } from '../lib/financeUtils';
+import {
+  fetchAllRows,
+  getBillDate,
+  getDateRange,
+  isDateInRange,
+  roundMoney,
+  sumMoney,
+  formatMoney,
+  sanitizeBillings,
+  isPaidBillingStatus,
+  isUnpaidBillingStatus,
+} from '../lib/financeUtils';
+import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate } from '../lib/timeUtils';
 import { resolveOrBindCollaboratorSession, parseCollaboratorProfile } from '../lib/teamUtils';
 import {
   SPORTS_DISCIPLINES,
@@ -42,8 +57,14 @@ export function Finance() {
   const [loading, setLoading] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [dateFilter, setDateFilter] = useState('month');
-  const [customDate, setCustomDate] = useState(new Date().toISOString().split('T')[0]);
+  const [customDate, setCustomDate] = useState(() => getMoroccoTodayStr());
+  const [selectedMonths, setSelectedMonths] = useState<string[]>(() => {
+    const now = getMoroccoNow();
+    return [`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`];
+  });
+  const [monthPickerTrigger, setMonthPickerTrigger] = useState(0);
   const [clubFilterInTables, setClubFilterInTables] = useState<string>('all');
+  const [unpaidScope, setUnpaidScope] = useState<'global' | 'period'>('global');
   const [expandedClubName, setExpandedClubName] = useState<string | null>(null);
 
   // Inline feedback banner (replaces blocked window.alert)
@@ -58,7 +79,7 @@ export function Finance() {
     amount: '',
     category: 'Matériel',
     description: '',
-    date: new Date().toISOString().split('T')[0],
+    date: getMoroccoTodayStr(),
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSettling, setIsSettling] = useState<string | null>(null);
@@ -73,6 +94,17 @@ export function Finance() {
     note: '',
   });
   const [savingClub, setSavingClub] = useState(false);
+
+  // Modal state: Edit Patient Billing (Admin ONLY)
+  const [isEditBillModalOpen, setIsEditBillModalOpen] = useState(false);
+  const [editingBill, setEditingBill] = useState<any | null>(null);
+  const [editBillForm, setEditBillForm] = useState({
+    montant: '',
+    type_paiement: 'Patient',
+    statut: 'Payé',
+  });
+  const [savingBillEdit, setSavingBillEdit] = useState(false);
+  const [confirmDeleteBill, setConfirmDeleteBill] = useState(false);
 
   useEffect(() => {
     fetchFinancialData();
@@ -111,67 +143,45 @@ export function Finance() {
       }
 
       const [billingData, expenseData, patData, apptData] = await Promise.all([
-        fetchAllRows('billings', '*, patients(id, nom, prenom, atcd)', {
-          column: 'date_facturation',
-          ascending: false,
-        }),
+        fetchAllRows(
+          'billings',
+          '*, patients(id, nom, prenom, atcd), appointments(id, date_heure, statut)',
+          {
+            column: 'date_facturation',
+            ascending: false,
+          }
+        ),
         fetchAllRows('expenses', '*', { column: 'date', ascending: false }),
         fetchAllRows('patients', 'id, nom, prenom, telephone, atcd'),
         fetchAllRows('appointments', 'id, patient_id, statut, date_heure'),
       ]);
 
       const safePatients = patData || [];
+      const safeAppointments = apptData || [];
       setPatientsList(safePatients);
-      setAppointmentsList(apptData || []);
+      setAppointmentsList(safeAppointments);
 
       const loadedClubs = await fetchPartnerClubs(supabase, safePatients);
       setPartnerClubs(loadedClubs);
 
-      if (billingData && billingData.length > 0) {
-        setBillings(billingData.filter((b) => b.statut === 'Payé'));
-        setUnpaidBillings(
-          billingData.filter(
-            (b) => b.statut === 'En attente' || b.statut === 'Impayé' || b.statut === 'Rejeté'
-          )
-        );
-      } else {
-        setBillings([]);
-        setUnpaidBillings([]);
-      }
+      const cleanBills = sanitizeBillings(billingData || [], safeAppointments);
+      setBillings(cleanBills.filter((b) => isPaidBillingStatus(b.statut)));
+      setUnpaidBillings(cleanBills.filter((b) => isUnpaidBillingStatus(b.statut)));
 
-      if (expenseData && expenseData.length > 0) {
-        setExpenses(expenseData);
-      } else {
-        setExpenses([
-          {
-            id: '1',
-            amount: 150,
-            category: 'Matériel',
-            date: new Date().toISOString(),
-            description: 'Bandes élastiques',
-          },
-          {
-            id: '2',
-            amount: 1200,
-            category: 'Loyer',
-            date: new Date(Date.now() - 86400000 * 2).toISOString(),
-            description: 'Loyer cabinet',
-          },
-          {
-            id: '3',
-            amount: 80,
-            category: 'Logiciel',
-            date: new Date(Date.now() - 86400000 * 5).toISOString(),
-            description: 'Abonnement Doctolib',
-          },
-        ]);
-      }
+      setExpenses(
+        (expenseData || []).map((e: any) => ({
+          ...e,
+          amount: roundMoney(e.amount),
+        }))
+      );
     } catch (err) {
       console.error('Error fetching financial data:', err);
     } finally {
       setLoading(false);
     }
   };
+
+  const isAdmin = userProfile?.role === 'admin';
 
   const hasPermission = (permission: string) => {
     if (!userProfile) return false;
@@ -217,7 +227,7 @@ export function Finance() {
   };
 
   // Calculate metrics based on centralized dateRange
-  const dateRange = getDateRange(dateFilter, customDate);
+  const dateRange = getDateRange(dateFilter, customDate, selectedMonths);
   const filterLabel = dateRange.label;
 
   const filteredBillingsAll = billings.filter((b) => isDateInRange(getBillDate(b), dateRange));
@@ -226,27 +236,19 @@ export function Finance() {
   const filteredUnpaidPeriodAll = unpaidBillings.filter((b) =>
     isDateInRange(getBillDate(b), dateRange)
   );
-  const displayedUnpaid = unpaidBillings.filter(matchesClubTableFilter);
+  const baseUnpaidForTable =
+    unpaidScope === 'period' && dateFilter !== 'all' ? filteredUnpaidPeriodAll : unpaidBillings;
+  const displayedUnpaid = baseUnpaidForTable.filter(matchesClubTableFilter);
 
-  const totalRecettes = filteredBillingsAll.reduce(
-    (sum, b) => sum + (Number(b.montant) || 0),
-    0
-  );
-  const totalDepenses = filteredExpenses.reduce(
-    (sum, e) => sum + (Number(e.amount) || 0),
-    0
-  );
-  const caNet = totalRecettes - totalDepenses;
+  const totalRecettes = sumMoney(filteredBillingsAll, (b) => b.montant);
+  const displayedRecettesTotal = sumMoney(filteredBillings, (b) => b.montant);
+  const totalDepenses = sumMoney(filteredExpenses, (e) => e.amount);
+  const caNet = roundMoney(totalRecettes - totalDepenses);
   const totalTransactions = filteredBillingsAll.length;
 
-  const totalUnpaidGlobal = unpaidBillings.reduce(
-    (sum, b) => sum + (Number(b.montant) || 0),
-    0
-  );
-  const totalUnpaidPeriod = filteredUnpaidPeriodAll.reduce(
-    (sum, b) => sum + (Number(b.montant) || 0),
-    0
-  );
+  const totalUnpaidGlobal = sumMoney(unpaidBillings, (b) => b.montant);
+  const totalUnpaidPeriod = sumMoney(filteredUnpaidPeriodAll, (b) => b.montant);
+  const displayedUnpaidTotal = sumMoney(displayedUnpaid, (b) => b.montant);
 
   // Accounting breakdown per Partner Sports Club
   const clubAccountingStats = useMemo(() => {
@@ -289,17 +291,18 @@ export function Finance() {
         (b) => getBillClub(b).toLowerCase() === clubKey
       );
 
-      const totalPaid = paidPeriodBills.reduce((s, b) => s + (Number(b.montant) || 0), 0);
-      const totalUnpaid = unpaidClubBills.reduce((s, b) => s + (Number(b.montant) || 0), 0);
+      const totalPaid = sumMoney(paidPeriodBills, (b) => b.montant);
+      const totalUnpaid = sumMoney(unpaidClubBills, (b) => b.montant);
 
       // Per-athlete breakdown inside this club
       const athletes = clubPatients.map((pat) => {
         const patSessions = periodAppts.filter((a) => a.patient_id === pat.id).length;
-        const patPaid = paidPeriodBills
-          .filter((b) => b.patient_id === pat.id)
-          .reduce((s, b) => s + (Number(b.montant) || 0), 0);
+        const patPaid = sumMoney(
+          paidPeriodBills.filter((b) => b.patient_id === pat.id),
+          (b) => b.montant
+        );
         const patUnpaidBills = unpaidClubBills.filter((b) => b.patient_id === pat.id);
-        const patUnpaid = patUnpaidBills.reduce((s, b) => s + (Number(b.montant) || 0), 0);
+        const patUnpaid = sumMoney(patUnpaidBills, (b) => b.montant);
 
         return {
           id: pat.id,
@@ -339,23 +342,17 @@ export function Finance() {
   ]);
 
   const clubsTotals = useMemo(() => {
-    return clubAccountingStats.reduce(
-      (acc, c) => {
-        acc.athletes += c.patientsCount;
-        acc.sessions += c.sessionsCount;
-        acc.paid += c.totalPaid;
-        acc.unpaid += c.totalUnpaid;
-        return acc;
-      },
-      { athletes: 0, sessions: 0, paid: 0, unpaid: 0 }
-    );
+    return {
+      athletes: clubAccountingStats.reduce((s, c) => s + c.patientsCount, 0),
+      sessions: clubAccountingStats.reduce((s, c) => s + c.sessionsCount, 0),
+      paid: sumMoney(clubAccountingStats, (c) => c.totalPaid),
+      unpaid: sumMoney(clubAccountingStats, (c) => c.totalUnpaid),
+    };
   }, [clubAccountingStats]);
 
   const exportToExcel = () => {
-    const data = filteredBillings.map((bill) => {
-      const date = bill.appointments?.date_heure
-        ? new Date(bill.appointments.date_heure)
-        : new Date(bill.date_facturation || new Date());
+    const rows: any[] = filteredBillings.map((bill) => {
+      const date = getBillDate(bill);
       return {
         Date: date.toLocaleDateString('fr-FR'),
         Référence: `FAC-${date.getFullYear()}-${bill.id.substring(0, 4).toUpperCase()}`,
@@ -363,11 +360,21 @@ export function Finance() {
         'Club Sportif': getBillClub(bill) || 'Particulier',
         'Nature des actes': 'Séance de kinésithérapie',
         'Mode de paiement': bill.type_paiement,
-        Montant: bill.montant,
+        'Montant (DH)': roundMoney(bill.montant),
       };
     });
 
-    const ws = XLSX.utils.json_to_sheet(data);
+    rows.push({
+      Date: 'TOTAL',
+      Référence: `${filteredBillings.length} règlement(s)`,
+      Patient: '',
+      'Club Sportif': '',
+      'Nature des actes': '',
+      'Mode de paiement': '',
+      'Montant (DH)': displayedRecettesTotal,
+    });
+
+    const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Recettes');
     XLSX.writeFile(
@@ -466,11 +473,12 @@ export function Finance() {
     e.preventDefault();
     setIsSubmitting(true);
 
+    const cleanAmount = roundMoney(newExpense.amount);
     const { data, error } = await supabase
       .from('expenses')
       .insert([
         {
-          amount: Number(newExpense.amount),
+          amount: cleanAmount,
           category: newExpense.category,
           description: newExpense.description,
           date: newExpense.date,
@@ -479,13 +487,13 @@ export function Finance() {
       .select();
 
     if (!error && data) {
-      setExpenses([data[0], ...expenses]);
+      setExpenses([{ ...data[0], amount: roundMoney(data[0].amount) }, ...expenses]);
       setIsExpenseModalOpen(false);
       setNewExpense({
         amount: '',
         category: 'Matériel',
         description: '',
-        date: new Date().toISOString().split('T')[0],
+        date: getMoroccoTodayStr(),
       });
       showNotice('success', 'Dépense enregistrée avec succès.');
     } else {
@@ -530,6 +538,87 @@ export function Finance() {
     }
   };
 
+  const openEditBillModal = (bill: any) => {
+    if (!isAdmin) return;
+    setEditingBill(bill);
+    setEditBillForm({
+      montant: String(bill.montant ?? '0'),
+      type_paiement: bill.type_paiement || 'Patient',
+      statut: bill.statut === 'En attente' || bill.statut === 'Impayé' || bill.statut === 'Rejeté' ? 'En attente' : 'Payé',
+    });
+    setConfirmDeleteBill(false);
+    setIsEditBillModalOpen(true);
+  };
+
+  const handleSaveBillEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingBill || !isAdmin) return;
+
+    const rawAmount = parseFloat(editBillForm.montant);
+    if (isNaN(rawAmount) || rawAmount < 0) {
+      showNotice('error', 'Veuillez saisir un montant valide.');
+      return;
+    }
+    const parsedAmount = roundMoney(rawAmount);
+
+    setSavingBillEdit(true);
+    try {
+      const nextStatut = editBillForm.statut === 'En attente' ? 'En attente' : 'Payé';
+      const { error: billErr } = await supabase
+        .from('billings')
+        .update({
+          montant: parsedAmount,
+          type_paiement: editBillForm.type_paiement,
+          statut: nextStatut,
+        })
+        .eq('id', editingBill.id);
+
+      if (billErr) throw billErr;
+
+      const appId =
+        editingBill.appointment_id ||
+        (editingBill.appointments && !Array.isArray(editingBill.appointments)
+          ? editingBill.appointments.id
+          : editingBill.appointments?.[0]?.id);
+
+      if (appId) {
+        await supabase
+          .from('appointments')
+          .update({ statut: nextStatut === 'Payé' ? 'Effectué' : 'Impayé' })
+          .eq('id', appId);
+      }
+
+      await fetchFinancialData();
+      setIsEditBillModalOpen(false);
+      setEditingBill(null);
+      showNotice('success', 'Règlement du patient mis à jour avec succès.');
+    } catch (err: any) {
+      showNotice('error', err.message || 'Erreur lors de la modification du règlement.');
+    } finally {
+      setSavingBillEdit(false);
+    }
+  };
+
+  const handleDeleteBillFromFinance = async () => {
+    if (!editingBill || !isAdmin) return;
+
+    setSavingBillEdit(true);
+    try {
+      const { error } = await supabase.from('billings').delete().eq('id', editingBill.id);
+      if (error) throw error;
+
+      await fetchFinancialData();
+      setIsEditBillModalOpen(false);
+      setEditingBill(null);
+      setConfirmDeleteBill(false);
+      showNotice('success', 'Règlement supprimé avec succès.');
+    } catch (err: any) {
+      showNotice('error', err.message || 'Erreur lors de la suppression du règlement.');
+    } finally {
+      setSavingBillEdit(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="p-8 flex justify-center items-center min-h-[60vh]">
@@ -549,7 +638,7 @@ export function Finance() {
             Suivez vos recettes, vos conventions clubs sportifs, vos impayés et vos dépenses.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {dateFilter === 'exact' && (
             <input
               type="date"
@@ -562,7 +651,13 @@ export function Finance() {
             <Calendar className="h-4 w-4 text-slate-400 ml-2" />
             <select
               value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setDateFilter(next);
+                if (next === 'months') {
+                  setMonthPickerTrigger((c) => c + 1);
+                }
+              }}
               className="bg-transparent border-none text-sm font-medium text-slate-700 focus:ring-0 cursor-pointer py-1 pr-8 pl-2 outline-none"
             >
               <option value="day">Aujourd'hui</option>
@@ -570,10 +665,18 @@ export function Finance() {
               <option value="7days">7 derniers jours</option>
               <option value="week">Cette semaine</option>
               <option value="month">Ce mois</option>
+              <option value="months">Plusieurs mois</option>
               <option value="year">Cette année</option>
               <option value="all">Tout le temps</option>
             </select>
           </div>
+          {dateFilter === 'months' && (
+            <MultiMonthPicker
+              selectedMonths={selectedMonths}
+              onChange={setSelectedMonths}
+              openTrigger={monthPickerTrigger}
+            />
+          )}
         </div>
       </div>
 
@@ -618,7 +721,7 @@ export function Finance() {
                   caNet >= 0 ? 'text-emerald-600' : 'text-rose-600'
                 }`}
               >
-                {caNet.toLocaleString()} DH
+                {formatMoney(caNet)} DH
               </div>
               <p className="text-xs mt-1 text-slate-500">Recettes - Dépenses</p>
             </CardContent>
@@ -635,7 +738,7 @@ export function Finance() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-slate-900">
-                {totalRecettes.toLocaleString()} DH
+                {formatMoney(totalRecettes)} DH
               </div>
               <p className="text-xs mt-1 text-slate-500">Entrées encaissées</p>
             </CardContent>
@@ -652,7 +755,7 @@ export function Finance() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-slate-900">
-                {totalDepenses.toLocaleString()} DH
+                {formatMoney(totalDepenses)} DH
               </div>
               <p className="text-xs mt-1 text-slate-500">Sorties brutes</p>
             </CardContent>
@@ -660,21 +763,21 @@ export function Finance() {
 
           <Card className="border-0 shadow-sm border-t-4 border-t-rose-500">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">Impayés</CardTitle>
+              <CardTitle className="text-sm font-medium text-slate-500">
+                Impayés (Total global)
+              </CardTitle>
               <div className="h-8 w-8 rounded-full flex items-center justify-center bg-rose-50">
                 <AlertCircle className="h-4 w-4 text-rose-600" />
               </div>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-rose-600">
-                {dateFilter === 'all'
-                  ? `${totalUnpaidGlobal.toLocaleString()} DH`
-                  : `${totalUnpaidPeriod.toLocaleString()} DH`}
+                {formatMoney(totalUnpaidGlobal)} DH
               </div>
               <p className="text-xs mt-1 text-slate-500">
                 {dateFilter === 'all'
-                  ? 'Total global à recouvrer'
-                  : `Période (${totalUnpaidGlobal.toLocaleString()} DH global)`}
+                  ? `${unpaidBillings.length} séance(s) à recouvrer`
+                  : `Dont ${formatMoney(totalUnpaidPeriod)} DH sur ${filterLabel.toLowerCase()}`}
               </p>
             </CardContent>
           </Card>
@@ -690,7 +793,7 @@ export function Finance() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-slate-900">
-                {totalTransactions.toLocaleString()}
+                {totalTransactions.toLocaleString('fr-FR')}
               </div>
               <p className="text-xs mt-1 text-slate-500">Nombre de paiements</p>
             </CardContent>
@@ -823,7 +926,7 @@ export function Finance() {
                   <TrendingUp className="h-4 w-4 text-emerald-600" />
                 </div>
                 <p className="text-2xl font-black text-emerald-700 mt-2">
-                  {clubsTotals.paid.toLocaleString()} DH
+                  {formatMoney(clubsTotals.paid)} DH
                 </p>
                 <p className="text-xs text-emerald-700/80 mt-1">Total réglé sur la période</p>
               </CardContent>
@@ -838,7 +941,7 @@ export function Finance() {
                   <AlertCircle className="h-4 w-4 text-rose-600" />
                 </div>
                 <p className="text-2xl font-black text-rose-600 mt-2">
-                  {clubsTotals.unpaid.toLocaleString()} DH
+                  {formatMoney(clubsTotals.unpaid)} DH
                 </p>
                 <p className="text-xs text-rose-700/80 mt-1">Solde global en attente</p>
               </CardContent>
@@ -929,7 +1032,7 @@ export function Finance() {
                               Encaissé ({filterLabel})
                             </p>
                             <p className="text-base font-black text-emerald-600">
-                              {clubStat.totalPaid.toLocaleString()} DH
+                              {formatMoney(clubStat.totalPaid)} DH
                             </p>
                           </div>
 
@@ -942,7 +1045,7 @@ export function Finance() {
                                 clubStat.totalUnpaid > 0 ? 'text-rose-600' : 'text-slate-500'
                               }`}
                             >
-                              {clubStat.totalUnpaid.toLocaleString()} DH
+                              {formatMoney(clubStat.totalUnpaid)} DH
                             </p>
                           </div>
 
@@ -971,7 +1074,7 @@ export function Finance() {
                               >
                                 {settlingClubName === clubStat.name
                                   ? 'Règlement...'
-                                  : `Tout régler (${clubStat.totalUnpaid} DH)`}
+                                  : `Tout régler (${formatMoney(clubStat.totalUnpaid)} DH)`}
                               </Button>
                             )}
 
@@ -1029,14 +1132,14 @@ export function Finance() {
                                         {ath.sessionsCount}
                                       </td>
                                       <td className="px-4 py-2.5 text-right font-bold text-emerald-600">
-                                        {ath.paidAmount.toLocaleString()} DH
+                                        {formatMoney(ath.paidAmount)} DH
                                       </td>
                                       <td
                                         className={`px-4 py-2.5 text-right font-bold ${
                                           ath.unpaidAmount > 0 ? 'text-rose-600' : 'text-slate-400'
                                         }`}
                                       >
-                                        {ath.unpaidAmount.toLocaleString()} DH
+                                        {formatMoney(ath.unpaidAmount)} DH
                                       </td>
                                     </tr>
                                   ))}
@@ -1062,22 +1165,55 @@ export function Finance() {
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           {activeTab === 'impayer' && hasPermission('finance_recettes') && (
             <>
-              <div className="p-4 border-b border-slate-100 bg-rose-50/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <h3 className="font-semibold text-rose-800">Séances en attente de règlement</h3>
-                <select
-                  value={clubFilterInTables}
-                  onChange={(e) => setClubFilterInTables(e.target.value)}
-                  className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none"
-                >
-                  <option value="all">Tous les patients (Clubs + Particuliers)</option>
-                  <option value="any_club">Tous les clubs conventionnés</option>
-                  <option value="no_club">Particuliers (hors clubs)</option>
-                  {clubAccountingStats.map((c) => (
-                    <option key={c.name} value={`club:${c.name}`}>
-                      Club : {c.name}
-                    </option>
-                  ))}
-                </select>
+              <div className="p-4 border-b border-slate-100 bg-rose-50/30 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h3 className="font-semibold text-rose-800">Séances en attente de règlement</h3>
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 text-xs font-bold">
+                    Total affiché : {formatMoney(displayedUnpaidTotal)} DH ({displayedUnpaid.length})
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {dateFilter !== 'all' && (
+                    <div className="inline-flex rounded-lg border border-rose-200 bg-white p-0.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setUnpaidScope('global')}
+                        className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
+                          unpaidScope === 'global'
+                            ? 'bg-rose-600 text-white'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Tous les impayés ({unpaidBillings.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setUnpaidScope('period')}
+                        className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
+                          unpaidScope === 'period'
+                            ? 'bg-rose-600 text-white'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {filterLabel} ({filteredUnpaidPeriodAll.length})
+                      </button>
+                    </div>
+                  )}
+                  <select
+                    value={clubFilterInTables}
+                    onChange={(e) => setClubFilterInTables(e.target.value)}
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none"
+                  >
+                    <option value="all">Tous les patients (Clubs + Particuliers)</option>
+                    <option value="any_club">Tous les clubs conventionnés</option>
+                    <option value="no_club">Particuliers (hors clubs)</option>
+                    {clubAccountingStats.map((c) => (
+                      <option key={c.name} value={`club:${c.name}`}>
+                        Club : {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm text-left">
@@ -1094,14 +1230,24 @@ export function Finance() {
                   <tbody className="divide-y divide-slate-100">
                     {displayedUnpaid.length > 0 ? (
                       displayedUnpaid.map((bill) => {
-                        const date = bill.appointments?.date_heure
-                          ? new Date(bill.appointments.date_heure)
-                          : new Date(bill.date_facturation || new Date());
+                        const date = getBillDate(bill);
+                        const linkedAppt = Array.isArray(bill.appointments)
+                          ? bill.appointments[0]
+                          : bill.appointments;
+                        const apptDateStr = linkedAppt?.date_heure
+                          ? parseClinicDate(linkedAppt.date_heure).toLocaleDateString('fr-FR')
+                          : null;
+                        const billDateStr = date.toLocaleDateString('fr-FR');
                         const clubName = getBillClub(bill);
                         return (
                           <tr key={bill.id} className="hover:bg-rose-50/30 transition-colors">
                             <td className="px-6 py-4 text-slate-600">
-                              {date.toLocaleDateString('fr-FR')}
+                              <div>{billDateStr}</div>
+                              {apptDateStr && apptDateStr !== billDateStr && (
+                                <div className="text-[11px] text-slate-400">
+                                  Séance du {apptDateStr}
+                                </div>
+                              )}
                             </td>
                             <td className="px-6 py-4 font-medium text-slate-900">
                               {bill.patients
@@ -1124,26 +1270,45 @@ export function Finance() {
                               </span>
                             </td>
                             <td className="px-6 py-4 text-right font-bold text-rose-600">
-                              {bill.montant} DH
+                              {formatMoney(bill.montant)} DH
                             </td>
                             <td className="px-6 py-4 text-center">
-                              <Button
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  const appId =
-                                    bill.appointment_id ||
-                                    (bill.appointments && !Array.isArray(bill.appointments)
-                                      ? bill.appointments.id
-                                      : bill.appointments?.[0]?.id);
-                                  handleSettleBilling(bill.id, appId);
-                                }}
-                                disabled={isSettling === bill.id}
-                                size="sm"
-                                className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs h-8"
-                              >
-                                {isSettling === bill.id ? '...' : 'Régler'}
-                              </Button>
+                              <div className="inline-flex items-center justify-center gap-2">
+                                <Button
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const appId =
+                                      bill.appointment_id ||
+                                      (bill.appointments && !Array.isArray(bill.appointments)
+                                        ? bill.appointments.id
+                                        : bill.appointments?.[0]?.id);
+                                    handleSettleBilling(bill.id, appId);
+                                  }}
+                                  disabled={isSettling === bill.id}
+                                  size="sm"
+                                  className="bg-emerald-500 hover:bg-emerald-600 text-white text-xs h-8"
+                                >
+                                  {isSettling === bill.id ? '...' : 'Régler'}
+                                </Button>
+                                {isAdmin && (
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      openEditBillModal(bill);
+                                    }}
+                                    className="h-8 px-2.5 text-xs border-indigo-200 text-indigo-700 hover:bg-indigo-50 gap-1"
+                                    title="Modifier le règlement (Administrateur)"
+                                  >
+                                    <Edit2 className="h-3.5 w-3.5" />
+                                    Modifier
+                                  </Button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1156,6 +1321,19 @@ export function Finance() {
                       </tr>
                     )}
                   </tbody>
+                  {displayedUnpaid.length > 0 && (
+                    <tfoot className="bg-rose-50/50 border-t-2 border-rose-100">
+                      <tr>
+                        <td colSpan={4} className="px-6 py-3.5 text-xs font-bold uppercase text-rose-900">
+                          Total des impayés affichés ({displayedUnpaid.length} séance{displayedUnpaid.length > 1 ? 's' : ''})
+                        </td>
+                        <td className="px-6 py-3.5 text-right text-base font-black text-rose-700">
+                          {formatMoney(displayedUnpaidTotal)} DH
+                        </td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             </>
@@ -1166,6 +1344,9 @@ export function Finance() {
               <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/50">
                 <div className="flex flex-wrap items-center gap-3">
                   <h3 className="font-semibold text-slate-800">Historique des Recettes</h3>
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold">
+                    Total affiché : {formatMoney(displayedRecettesTotal)} DH ({filteredBillings.length})
+                  </span>
                   <select
                     value={clubFilterInTables}
                     onChange={(e) => setClubFilterInTables(e.target.value)}
@@ -1200,19 +1381,30 @@ export function Finance() {
                       <th className="px-6 py-4 font-medium">Mode</th>
                       <th className="px-6 py-4 font-medium">Statut</th>
                       <th className="px-6 py-4 font-medium text-right">Montant</th>
+                      {isAdmin && <th className="px-6 py-4 font-medium text-right">Action</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredBillings.length > 0 ? (
                       filteredBillings.map((bill) => {
-                        const date = bill.appointments?.date_heure
-                          ? new Date(bill.appointments.date_heure)
-                          : new Date(bill.date_facturation || new Date());
+                        const date = getBillDate(bill);
+                        const linkedAppt = Array.isArray(bill.appointments)
+                          ? bill.appointments[0]
+                          : bill.appointments;
+                        const apptDateStr = linkedAppt?.date_heure
+                          ? parseClinicDate(linkedAppt.date_heure).toLocaleDateString('fr-FR')
+                          : null;
+                        const billDateStr = date.toLocaleDateString('fr-FR');
                         const clubName = getBillClub(bill);
                         return (
                           <tr key={bill.id} className="hover:bg-slate-50 transition-colors">
                             <td className="px-6 py-4 text-slate-600">
-                              {date.toLocaleDateString('fr-FR')}
+                              <div>{billDateStr}</div>
+                              {apptDateStr && apptDateStr !== billDateStr && (
+                                <div className="text-[11px] text-slate-400">
+                                  Séance du {apptDateStr}
+                                </div>
+                              )}
                             </td>
                             <td className="px-6 py-4 font-medium text-slate-900">
                               {bill.patients
@@ -1248,19 +1440,47 @@ export function Finance() {
                               </span>
                             </td>
                             <td className="px-6 py-4 text-right font-bold text-slate-900">
-                              {bill.montant} DH
+                              {formatMoney(bill.montant)} DH
                             </td>
+                            {isAdmin && (
+                              <td className="px-6 py-4 text-right">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => openEditBillModal(bill)}
+                                  className="text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 gap-1 text-xs font-semibold"
+                                  title="Modifier le règlement (Administrateur)"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                  Modifier
+                                </Button>
+                              </td>
+                            )}
                           </tr>
                         );
                       })
                     ) : (
                       <tr>
-                        <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                        <td colSpan={isAdmin ? 7 : 6} className="px-6 py-8 text-center text-slate-500">
                           Aucune recette enregistrée pour ce filtre.
                         </td>
                       </tr>
                     )}
                   </tbody>
+                  {filteredBillings.length > 0 && (
+                    <tfoot className="bg-slate-50 border-t-2 border-slate-200">
+                      <tr>
+                        <td colSpan={5} className="px-6 py-3.5 text-xs font-bold uppercase text-slate-700">
+                          Total des recettes affichées ({filteredBillings.length} règlement{filteredBillings.length > 1 ? 's' : ''})
+                        </td>
+                        <td className="px-6 py-3.5 text-right text-base font-black text-emerald-700">
+                          {formatMoney(displayedRecettesTotal)} DH
+                        </td>
+                        {isAdmin && <td />}
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             </>
@@ -1270,7 +1490,12 @@ export function Finance() {
             (hasPermission('finance_depenses_view') || hasPermission('finance_depenses_edit')) && (
               <>
                 <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                  <h3 className="font-semibold text-slate-800">Historique des Dépenses</h3>
+                  <div className="flex items-center gap-3">
+                    <h3 className="font-semibold text-slate-800">Historique des Dépenses</h3>
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-orange-50 text-orange-800 border border-orange-200 text-xs font-bold">
+                      Total : {formatMoney(totalDepenses)} DH ({filteredExpenses.length})
+                    </span>
+                  </div>
                   {hasPermission('finance_depenses_edit') && (
                     <Button
                       onClick={() => setIsExpenseModalOpen(true)}
@@ -1296,7 +1521,7 @@ export function Finance() {
                         filteredExpenses.map((expense) => (
                           <tr key={expense.id} className="hover:bg-slate-50 transition-colors">
                             <td className="px-6 py-4 text-slate-600">
-                              {new Date(expense.date).toLocaleDateString('fr-FR')}
+                              {parseClinicDate(expense.date).toLocaleDateString('fr-FR')}
                             </td>
                             <td className="px-6 py-4">
                               <span className="bg-orange-100 text-orange-700 px-2.5 py-1 rounded-md text-xs font-medium">
@@ -1305,18 +1530,30 @@ export function Finance() {
                             </td>
                             <td className="px-6 py-4 text-slate-600">{expense.description}</td>
                             <td className="px-6 py-4 text-right font-bold text-slate-900">
-                              - {expense.amount} DH
+                              - {formatMoney(expense.amount)} DH
                             </td>
                           </tr>
                         ))
                       ) : (
                         <tr>
                           <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
-                            Aucune dépense enregistrée.
+                            Aucune dépense enregistrée pour cette période.
                           </td>
                         </tr>
                       )}
                     </tbody>
+                    {filteredExpenses.length > 0 && (
+                      <tfoot className="bg-orange-50/40 border-t-2 border-orange-100">
+                        <tr>
+                          <td colSpan={3} className="px-6 py-3.5 text-xs font-bold uppercase text-orange-900">
+                            Total des dépenses ({filteredExpenses.length})
+                          </td>
+                          <td className="px-6 py-3.5 text-right text-base font-black text-orange-700">
+                            - {formatMoney(totalDepenses)} DH
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
               </>
@@ -1366,6 +1603,8 @@ export function Finance() {
               <input
                 type="number"
                 min="0"
+                step="any"
+                onWheel={(e) => e.currentTarget.blur()}
                 placeholder="Ex: 150"
                 value={newClubData.tarifConvention}
                 onChange={(e) =>
@@ -1453,8 +1692,9 @@ export function Finance() {
               type="number"
               required
               min="0"
-              step="0.01"
-              placeholder="0.00"
+              step="any"
+              onWheel={(e) => e.currentTarget.blur()}
+              placeholder="0"
               value={newExpense.amount}
               onChange={(e) => setNewExpense({ ...newExpense, amount: e.target.value })}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
@@ -1472,6 +1712,137 @@ export function Finance() {
               {isSubmitting ? 'Ajout...' : 'Ajouter la dépense'}
             </Button>
           </div>
+        </form>
+      </Modal>
+
+      {/* Modal : Modifier le règlement d'un patient (Admin uniquement) */}
+      <Modal
+        isOpen={isEditBillModalOpen && isAdmin}
+        onClose={() => {
+          if (!savingBillEdit) {
+            setIsEditBillModalOpen(false);
+            setConfirmDeleteBill(false);
+          }
+        }}
+        title="Modifier le règlement (Administrateur)"
+        maxWidth="sm"
+      >
+        <form onSubmit={handleSaveBillEdit} className="space-y-4">
+          {editingBill?.patients && (
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm">
+              <span className="text-xs font-semibold uppercase text-slate-400 block">Patient</span>
+              <span className="font-bold text-slate-900">
+                {editingBill.patients.prenom} {editingBill.patients.nom}
+              </span>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Montant (DH)</label>
+            <input
+              type="number"
+              min="0"
+              step="any"
+              onWheel={(e) => e.currentTarget.blur()}
+              required
+              value={editBillForm.montant}
+              onChange={(e) => setEditBillForm({ ...editBillForm, montant: e.target.value })}
+              className="w-full p-2.5 border border-slate-200 rounded-lg font-semibold text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Mode de paiement</label>
+            <select
+              value={editBillForm.type_paiement}
+              onChange={(e) => setEditBillForm({ ...editBillForm, type_paiement: e.target.value })}
+              className="w-full p-2.5 border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+            >
+              <option value="Patient">Direct (Patient)</option>
+              <option value="Mutuelle">Mutuelle</option>
+              <option value="Tiers-payant">Tiers-payant</option>
+              <option value="Hors nomenclature">Hors nomenclature</option>
+              <option value="Espèces">Espèces</option>
+              <option value="Carte bancaire">Carte bancaire</option>
+              <option value="Virement">Virement</option>
+              <option value="Chèque">Chèque</option>
+              {!['Patient', 'Mutuelle', 'Tiers-payant', 'Hors nomenclature', 'Espèces', 'Carte bancaire', 'Virement', 'Chèque'].includes(editBillForm.type_paiement) &&
+                editBillForm.type_paiement && (
+                  <option value={editBillForm.type_paiement}>{editBillForm.type_paiement}</option>
+                )}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Statut du règlement</label>
+            <select
+              value={editBillForm.statut}
+              onChange={(e) => setEditBillForm({ ...editBillForm, statut: e.target.value })}
+              className="w-full p-2.5 border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+            >
+              <option value="Payé">Payé (Encaissé)</option>
+              <option value="En attente">En attente / Impayé</option>
+            </select>
+          </div>
+
+          {confirmDeleteBill ? (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 space-y-2.5">
+              <p className="text-xs font-semibold text-rose-800">
+                Confirmer la suppression définitive de ce règlement ?
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={savingBillEdit}
+                  onClick={handleDeleteBillFromFinance}
+                  className="bg-rose-600 hover:bg-rose-700 text-white text-xs"
+                >
+                  {savingBillEdit ? 'Suppression...' : 'Oui, supprimer'}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={savingBillEdit}
+                  onClick={() => setConfirmDeleteBill(false)}
+                  className="text-xs"
+                >
+                  Annuler
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-3 pt-4 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={savingBillEdit}
+                onClick={() => setConfirmDeleteBill(true)}
+                className="text-rose-600 hover:bg-rose-50 hover:text-rose-700 gap-1.5 text-xs"
+              >
+                <Trash2 className="h-4 w-4" />
+                Supprimer
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={savingBillEdit}
+                  onClick={() => setIsEditBillModalOpen(false)}
+                >
+                  Fermer
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={savingBillEdit}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                >
+                  {savingBillEdit ? 'Enregistrement...' : 'Enregistrer'}
+                </Button>
+              </div>
+            </div>
+          )}
         </form>
       </Modal>
     </div>
