@@ -30,12 +30,15 @@ export function NotificationCenter() {
     approveRequest,
     rejectRequest,
     latestNotification,
-    clearLatestNotification
+    clearLatestNotification,
+    actionError,
+    clearActionError
   } = useAppointmentNotifications();
 
   const [isOpen, setIsOpen] = useState(false);
   const [filterType, setFilterType] = useState<'all' | 'nouveau' | 'changement'>('all');
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [confirmRejectId, setConfirmRejectId] = useState<string | null>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -59,15 +62,16 @@ export function NotificationCenter() {
   });
 
   const handleApprove = async (req: AppointmentRequest) => {
+    setConfirmRejectId(null);
     setActionLoadingId(req.id);
     await approveRequest(req);
     setActionLoadingId(null);
   };
 
   const handleReject = async (req: AppointmentRequest) => {
-    if (!confirm(`Refuser la demande de ${req.patient_name} ?`)) return;
     setActionLoadingId(req.id);
     await rejectRequest(req);
+    setConfirmRejectId(null);
     setActionLoadingId(null);
   };
 
@@ -195,6 +199,22 @@ export function NotificationCenter() {
                 }`}
               >
                 Reports ({getChangementCount})
+              </button>
+            </div>
+          )}
+
+          {actionError && (
+            <div className="px-3 py-2 bg-rose-50 border-b border-rose-200 text-rose-700 text-xs flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                <span>{actionError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={clearActionError}
+                className="text-rose-500 hover:text-rose-800 p-0.5"
+              >
+                <X className="h-3.5 w-3.5" />
               </button>
             </div>
           )}
@@ -331,29 +351,53 @@ export function NotificationCenter() {
                       </a>
 
                       <div className="flex items-center gap-1.5">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={isBusy}
-                          onClick={() => handleReject(req)}
-                          className="h-7 px-2 text-xs border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300"
-                        >
-                          <X className="h-3.5 w-3.5 mr-1" /> Refuser
-                        </Button>
+                        {confirmRejectId === req.id ? (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={isBusy}
+                              onClick={() => setConfirmRejectId(null)}
+                              className="h-7 px-2 text-xs text-slate-600 hover:bg-slate-100"
+                            >
+                              Annuler
+                            </Button>
+                            <Button
+                              size="sm"
+                              disabled={isBusy}
+                              onClick={() => handleReject(req)}
+                              className="h-7 px-2.5 text-xs bg-red-600 hover:bg-red-700 text-white"
+                            >
+                              {isBusy ? 'Refus...' : 'Confirmer refus'}
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={isBusy}
+                              onClick={() => setConfirmRejectId(req.id)}
+                              className="h-7 px-2 text-xs border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300"
+                            >
+                              <X className="h-3.5 w-3.5 mr-1" /> Refuser
+                            </Button>
 
-                        <Button
-                          size="sm"
-                          disabled={isBusy}
-                          onClick={() => handleApprove(req)}
-                          className={`h-7 px-2.5 text-xs text-white shadow-xs ${
-                            isChange 
-                              ? 'bg-purple-600 hover:bg-purple-700' 
-                              : 'bg-emerald-600 hover:bg-emerald-700'
-                          }`}
-                        >
-                          <Check className="h-3.5 w-3.5 mr-1" />
-                          {isBusy ? 'Validation...' : isChange ? 'Valider report' : 'Confirmer RDV'}
-                        </Button>
+                            <Button
+                              size="sm"
+                              disabled={isBusy}
+                              onClick={() => handleApprove(req)}
+                              className={`h-7 px-2.5 text-xs text-white shadow-xs ${
+                                isChange 
+                                  ? 'bg-purple-600 hover:bg-purple-700' 
+                                  : 'bg-emerald-600 hover:bg-emerald-700'
+                              }`}
+                            >
+                              <Check className="h-3.5 w-3.5 mr-1" />
+                              {isBusy ? 'Validation...' : isChange ? 'Valider report' : 'Confirmer RDV'}
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>

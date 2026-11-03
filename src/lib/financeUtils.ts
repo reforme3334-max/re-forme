@@ -83,10 +83,12 @@ export function sumMoney<T = any>(
  */
 export function formatMoney(value: unknown): string {
   const clean = roundMoney(value);
-  return clean.toLocaleString('fr-FR', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
+  return clean
+    .toLocaleString('fr-FR', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    })
+    .replace(/[\u202F\u00A0\u2009\u2007]/g, ' ');
 }
 
 export function isPaidBillingStatus(statut: string | null | undefined): boolean {

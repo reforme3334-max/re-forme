@@ -5,7 +5,7 @@ export const supabaseAnonKey = 'sb_publishable_4auIo4JL0y9_1eYR0ZiRnw_zkH6iQGJ';
 
 const AUTH_STORAGE_KEY = 'sb-tcoetmkdirgvweqvrdzn-auth-token';
 
-function clearStoredAuthSession() {
+export function clearStoredAuthSession() {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -145,7 +145,11 @@ const resilientFetch: typeof fetch = async (input, init) => {
 
       if (isRefreshRequest && (response.status === 400 || response.status === 401 || response.status === 403)) {
         clearStoredAuthSession();
-        if (typeof window !== 'undefined' && window.location.hash !== '#login') {
+        if (
+          typeof window !== 'undefined' &&
+          window.location.hash !== '#login' &&
+          !window.location.hash.includes('type=recovery')
+        ) {
           window.location.hash = 'login';
         }
       }
@@ -172,6 +176,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
+    lock: async (_name, _acquireTimeout, fn) => await fn(),
   },
   global: {
     fetch: resilientFetch,

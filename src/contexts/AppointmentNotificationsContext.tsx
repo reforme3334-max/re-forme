@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { playNotificationChime } from '../lib/audio';
+import { toClinicIsoString } from '../lib/timeUtils';
 
 export interface AppointmentRequest {
   id: string;
@@ -29,6 +30,8 @@ interface AppointmentNotificationsContextType {
   rejectRequest: (request: AppointmentRequest) => Promise<boolean>;
   latestNotification: AppointmentRequest | null;
   clearLatestNotification: () => void;
+  actionError: string | null;
+  clearActionError: () => void;
 }
 
 const AppointmentNotificationsContext = createContext<AppointmentNotificationsContextType | undefined>(undefined);
@@ -38,6 +41,7 @@ export function AppointmentNotificationsProvider({ children }: { children: React
   const [loading, setLoading] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [latestNotification, setLatestNotification] = useState<AppointmentRequest | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   
   const prevCountRef = useRef<number>(0);
   const isInitialLoad = useRef<boolean>(true);
@@ -186,18 +190,19 @@ export function AppointmentNotificationsProvider({ children }: { children: React
   };
 
   const approveRequest = async (request: AppointmentRequest): Promise<boolean> => {
+    setActionError(null);
     try {
-      let updatePayload: any = {
+      const updatePayload: any = {
         statut: 'Programmé'
       };
 
       if (request.type === 'changement_rdv' && request.requested_date) {
-        // Construct the new ISO string
-        let newDateStr = request.requested_date;
-        let newTimeStr = request.requested_time || '10:00';
-        // Clean formats
-        if (newTimeStr.length === 5) newTimeStr += ':00';
-        updatePayload.date_heure = `${newDateStr}T${newTimeStr}`;
+        const newDateStr = request.requested_date.trim();
+        const rawTime = (request.requested_time || '10:00').trim();
+        const hm = rawTime.slice(0, 5);
+        updatePayload.date_heure = /^\d{4}-\d{2}-\d{2}$/.test(newDateStr)
+          ? toClinicIsoString(newDateStr, /^\d{2}:\d{2}$/.test(hm) ? hm : '10:00')
+          : `${newDateStr}T${rawTime.length === 5 ? rawTime + ':00' : rawTime}`;
         updatePayload.notes_seance = `Report validé le ${new Date().toLocaleDateString('fr-FR')} - ${request.motif || 'Séance de suivi'}`;
       } else {
         updatePayload.notes_seance = `Confirmé par le secrétariat - ${request.motif || 'Consultation'}`;
@@ -216,12 +221,13 @@ export function AppointmentNotificationsProvider({ children }: { children: React
       return true;
     } catch (err: any) {
       console.error('Erreur lors de l’approbation de la demande:', err.message);
-      alert("Erreur lors de l'approbation : " + err.message);
+      setActionError("Erreur lors de l'approbation : " + (err.message || 'Erreur réseau'));
       return false;
     }
   };
 
   const rejectRequest = async (request: AppointmentRequest): Promise<boolean> => {
+    setActionError(null);
     try {
       const { error } = await supabase
         .from('appointments')
@@ -238,13 +244,17 @@ export function AppointmentNotificationsProvider({ children }: { children: React
       return true;
     } catch (err: any) {
       console.error('Erreur lors du refus de la demande:', err.message);
-      alert("Erreur lors de l'annulation : " + err.message);
+      setActionError("Erreur lors de l'annulation : " + (err.message || 'Erreur réseau'));
       return false;
     }
   };
 
   const clearLatestNotification = () => {
     setLatestNotification(null);
+  };
+
+  const clearActionError = () => {
+    setActionError(null);
   };
 
   return (
@@ -259,7 +269,9 @@ export function AppointmentNotificationsProvider({ children }: { children: React
         approveRequest,
         rejectRequest,
         latestNotification,
-        clearLatestNotification
+        clearLatestNotification,
+        actionError,
+        clearActionError
       }}
     >
       {children}

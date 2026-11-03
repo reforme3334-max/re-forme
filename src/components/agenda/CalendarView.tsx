@@ -419,9 +419,12 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
       if (isReport) {
         const dateMatch = selectedAppointment.notes_seance.match(/Date souhaitée:\s*([^\s|]+)\s*(?:à|a)?\s*([^\s|]+)?/i);
         if (dateMatch && dateMatch[1]) {
-          const reqDate = dateMatch[1];
-          const reqTime = dateMatch[2] || '10:00';
-          updatePayload.date_heure = `${reqDate}T${reqTime.length === 5 ? reqTime + ':00' : reqTime}`;
+          const reqDate = dateMatch[1].trim();
+          const rawTime = (dateMatch[2] || '10:00').trim();
+          const hm = rawTime.slice(0, 5);
+          updatePayload.date_heure = /^\d{4}-\d{2}-\d{2}$/.test(reqDate)
+            ? toClinicIsoString(reqDate, /^\d{2}:\d{2}$/.test(hm) ? hm : '10:00')
+            : `${reqDate}T${rawTime.length === 5 ? rawTime + ':00' : rawTime}`;
         }
         updatePayload.notes_seance = `Report validé (${selectedAppointment.notes_seance.replace(/\[DEMANDE_REPORT\]/g, '').trim()})`;
       } else {

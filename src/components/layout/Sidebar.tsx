@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, CalendarDays, Users, FileText, Settings, X, User, Activity } from 'lucide-react';
+import { LayoutDashboard, CalendarDays, Users, FileText, Settings, X, User, Activity, LogOut } from 'lucide-react';
 import { Button } from '../ui/button';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase, clearStoredAuthSession } from '../../lib/supabaseClient';
 import { useAppointmentNotifications } from '../../contexts/AppointmentNotificationsContext';
-import { parseCollaboratorProfile, resolveOrBindCollaboratorSession } from '../../lib/teamUtils';
+import { isPrimaryAdminEmail, parseCollaboratorProfile, resolveOrBindCollaboratorSession } from '../../lib/teamUtils';
 
 interface SidebarProps {
   onClose: () => void;
@@ -21,9 +21,9 @@ export function Sidebar({ onClose }: SidebarProps) {
     const handleProfileUpdated = () => fetchUserProfile();
     window.addEventListener('hashchange', handleHashChange);
     window.addEventListener('reforme-team-updated', handleProfileUpdated);
-    
+
     fetchUserProfile();
-    
+
     return () => {
       window.removeEventListener('hashchange', handleHashChange);
       window.removeEventListener('reforme-team-updated', handleProfileUpdated);
@@ -37,10 +37,27 @@ export function Sidebar({ onClose }: SidebarProps) {
         id: session.user.id,
         email: session.user.email,
       });
-      if (data) {
-        setUserProfile(parseCollaboratorProfile(data, [], session.user));
+      if (data && !data.__transientError && !data.__blocked) {
+        const effRole = isPrimaryAdminEmail(session.user.email) ? 'admin' : data.role;
+        setUserProfile(parseCollaboratorProfile({ ...data, role: effRole }, [], session.user));
+      } else if (isPrimaryAdminEmail(session.user.email)) {
+        setUserProfile({
+          role: 'admin',
+          name: 'Administrateur',
+          email: session.user.email,
+          permissions: [],
+        });
       }
     }
+  };
+
+  const handleLogout = async () => {
+    try {
+      sessionStorage.removeItem('reforme_portal_patient_phone');
+    } catch {}
+    clearStoredAuthSession();
+    await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+    window.location.hash = 'login';
   };
 
   const hasPermission = (permission: string) => {
@@ -59,6 +76,15 @@ export function Sidebar({ onClose }: SidebarProps) {
     { icon: Settings, label: 'Paramètres', href: '#settings', show: hasPermission('settings') },
   ];
 
+  const roleDisplayName =
+    userProfile?.role === 'admin'
+      ? 'Administrateur'
+      : userProfile?.role === 'secretaire'
+      ? 'Secrétariat'
+      : userProfile?.role === 'therapeute'
+      ? 'Thérapeute'
+      : 'Chargement...';
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 items-center justify-between px-6 border-b border-slate-200">
@@ -74,15 +100,16 @@ export function Sidebar({ onClose }: SidebarProps) {
         <nav className="space-y-1 px-3">
           {navItems.filter(item => item.show).map((item) => {
             const Icon = item.icon;
-            const isActive = currentHash.startsWith(item.href) || 
+            const isActive = currentHash.startsWith(item.href) ||
                              (currentHash === '#patient-detail' && item.href === '#patients');
             return (
               <a
                 key={item.label}
                 href={item.href}
+                onClick={onClose}
                 className={`flex items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
-                  isActive 
-                    ? 'bg-primary-50 text-primary-700' 
+                  isActive
+                    ? 'bg-primary-50 text-primary-700'
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
@@ -101,18 +128,28 @@ export function Sidebar({ onClose }: SidebarProps) {
         </nav>
       </div>
 
-      <div className="border-t border-slate-200 p-4">
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold">
+      <div className="border-t border-slate-200 p-4 space-y-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold flex-shrink-0">
             {userProfile?.role === 'admin' ? 'AD' : userProfile?.role === 'secretaire' ? 'SE' : 'TH'}
           </div>
-          <div>
-            <p className="text-sm font-medium text-slate-900">
-              {userProfile?.role === 'admin' ? 'Administrateur' : userProfile?.role === 'secretaire' ? 'Secrétariat' : 'Thérapeute'}
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-slate-900 truncate">
+              {userProfile?.name || roleDisplayName}
             </p>
-            <p className="text-xs text-slate-500 capitalize">{userProfile?.role || 'Chargement...'}</p>
+            <p className="text-xs text-slate-500 truncate">
+              {userProfile?.email || roleDisplayName}
+            </p>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="w-full flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-rose-50 hover:border-rose-200 hover:text-rose-700 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors cursor-pointer"
+        >
+          <LogOut className="h-3.5 w-3.5" />
+          Se déconnecter
+        </button>
       </div>
     </div>
   );

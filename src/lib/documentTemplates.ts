@@ -662,12 +662,46 @@ function getBottomReservedMm(config: DocumentTemplatesConfig): number {
   return isA5 ? 14 : 20;
 }
 
+/**
+ * Nettoie une chaîne destinée à jsPDF (polices standard Type1 Latin-1/WinAnsi)
+ * afin d'éviter la corruption des espaces insécables étroits (\u202F -> '/') et des caractères hors table.
+ */
+export function sanitizePdfText(input: unknown): string {
+  if (input === null || input === undefined) return '';
+  return String(input)
+    .replace(/[\u202F\u00A0\u2009\u2007\u2002\u2003]/g, ' ')
+    .replace(/[\u2018\u2019\u02BC]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014\u2212]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/\u2022/g, '·')
+    .replace(/\u0153/g, 'oe')
+    .replace(/\u0152/g, 'OE')
+    .replace(/\u20AC/g, 'EUR')
+    // Strip any remaining code points outside Latin-1 (0x00 - 0xFF) so jsPDF never corrupts byte streams
+    .replace(/[^\x00-\xFF]/g, '');
+}
+
+function stripAppointmentSystemTags(notes: unknown): string {
+  if (typeof notes !== 'string' || !notes) return '';
+  let clean = notes;
+  if (clean.includes('||TH_ID:')) {
+    const m = clean.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
+    if (m) {
+      clean = m[2];
+    }
+  }
+  return clean.replace(/\[DEMANDE[^\]]*\]/gi, '').trim();
+}
+
 function renderPdfHeader(
   doc: jsPDF,
   config: DocumentTemplatesConfig,
-  docTitle: string,
-  docSubMetaLines: string[]
+  rawDocTitle: string,
+  rawDocSubMetaLines: string[]
 ): number {
+  const docTitle = sanitizePdfText(rawDocTitle);
+  const docSubMetaLines = rawDocSubMetaLines.map((l) => sanitizePdfText(l));
   const pageWidth = doc.internal.pageSize.getWidth();
   const isA5 = isA5Format(config);
   const margin = getMarginMm(config.layout.marginSize, config.layout.pageFormat);
@@ -721,12 +755,17 @@ function renderPdfHeader(
     return dividerY + (isA5 ? 4 : 6);
   }
 
+  const clinicName = sanitizePdfText(h.clinicName || 'Re Forme Center');
+  const clinicSubtitle = sanitizePdfText(h.clinicSubtitle);
+  const practitionerLine = sanitizePdfText(h.practitionerLine);
   const contactParts = [
     h.address?.trim(),
     h.phone?.trim() ? `Tél : ${h.phone.trim()}` : '',
     h.email?.trim(),
     h.iceOrInpe?.trim(),
-  ].filter(Boolean);
+  ]
+    .filter(Boolean)
+    .map((c) => sanitizePdfText(c));
 
   const hasLogo = Boolean(h.showLogo && h.logoDataUrl && h.logoDataUrl.startsWith('data:image'));
 
@@ -755,10 +794,10 @@ function renderPdfHeader(
     } else {
       doc.setTextColor(255, 255, 255);
     }
-    doc.text(h.clinicName || 'Re Forme Center', textLeft, isA5 ? 10.5 : 13);
+    doc.text(clinicName, textLeft, isA5 ? 10.5 : 13);
 
     let leftY = isA5 ? 15 : 19;
-    if (h.clinicSubtitle) {
+    if (clinicSubtitle) {
       doc.setFont(font, 'normal');
       doc.setFontSize(isA5 ? 7.6 : 9.5);
       if (colorless) {
@@ -766,16 +805,16 @@ function renderPdfHeader(
       } else {
         doc.setTextColor(240, 253, 250);
       }
-      doc.text(h.clinicSubtitle, textLeft, leftY);
+      doc.text(clinicSubtitle, textLeft, leftY);
       leftY += isA5 ? 3.8 : 5;
     }
-    if (h.practitionerLine) {
+    if (practitionerLine) {
       doc.setFont(font, colorless ? 'bold' : 'normal');
       doc.setFontSize(isA5 ? 7 : 8.5);
       if (colorless) {
         doc.setTextColor(51, 65, 85);
       }
-      doc.text(h.practitionerLine, textLeft, leftY);
+      doc.text(practitionerLine, textLeft, leftY);
       leftY += isA5 ? 3.6 : 4.5;
     }
     if (contactParts.length > 0) {
@@ -784,7 +823,7 @@ function renderPdfHeader(
       if (colorless) {
         doc.setTextColor(100, 116, 139);
       }
-      doc.text(contactParts.join('  •  '), textLeft, Math.min(leftY, bannerHeight - 3.5));
+      doc.text(contactParts.join('  ·  '), textLeft, Math.min(leftY, bannerHeight - 3.5));
     }
 
     doc.setFont(font, 'bold');
@@ -833,28 +872,28 @@ function renderPdfHeader(
     doc.setFont(font, 'bold');
     doc.setFontSize(isA5 ? 13 : 17);
     doc.setTextColor(accent[0], accent[1], accent[2]);
-    doc.text(h.clinicName || 'Re Forme Center', centerX, curY, { align: 'center' });
+    doc.text(clinicName, centerX, curY, { align: 'center' });
     curY += isA5 ? 4.3 : 5.5;
 
-    if (h.clinicSubtitle) {
+    if (clinicSubtitle) {
       doc.setFont(font, 'normal');
       doc.setFontSize(isA5 ? 8 : 10);
       doc.setTextColor(71, 85, 105);
-      doc.text(h.clinicSubtitle, centerX, curY, { align: 'center' });
+      doc.text(clinicSubtitle, centerX, curY, { align: 'center' });
       curY += isA5 ? 3.8 : 5;
     }
-    if (h.practitionerLine) {
+    if (practitionerLine) {
       doc.setFont(font, 'bold');
       doc.setFontSize(isA5 ? 7.4 : 9);
       doc.setTextColor(51, 65, 85);
-      doc.text(h.practitionerLine, centerX, curY, { align: 'center' });
+      doc.text(practitionerLine, centerX, curY, { align: 'center' });
       curY += isA5 ? 3.6 : 4.5;
     }
     if (contactParts.length > 0) {
       doc.setFont(font, 'normal');
       doc.setFontSize(isA5 ? 6.8 : 8.5);
       doc.setTextColor(100, 116, 139);
-      doc.text(contactParts.join('  •  '), centerX, curY, { align: 'center' });
+      doc.text(contactParts.join('  ·  '), centerX, curY, { align: 'center' });
       curY += isA5 ? 3.8 : 5;
     }
 
@@ -898,21 +937,21 @@ function renderPdfHeader(
   doc.setFont(font, 'bold');
   doc.setFontSize(isA5 ? 12.5 : 16);
   doc.setTextColor(accent[0], accent[1], accent[2]);
-  doc.text(h.clinicName || 'Re Forme Center', leftX, curLeftY);
+  doc.text(clinicName, leftX, curLeftY);
   curLeftY += isA5 ? 4.2 : 5.5;
 
-  if (h.clinicSubtitle) {
+  if (clinicSubtitle) {
     doc.setFont(font, 'normal');
     doc.setFontSize(isA5 ? 7.8 : 9.5);
     doc.setTextColor(71, 85, 105);
-    doc.text(h.clinicSubtitle, leftX, curLeftY);
+    doc.text(clinicSubtitle, leftX, curLeftY);
     curLeftY += isA5 ? 3.6 : 4.5;
   }
-  if (h.practitionerLine) {
+  if (practitionerLine) {
     doc.setFont(font, 'bold');
     doc.setFontSize(isA5 ? 7.2 : 8.5);
     doc.setTextColor(51, 65, 85);
-    doc.text(h.practitionerLine, leftX, curLeftY);
+    doc.text(practitionerLine, leftX, curLeftY);
     curLeftY += isA5 ? 3.5 : 4.5;
   }
   for (const part of contactParts) {
@@ -999,7 +1038,7 @@ function renderPatientCardPdf(
     doc.setFont(font, idx === 0 ? 'bold' : 'normal');
     doc.setFontSize(idx === 0 ? (isA5 ? 9 : 10.5) : isA5 ? 7.6 : 9);
     doc.setTextColor(idx === 0 ? 15 : 71, idx === 0 ? 23 : 85, idx === 0 ? 42 : 105);
-    doc.text(line, margin + padH, ly);
+    doc.text(sanitizePdfText(line), margin + padH, ly);
     ly += lineStep;
   });
 
@@ -1008,7 +1047,7 @@ function renderPatientCardPdf(
     doc.setFont(font, 'normal');
     doc.setFontSize(isA5 ? 7.6 : 9);
     doc.setTextColor(71, 85, 105);
-    doc.text(line, pageWidth - margin - padH, ry, { align: 'right' });
+    doc.text(sanitizePdfText(line), pageWidth - margin - padH, ry, { align: 'right' });
     ry += lineStep;
   });
 
@@ -1032,9 +1071,10 @@ function renderSignatureAndFootersPdf(
   const bottomReserved = getBottomReservedMm(config);
   const contentWidth = pageWidth - margin * 2;
 
+  const cleanNoteAbove = sanitizePdfText(noteAboveSignatures);
   const wrappedNote: string[] =
-    noteAboveSignatures && noteAboveSignatures.trim()
-      ? doc.splitTextToSize(noteAboveSignatures.trim(), contentWidth)
+    cleanNoteAbove && cleanNoteAbove.trim()
+      ? doc.splitTextToSize(cleanNoteAbove.trim(), contentWidth)
       : [];
   const noteLineStep = isA5 ? 3.6 : 4.2;
   const noteBlockH = wrappedNote.length > 0 ? wrappedNote.length * noteLineStep + (isA5 ? 2.5 : 4) : 0;
@@ -1069,7 +1109,7 @@ function renderSignatureAndFootersPdf(
       doc.setFontSize(isA5 ? 7.2 : 8.5);
       doc.setTextColor(71, 85, 105);
       doc.text(
-        f.patientSignatureLabel || 'Signature du Patient',
+        sanitizePdfText(f.patientSignatureLabel || 'Signature du Patient'),
         margin + boxW / 2,
         curY + (isA5 ? 4.2 : 5),
         { align: 'center', maxWidth: boxW - 3 }
@@ -1085,7 +1125,7 @@ function renderSignatureAndFootersPdf(
       doc.setFontSize(isA5 ? 7.2 : 8.5);
       doc.setTextColor(71, 85, 105);
       doc.text(
-        f.signatureLabel || 'Cachet et Signature',
+        sanitizePdfText(f.signatureLabel || 'Cachet et Signature'),
         rightX + boxW / 2,
         curY + (isA5 ? 4.2 : 5),
         { align: 'center', maxWidth: boxW - 3 }
@@ -1113,13 +1153,13 @@ function renderSignatureAndFootersPdf(
       doc.setTextColor(100, 116, 139);
 
       if (f.footerLine1?.trim()) {
-        doc.text(f.footerLine1.trim(), pageWidth / 2, footerTop + (isA5 ? 3.8 : 4.5), {
+        doc.text(sanitizePdfText(f.footerLine1.trim()), pageWidth / 2, footerTop + (isA5 ? 3.8 : 4.5), {
           align: 'center',
           maxWidth: footerMaxW,
         });
       }
       if (f.footerLine2?.trim()) {
-        doc.text(f.footerLine2.trim(), pageWidth / 2, footerTop + (isA5 ? 7 : 8.5), {
+        doc.text(sanitizePdfText(f.footerLine2.trim()), pageWidth / 2, footerTop + (isA5 ? 7 : 8.5), {
           align: 'center',
           maxWidth: footerMaxW,
         });
@@ -1240,8 +1280,8 @@ export function exportPatientInvoicePDF(
   autoTable(doc, {
     startY: curY,
     margin: { left: margin, right: margin, top: topReserved, bottom: bottomReserved },
-    head,
-    body,
+    head: head.map((r) => r.map((c) => sanitizePdfText(c))),
+    body: body.map((r) => r.map((c) => sanitizePdfText(c))),
     theme: config.layout.tableTheme,
     styles: {
       font,
@@ -1299,7 +1339,7 @@ export function exportPatientInvoicePDF(
   doc.text('Total Facturé :', summaryX + sumPadX, sy);
   doc.setFont(font, 'bold');
   doc.setTextColor(15, 23, 42);
-  doc.text(`${formatMoney(totalBilled)} DH`, summaryX + summaryW - sumPadX, sy, { align: 'right' });
+  doc.text(sanitizePdfText(`${formatMoney(totalBilled)} DH`), summaryX + summaryW - sumPadX, sy, { align: 'right' });
 
   sy += sumStep;
   doc.setFont(font, 'normal');
@@ -1307,7 +1347,7 @@ export function exportPatientInvoicePDF(
   doc.text('Total Réglé :', summaryX + sumPadX, sy);
   doc.setFont(font, 'bold');
   doc.setTextColor(accent[0], accent[1], accent[2]);
-  doc.text(`${formatMoney(totalPaid)} DH`, summaryX + summaryW - sumPadX, sy, { align: 'right' });
+  doc.text(sanitizePdfText(`${formatMoney(totalPaid)} DH`), summaryX + summaryW - sumPadX, sy, { align: 'right' });
 
   if (showUnpaidLine) {
     sy += sumStep;
@@ -1322,7 +1362,7 @@ export function exportPatientInvoicePDF(
     if (colorless) {
       doc.setTextColor(15, 23, 42);
     }
-    doc.text(`${formatMoney(totalUnpaid)} DH`, summaryX + summaryW - sumPadX, sy, { align: 'right' });
+    doc.text(sanitizePdfText(`${formatMoney(totalUnpaid)} DH`), summaryX + summaryW - sumPadX, sy, { align: 'right' });
   }
 
   renderSignatureAndFootersPdf(
@@ -1521,18 +1561,12 @@ export function exportCareCalendarPDF(
 
   const bodyRows = filteredAppts.map((app, index) => {
     const dt = parseClinicDate(app.date_heure);
-    let cleanNote = app.notes_seance || '';
-    if (cleanNote.includes('||TH_ID:')) {
-      const m = cleanNote.match(/\|\|TH_ID:([a-f0-9-]+)\|\|(.*)/s);
-      if (m) {
-        cleanNote = m[2];
-      }
-    }
+    const cleanNote = stripAppointmentSystemTags(app.notes_seance);
 
     const row: string[] = [
       String(index + 1),
       dt.toLocaleDateString('fr-FR'),
-      cleanNote.trim() || cal.defaultSessionLabel || 'Séance de suivi',
+      cleanNote || cal.defaultSessionLabel || 'Séance de suivi',
     ];
     if (cal.includePlannedSessions) {
       row.push(app.statut === 'Effectué' ? 'Effectuée' : 'Programmée');
@@ -1540,7 +1574,7 @@ export function exportCareCalendarPDF(
     if (cal.showSignatureColumn) {
       row.push('');
     }
-    return row;
+    return row.map((c) => sanitizePdfText(c));
   });
 
   autoTable(doc, {
@@ -1551,7 +1585,7 @@ export function exportCareCalendarPDF(
       top: getTopReservedMm(config),
       bottom: getBottomReservedMm(config),
     },
-    head: [headRow],
+    head: [headRow.map((c) => sanitizePdfText(c))],
     body:
       bodyRows.length > 0
         ? bodyRows
@@ -1646,6 +1680,8 @@ export function exportPatientReceiptPDF(
 
   curY = renderPatientCardPdf(doc, config, patient, curY);
 
+  const cleanReceiptNote = stripAppointmentSystemTags(appointment?.notes_seance);
+
   autoTable(doc, {
     startY: curY,
     margin: {
@@ -1654,14 +1690,14 @@ export function exportPatientReceiptPDF(
       top: getTopReservedMm(config),
       bottom: getBottomReservedMm(config),
     },
-    head: [['Date de la séance', 'Nature des soins', 'Mode de règlement', 'Montant Réglé']],
+    head: [['Date de la séance', 'Nature des soins', 'Mode de règlement', 'Montant Réglé'].map((c) => sanitizePdfText(c))],
     body: [
       [
         sessionDate,
-        appointment?.notes_seance || config.invoice.defaultActLabel || 'Soins de kinésithérapie',
+        cleanReceiptNote || config.invoice.defaultActLabel || 'Soins de kinésithérapie',
         billing?.type_paiement || 'Direct',
         `${formatMoney(billing?.montant)} DH`,
-      ],
+      ].map((c) => sanitizePdfText(c)),
     ],
     theme: config.layout.tableTheme,
     styles: {

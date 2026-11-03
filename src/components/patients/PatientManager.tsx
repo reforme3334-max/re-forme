@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase, supabaseUrl, supabaseAnonKey } from '@/lib/supabaseClient';
 import { fetchAllRows } from '@/lib/financeUtils';
 import { getMoroccoNow, parseClinicDate } from '@/lib/timeUtils';
+import { normalizePatientPhone, provisionOrResetPatientAccess } from '@/lib/patientAuthUtils';
 import {
   ORGANISMES_MUTUELLE,
   SPORTS_DISCIPLINES,
@@ -34,6 +35,9 @@ import {
   CheckSquare,
   Square,
   X,
+  Key,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import Papa from 'papaparse';
@@ -135,6 +139,76 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [patientToDelete, setPatientToDelete] = useState<Patient | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // Quick Patient Access / Password Reset Modal states
+  const [isQuickAccessModalOpen, setIsQuickAccessModalOpen] = useState(false);
+  const [patientForAccess, setPatientForAccess] = useState<Patient | null>(null);
+  const [quickAccessPassword, setQuickAccessPassword] = useState('');
+  const [showQuickAccessPassword, setShowQuickAccessPassword] = useState(true);
+  const [quickAccessLoading, setQuickAccessLoading] = useState(false);
+  const [quickAccessMessage, setQuickAccessMessage] = useState<{ type: '' | 'success' | 'error'; text: string }>({
+    type: '',
+    text: '',
+  });
+
+  const openQuickAccessModal = (patient: Patient) => {
+    setPatientForAccess(patient);
+    setQuickAccessPassword('');
+    setShowQuickAccessPassword(true);
+    setQuickAccessMessage({ type: '', text: '' });
+    setIsQuickAccessModalOpen(true);
+  };
+
+  const handleQuickGenerateAccess = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!patientForAccess) return;
+    if (!patientForAccess.telephone) {
+      setQuickAccessMessage({
+        type: 'error',
+        text: 'Ce patient doit avoir un numéro de téléphone renseigné pour activer son accès.',
+      });
+      return;
+    }
+
+    setQuickAccessLoading(true);
+    setQuickAccessMessage({ type: '', text: '' });
+
+    try {
+      const result = await provisionOrResetPatientAccess(
+        supabase,
+        supabaseUrl,
+        supabaseAnonKey,
+        { id: patientForAccess.id, telephone: patientForAccess.telephone },
+        quickAccessPassword
+      );
+
+      const normTarget = result.canonicalPhone;
+      setPatients((prev) =>
+        prev.map((p) => {
+          const pNorm = normalizePatientPhone(p.telephone || '');
+          if (p.id === patientForAccess.id || (normTarget && pNorm === normTarget)) {
+            return { ...p, has_access: true };
+          }
+          return p;
+        })
+      );
+      setPatientForAccess((prev) => (prev ? { ...prev, has_access: true } : null));
+      setQuickAccessPassword('');
+      setQuickAccessMessage({
+        type: 'success',
+        text: result.isReset
+          ? `Mot de passe réinitialisé ! Connexion immédiate avec le numéro ${result.canonicalPhone}.`
+          : `Accès activé ! Connexion immédiate avec le numéro ${result.canonicalPhone}.`,
+      });
+    } catch (err: any) {
+      setQuickAccessMessage({
+        type: 'error',
+        text: err.message || "Erreur lors de la génération de l'accès patient.",
+      });
+    } finally {
+      setQuickAccessLoading(false);
+    }
+  };
 
   useEffect(() => {
     fetchPatients();
@@ -1497,15 +1571,29 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                           </div>
                         </td>
                         <td className="px-4 py-4">
-                          {(patient as any).has_access ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-mint-50 text-mint-700 border border-mint-200">
-                              <CheckCircle2 className="h-3 w-3" /> Actif
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                              <Lock className="h-3 w-3" /> Non généré
-                            </span>
-                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openQuickAccessModal(patient);
+                            }}
+                            title="Cliquer pour générer ou réinitialiser le mot de passe patient"
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer ${
+                              (patient as any).has_access
+                                ? 'bg-mint-50 text-mint-700 border-mint-200 hover:bg-mint-100'
+                                : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                            }`}
+                          >
+                            {(patient as any).has_access ? (
+                              <>
+                                <CheckCircle2 className="h-3 w-3" /> Actif
+                              </>
+                            ) : (
+                              <>
+                                <Lock className="h-3 w-3" /> Non généré
+                              </>
+                            )}
+                          </button>
                         </td>
                         <td className="px-4 py-4">
                           <div className="space-y-1">
@@ -1897,6 +1985,123 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* Modal rapide : Générer / Réinitialiser l'accès Espace Patient */}
+      <Modal
+        isOpen={isQuickAccessModalOpen}
+        onClose={() => {
+          if (!quickAccessLoading) {
+            setIsQuickAccessModalOpen(false);
+            setPatientForAccess(null);
+          }
+        }}
+        title={
+          patientForAccess?.has_access
+            ? "Réinitialiser l'accès Espace Patient"
+            : "Générer un accès Espace Patient"
+        }
+      >
+        {patientForAccess && (
+          <form onSubmit={handleQuickGenerateAccess} className="space-y-4">
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-700 space-y-1">
+              <div className="font-bold text-slate-900">
+                {patientForAccess.prenom} {patientForAccess.nom}
+              </div>
+              <div className="text-xs text-slate-600">
+                Identifiant téléphone :{' '}
+                <strong className="font-mono text-slate-900">
+                  {normalizePatientPhone(patientForAccess.telephone || '') ||
+                    patientForAccess.telephone ||
+                    'Non renseigné'}
+                </strong>
+              </div>
+            </div>
+
+            {quickAccessMessage.text && (
+              <div
+                className={`p-3 rounded-xl text-sm border ${
+                  quickAccessMessage.type === 'success'
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : 'bg-rose-50 text-rose-700 border-rose-200'
+                }`}
+              >
+                {quickAccessMessage.text}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+                  <Key className="h-4 w-4 text-primary-600" />
+                  {patientForAccess.has_access ? 'Nouveau mot de passe' : 'Mot de passe provisoire'}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const last4 =
+                      normalizePatientPhone(patientForAccess.telephone || '').slice(-4) || '2025';
+                    setQuickAccessPassword(`Reforme${last4}`);
+                    setShowQuickAccessPassword(true);
+                  }}
+                  className="text-xs font-semibold text-primary-600 hover:text-primary-700"
+                >
+                  Suggérer un mot de passe
+                </button>
+              </div>
+              <div className="relative">
+                <input
+                  type={showQuickAccessPassword ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  value={quickAccessPassword}
+                  onChange={(e) => setQuickAccessPassword(e.target.value)}
+                  placeholder="Ex: Reforme1234"
+                  className="w-full px-3 py-2.5 pr-10 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowQuickAccessPassword((v) => !v)}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                  tabIndex={-1}
+                >
+                  {showQuickAccessPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">
+                Minimum 6 caractères. Si le patient avait déjà un compte, ce nouveau mot de passe remplace immédiatement l'ancien.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setIsQuickAccessModalOpen(false);
+                  setPatientForAccess(null);
+                }}
+                disabled={quickAccessLoading}
+              >
+                Fermer
+              </Button>
+              <Button
+                type="submit"
+                disabled={quickAccessLoading || !patientForAccess.telephone}
+              >
+                {quickAccessLoading
+                  ? 'Enregistrement...'
+                  : patientForAccess.has_access
+                  ? 'Mettre à jour le mot de passe'
+                  : "Activer l'accès"}
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
     </div>
   );

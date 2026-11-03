@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from 'react';
-import { supabase } from '../../lib/supabaseClient';
+import React, { useEffect, useRef, useState } from 'react';
+import { supabase, clearStoredAuthSession } from '../../lib/supabaseClient';
 import { Activity } from 'lucide-react';
 import {
   isEmailBlocked,
+  isPrimaryAdminEmail,
   parseCollaboratorProfile,
   resolveOrBindCollaboratorSession,
 } from '../../lib/teamUtils';
+import { isPatientSyntheticEmail } from '../../lib/patientAuthUtils';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -16,69 +18,94 @@ interface ProtectedRouteProps {
 export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: ProtectedRouteProps) {
   const [loading, setLoading] = useState(true);
   const [authorized, setAuthorized] = useState(false);
+  const authorizedRef = useRef(false);
 
   const rolesKey = (allowedRoles || []).join(',');
   const permsKey = (allowedPermissions || []).join(',');
 
+  const updateAuthorized = (val: boolean) => {
+    authorizedRef.current = val;
+    setAuthorized(val);
+  };
+
   useEffect(() => {
-    checkAuth();
+    let mounted = true;
+    checkAuth(false, mounted);
 
     const handleWindowFocus = () => {
-      checkAuth(true);
+      if (mounted) checkAuth(true, mounted);
     };
 
-    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      if (window.location.hash.includes('type=recovery') || event === 'PASSWORD_RECOVERY') {
+        return;
+      }
       if (event === 'SIGNED_OUT') {
-        setAuthorized(false);
+        updateAuthorized(false);
         window.location.hash = 'login';
       } else if (event === 'SIGNED_IN' && session) {
-        checkAuth();
+        // Defer out of GoTrue's synchronous subscriber notification loop
+        setTimeout(() => {
+          if (mounted) checkAuth(true, mounted);
+        }, 0);
       }
     });
 
     window.addEventListener('focus', handleWindowFocus);
 
     return () => {
+      mounted = false;
       authListener.subscription.unsubscribe();
       window.removeEventListener('focus', handleWindowFocus);
     };
   }, [rolesKey, permsKey]);
 
   const kickOutSession = async (reason?: string) => {
-    setAuthorized(false);
+    updateAuthorized(false);
     if (reason) {
       try {
         sessionStorage.setItem('reforme_auth_blocked_msg', reason);
       } catch {}
     }
+    clearStoredAuthSession();
     await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
     window.location.hash = 'login';
   };
 
-  const checkAuth = async (silent = false) => {
-    if (!silent) {
+  const checkAuth = async (silent = false, isMounted = true) => {
+    if (window.location.hash.includes('type=recovery')) {
+      if (!silent && isMounted) setLoading(false);
+      return;
+    }
+
+    if (!silent && isMounted) {
       setLoading(true);
     }
+
     try {
       const {
         data: { session },
         error: sessionError,
       } = await supabase.auth.getSession();
 
+      if (!isMounted) return;
+
       if (sessionError || !session) {
         if (sessionError) {
+          clearStoredAuthSession();
           await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
         }
-        setAuthorized(false);
+        updateAuthorized(false);
         window.location.hash = 'login';
         return;
       }
 
       const sessionEmail = (session.user.email || '').trim().toLowerCase();
-      const isPatientEmail = sessionEmail.endsWith('@patient.reforme.center');
+      const isPatientEmail = isPatientSyntheticEmail(sessionEmail);
 
-      // 1. Immediate blocklist enforcement (even on already-open tabs)
-      if (sessionEmail && !isPatientEmail) {
+      // 1. Immediate blocklist enforcement (never blocking primary admin accounts)
+      if (sessionEmail && !isPatientEmail && !isPrimaryAdminEmail(sessionEmail)) {
         const blocked = await isEmailBlocked(supabase, sessionEmail);
         if (blocked) {
           await kickOutSession("Accès bloqué : votre compte a été désactivé par l'administrateur du cabinet.");
@@ -100,13 +127,39 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
           return;
         }
 
-        // Patient accounts without a `profiles` row still have role 'patient'
-        if (!profile) {
+        // Preserve active session on transient network blips
+        if (profile?.__transientError) {
+          if (authorizedRef.current || isPrimaryAdminEmail(sessionEmail)) {
+            updateAuthorized(true);
+            return;
+          }
           if (isPatientEmail && checkRoles && allowedRoles?.includes('patient')) {
-            setAuthorized(true);
+            updateAuthorized(true);
+            return;
+          }
+        }
+
+        // Patient accounts without a `profiles` row still have role 'patient'
+        if (!profile || profile.__transientError) {
+          if (isPatientEmail) {
+            if (checkRoles && allowedRoles?.includes('patient')) {
+              updateAuthorized(true);
+            } else {
+              updateAuthorized(false);
+              window.location.hash = 'espace-patient';
+            }
             return;
           }
           await kickOutSession("Accès révoqué : votre profil collaborateur n'est plus autorisé.");
+          return;
+        }
+
+        const effectiveRole = isPrimaryAdminEmail(sessionEmail) ? 'admin' : profile.role;
+
+        // If a patient account navigated to a staff-only page, redirect them back to their portal without signing out
+        if ((effectiveRole === 'patient' || isPatientEmail) && !(checkRoles && allowedRoles?.includes('patient'))) {
+          updateAuthorized(false);
+          window.location.hash = 'espace-patient';
           return;
         }
 
@@ -114,13 +167,13 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
         let permOk = true;
 
         if (checkRoles) {
-          roleOk = allowedRoles!.includes(profile.role);
+          roleOk = allowedRoles!.includes(effectiveRole);
         }
 
-        const parsed = parseCollaboratorProfile(profile, [], session.user);
+        const parsed = parseCollaboratorProfile({ ...profile, role: effectiveRole }, [], session.user);
 
         if (checkPerms) {
-          if (profile.role === 'admin') {
+          if (effectiveRole === 'admin') {
             permOk = true;
           } else {
             permOk = allowedPermissions!.some((p) => parsed.permissions.includes(p));
@@ -128,15 +181,17 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
         }
 
         if (roleOk && permOk) {
-          setAuthorized(true);
-        } else if (profile.role === 'therapeute' || profile.role === 'secretaire') {
-          // Redirect valid collaborator to their first permitted module, or kick out if 0 permissions
+          updateAuthorized(true);
+        } else if (effectiveRole === 'admin') {
+          updateAuthorized(false);
+          window.location.hash = 'dashboard';
+        } else if (effectiveRole === 'therapeute' || effectiveRole === 'secretaire') {
           const perms = parsed.permissions;
           if (perms.length === 0) {
             await kickOutSession("Aucune permission d'accès n'est activée sur votre compte.");
             return;
           }
-          setAuthorized(false);
+          updateAuthorized(false);
           if (perms.includes('agenda')) {
             window.location.hash = 'agenda';
           } else if (perms.includes('patients')) {
@@ -152,12 +207,12 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
           await kickOutSession();
         }
       } else {
-        setAuthorized(true);
+        updateAuthorized(true);
       }
     } catch (error) {
       console.warn('Avertissement lors de la vérification des droits:', error);
     } finally {
-      if (!silent) {
+      if (!silent && isMounted) {
         setLoading(false);
       }
     }

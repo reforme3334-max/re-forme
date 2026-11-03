@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { createClient } from '@supabase/supabase-js';
 import { supabase, supabaseUrl, supabaseAnonKey } from '../lib/supabaseClient';
 import {
   Shield,
@@ -45,6 +44,8 @@ import {
   extractBlockedEmails,
   blockCollaboratorEmail,
   unblockCollaboratorEmail,
+  provisionCollaboratorCredentials,
+  isPrimaryAdminEmail,
 } from '../lib/teamUtils';
 
 export function Settings() {
@@ -81,7 +82,9 @@ export function Settings() {
     email: '',
     phone: '',
     role: 'therapeute',
+    newPassword: '',
   });
+  const [showEditCollabPassword, setShowEditCollabPassword] = useState(false);
   const [editCollabLoading, setEditCollabLoading] = useState(false);
   const [editCollabError, setEditCollabError] = useState('');
 
@@ -590,11 +593,13 @@ export function Settings() {
   const handleOpenEditCollab = (profile: ParsedCollaboratorProfile) => {
     setCollabToEdit(profile);
     setEditCollabError('');
+    setShowEditCollabPassword(false);
     setEditCollabData({
       name: profile.name || '',
       email: profile.email || '',
       phone: profile.phone || '',
       role: profile.role || 'therapeute',
+      newPassword: '',
     });
     setIsEditCollabModalOpen(true);
   };
@@ -607,8 +612,14 @@ export function Settings() {
     setEditCollabError('');
 
     try {
-      const nextRole = editCollabData.role;
+      const nextRole = isPrimaryAdminEmail(editCollabData.email) ? 'admin' : editCollabData.role;
       const nextEmail = editCollabData.email.trim().toLowerCase();
+      const trimmedNewPassword = editCollabData.newPassword.trim();
+
+      if (trimmedNewPassword.length > 0 && trimmedNewPassword.length < 6) {
+        throw new Error('Le nouveau mot de passe doit contenir au moins 6 caractères.');
+      }
+
       const nextModulePerms =
         nextRole === 'admin'
           ? PERMISSIONS_LIST.map((p) => p.id)
@@ -616,45 +627,79 @@ export function Settings() {
           ? collabToEdit.permissions
           : getDefaultPermissionsForRole(nextRole);
 
-      if (collabToEdit.isPendingBind) {
+      const isEditingOwnActiveSession =
+        !collabToEdit.isPendingBind && Boolean(currentUser?.id && currentUser.id === collabToEdit.id);
+
+      let passwordWasUpdated = false;
+
+      if (trimmedNewPassword.length >= 6 && !isEditingOwnActiveSession) {
         if (!nextEmail || !nextEmail.includes('@')) {
-          throw new Error('Veuillez saisir une adresse email valide.');
+          throw new Error('Veuillez saisir une adresse email valide pour définir un mot de passe.');
         }
-        if (collabToEdit.email && collabToEdit.email.toLowerCase() !== nextEmail) {
+        if (blockedEmails.includes(nextEmail)) {
+          throw new Error(`L'adresse ${nextEmail} figure dans les accès bloqués.`);
+        }
+        if (collabToEdit.isPendingBind && collabToEdit.email && collabToEdit.email.toLowerCase() !== nextEmail) {
           await removePendingCollaboratorFromAdmin(supabase, collabToEdit.email);
         }
-        await upsertPendingCollaboratorInAdmin(supabase, {
-          email: nextEmail,
+
+        await provisionCollaboratorCredentials(supabase, supabaseUrl, supabaseAnonKey, {
+          displayEmail: nextEmail,
+          password: trimmedNewPassword,
+          role: nextRole,
+          modulePermissions: nextModulePerms,
           name: editCollabData.name.trim(),
           phone: editCollabData.phone.trim(),
-          role: nextRole,
-          permissions: nextModulePerms,
-          created_at: collabToEdit.created_at,
+          existingProfile: collabToEdit,
         });
+        passwordWasUpdated = true;
       } else {
-        const serializedPerms = buildProfilePermissionsArray(
-          nextModulePerms,
-          {
-            name: editCollabData.name.trim(),
+        if (trimmedNewPassword.length >= 6 && isEditingOwnActiveSession) {
+          const { error: pwErr } = await supabase.auth.updateUser({ password: trimmedNewPassword });
+          if (pwErr) throw pwErr;
+          passwordWasUpdated = true;
+        }
+
+        if (collabToEdit.isPendingBind) {
+          if (!nextEmail || !nextEmail.includes('@')) {
+            throw new Error('Veuillez saisir une adresse email valide.');
+          }
+          if (collabToEdit.email && collabToEdit.email.toLowerCase() !== nextEmail) {
+            await removePendingCollaboratorFromAdmin(supabase, collabToEdit.email);
+          }
+          await upsertPendingCollaboratorInAdmin(supabase, {
             email: nextEmail,
+            name: editCollabData.name.trim(),
             phone: editCollabData.phone.trim(),
-            configured: true,
-          },
-          collabToEdit.rawPermissions
-        );
-
-        const { data: updated, error } = await supabase
-          .from('profiles')
-          .update({
             role: nextRole,
-            permissions: serializedPerms,
-          })
-          .eq('id', collabToEdit.id)
-          .select('*');
+            permissions: nextModulePerms,
+            created_at: collabToEdit.created_at,
+          });
+        } else {
+          const serializedPerms = buildProfilePermissionsArray(
+            nextModulePerms,
+            {
+              name: editCollabData.name.trim(),
+              email: nextEmail,
+              phone: editCollabData.phone.trim(),
+              configured: true,
+            },
+            collabToEdit.rawPermissions
+          );
 
-        if (error) throw error;
-        if (!updated || updated.length === 0) {
-          throw new Error('Aucune ligne mise à jour.');
+          const { data: updated, error } = await supabase
+            .from('profiles')
+            .update({
+              role: nextRole,
+              permissions: serializedPerms,
+            })
+            .eq('id', collabToEdit.id)
+            .select('*');
+
+          if (error) throw error;
+          if (!updated || updated.length === 0) {
+            throw new Error('Aucune ligne mise à jour.');
+          }
         }
       }
 
@@ -662,7 +707,12 @@ export function Settings() {
       window.dispatchEvent(new Event('reforme-team-updated'));
       setIsEditCollabModalOpen(false);
       setCollabToEdit(null);
-      showTeamToast('success', 'Informations du collaborateur enregistrées avec succès.');
+      showTeamToast(
+        'success',
+        passwordWasUpdated
+          ? 'Collaborateur et nouveau mot de passe enregistrés avec succès.'
+          : 'Informations du collaborateur enregistrées avec succès.'
+      );
     } catch (err: any) {
       console.error('Edit collab error:', err);
       setEditCollabError(err.message || 'Erreur lors de la modification.');
@@ -717,8 +767,8 @@ export function Settings() {
       showTeamToast('error', 'Veuillez saisir une adresse email valide à bloquer.');
       return;
     }
-    if (currentUser?.email && currentUser.email.trim().toLowerCase() === target) {
-      showTeamToast('error', 'Vous ne pouvez pas bloquer votre propre adresse email administrateur.');
+    if (isPrimaryAdminEmail(target) || (currentUser?.email && currentUser.email.trim().toLowerCase() === target)) {
+      showTeamToast('error', 'Vous ne pouvez pas bloquer un compte administrateur principal.');
       return;
     }
 
@@ -740,8 +790,8 @@ export function Settings() {
       showTeamToast('error', "Veuillez d'abord renseigner l'email de ce collaborateur ou supprimer directement son profil.");
       return;
     }
-    if (currentUser?.id === profile.id) {
-      showTeamToast('error', 'Vous ne pouvez pas bloquer votre propre compte administrateur.');
+    if (isPrimaryAdminEmail(profile.email) || currentUser?.id === profile.id) {
+      showTeamToast('error', 'Vous ne pouvez pas bloquer un compte administrateur principal.');
       return;
     }
 
@@ -826,86 +876,42 @@ export function Settings() {
     setMessage({ type: '', text: '' });
 
     try {
-      // Isolated client so creating a collaborator never replaces the admin's active session
-      const tempAuthClient = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false,
-        },
-      });
+      const effectiveRole = isPrimaryAdminEmail(cleanEmail) ? 'admin' : role;
+      const modulePerms =
+        effectiveRole === 'admin' ? PERMISSIONS_LIST.map((p) => p.id) : newCollabPermissions;
 
-      let userId: string | null = null;
-      let attachedExistingWithoutPassword = false;
+      const existingMatch = profiles.find(
+        (p) => p.email && p.email.trim().toLowerCase() === cleanEmail
+      );
 
-      // 1. Create Supabase Auth user (or recover if auth user already exists)
-      const { data: signUpData, error: signUpError } = await tempAuthClient.auth.signUp({
-        email: cleanEmail,
-        password,
-      });
-
-      if (signUpError) {
-        const errMsg = signUpError.message || '';
-        if (errMsg.toLowerCase().includes('already registered')) {
-          const { data: signInData, error: signInError } = await tempAuthClient.auth.signInWithPassword({
-            email: cleanEmail,
+      let provisionResult: { userId: string; authEmail: string; usedVersionedAlias: boolean };
+      try {
+        provisionResult = await provisionCollaboratorCredentials(
+          supabase,
+          supabaseUrl,
+          supabaseAnonKey,
+          {
+            displayEmail: cleanEmail,
             password,
-          });
-          if (!signInError && signInData?.user) {
-            userId = signInData.user.id;
-          } else {
-            // Account already exists in Supabase Auth with its own password:
-            // pre-authorize in team registry so it appears immediately in Gestion de l'équipe
-            // and binds automatically on next login!
-            attachedExistingWithoutPassword = true;
+            role: effectiveRole,
+            modulePermissions: modulePerms,
+            name: fullName,
+            phone: cleanPhone,
+            existingProfile: existingMatch || null,
           }
-        } else if (errMsg.toLowerCase().includes('rate limit')) {
+        );
+      } catch (provErr: any) {
+        if ((provErr?.message || '').toLowerCase().includes('rate limit')) {
           throw new Error(
             "Limite d'envoi d'emails Supabase atteinte temporairement. Astuce : utilisez une adresse interne du type prenom.nom@reforme.center."
           );
-        } else {
-          throw signUpError;
         }
-      } else {
-        userId = signUpData.user?.id || null;
+        throw provErr;
       }
 
-      const modulePerms =
-        role === 'admin' ? PERMISSIONS_LIST.map((p) => p.id) : newCollabPermissions;
-
-      if (attachedExistingWithoutPassword) {
-        await upsertPendingCollaboratorInAdmin(supabase, {
-          email: cleanEmail,
-          name: fullName || cleanEmail.split('@')[0],
-          phone: cleanPhone,
-          role,
-          permissions: modulePerms,
-          created_at: new Date().toISOString(),
-        });
-      } else {
-        if (!userId) {
-          throw new Error("Impossible d'obtenir l'identifiant du compte créé.");
-        }
-
-        const serializedPermissions = buildProfilePermissionsArray(modulePerms, {
-          name: fullName,
-          email: cleanEmail,
-          phone: cleanPhone,
-          configured: true,
-        });
-
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .upsert([{ id: userId, role, permissions: serializedPermissions }]);
-
-        if (profileError) throw profileError;
-
-        await removePendingCollaboratorFromAdmin(supabase, cleanEmail);
-      }
-
-      // 3. Optionally add to `therapists` if role is 'therapeute' and not already registered
+      // Optionally add to `therapists` if role is 'therapeute' and not already registered
       let addedPractitioner = false;
-      if (role === 'therapeute' && alsoAddAsTherapist && cleanNom && cleanPrenom) {
+      if (effectiveRole === 'therapeute' && alsoAddAsTherapist && cleanNom && cleanPrenom) {
         const alreadyExists = therapists.some(
           (t) =>
             (t.email && t.email.trim().toLowerCase() === cleanEmail) ||
@@ -934,8 +940,8 @@ export function Settings() {
 
       setMessage({
         type: 'success',
-        text: attachedExistingWithoutPassword
-          ? `Le compte existant (${cleanEmail}) a été rattaché à l'équipe avec succès ! Le collaborateur conserve son mot de passe actuel.`
+        text: provisionResult.usedVersionedAlias
+          ? `Accès collaborateur (${cleanEmail}) mis à jour avec le nouveau mot de passe défini !`
           : addedPractitioner
           ? `Compte collaborateur (${cleanEmail}) créé avec succès et ajouté à la liste des praticiens !`
           : `Compte collaborateur (${cleanEmail}) créé et configuré avec succès !`,
@@ -2269,6 +2275,34 @@ export function Settings() {
               <option value="therapeute">Thérapeute</option>
               <option value="secretaire">Secrétaire</option>
             </select>
+          </div>
+
+          <div className="space-y-1.5 pt-2 border-t border-slate-100">
+            <label className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+              <KeyRound className="h-4 w-4 text-primary-600" />
+              Nouveau mot de passe (optionnel)
+            </label>
+            <div className="relative">
+              <input
+                type={showEditCollabPassword ? 'text' : 'password'}
+                value={editCollabData.newPassword}
+                onChange={(e) => setEditCollabData({ ...editCollabData, newPassword: e.target.value })}
+                className="block w-full px-3 py-2 pr-10 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
+                placeholder="Laisser vide pour conserver le mot de passe actuel"
+                minLength={6}
+              />
+              <button
+                type="button"
+                onClick={() => setShowEditCollabPassword((v) => !v)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                tabIndex={-1}
+              >
+                {showEditCollabPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+            <p className="text-xs text-slate-500">
+              Renseignez un mot de passe (min. 6 caractères) uniquement si vous souhaitez le réinitialiser immédiatement.
+            </p>
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">

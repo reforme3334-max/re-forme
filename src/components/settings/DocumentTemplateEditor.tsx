@@ -1326,7 +1326,7 @@ export function DocumentTemplateEditor() {
                         Hauteur vierge réservée en haut
                       </label>
                       <select
-                        value={config.header.headerBlankSpaceMm || 35}
+                        value={config.header.headerBlankSpaceMm || (isA5 ? 25 : 35)}
                         onChange={(e) =>
                           setConfig((prev) => ({
                             ...prev,
@@ -1339,8 +1339,10 @@ export function DocumentTemplateEditor() {
                         className="w-full px-3 py-2 border border-amber-300 rounded-xl text-sm bg-white text-slate-800 outline-none focus:border-primary-500 tabular-nums"
                       >
                         <option value={15}>15 mm (Petit en-tête)</option>
-                        <option value={25}>25 mm (Moyen)</option>
-                        <option value={35}>35 mm (Standard)</option>
+                        <option value={20}>20 mm (Compact A5)</option>
+                        <option value={25}>25 mm (Standard A5)</option>
+                        <option value={30}>30 mm (Intermédiaire)</option>
+                        <option value={35}>35 mm (Standard A4)</option>
                         <option value={45}>45 mm (Grand en-tête)</option>
                         <option value={55}>55 mm (Très grand)</option>
                       </select>
@@ -1647,7 +1649,7 @@ export function DocumentTemplateEditor() {
                         Hauteur vierge réservée en bas
                       </label>
                       <select
-                        value={config.footer.footerBlankSpaceMm || 25}
+                        value={config.footer.footerBlankSpaceMm || (isA5 ? 18 : 25)}
                         onChange={(e) =>
                           setConfig((prev) => ({
                             ...prev,
@@ -1659,8 +1661,10 @@ export function DocumentTemplateEditor() {
                         }
                         className="w-full px-3 py-2 border border-amber-300 rounded-xl text-sm bg-white text-slate-800 outline-none focus:border-primary-500 tabular-nums"
                       >
+                        <option value={12}>12 mm (Minimal A5)</option>
                         <option value={15}>15 mm (Petit pied)</option>
-                        <option value={25}>25 mm (Standard)</option>
+                        <option value={18}>18 mm (Standard A5)</option>
+                        <option value={25}>25 mm (Standard A4)</option>
                         <option value={35}>35 mm (Grand pied)</option>
                         <option value={45}>45 mm (Très grand)</option>
                       </select>

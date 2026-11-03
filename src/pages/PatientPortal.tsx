@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabaseClient';
+import { supabase, supabaseUrl, supabaseAnonKey, clearStoredAuthSession } from '../lib/supabaseClient';
 import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download, Camera, Upload, Trash2, Image as ImageIcon, Play, HeartPulse, ExternalLink, CheckCircle2, ChevronRight } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -9,7 +9,14 @@ import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseExercisesFromPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 import { parsePatientMutuelle, serializeAtcdWithMutuelle } from '../lib/mutuelleUtils';
-import { sanitizeBillings, formatMoney, sumMoney, isUnpaidBillingStatus, isPaidBillingStatus, getBillDate } from '../lib/financeUtils';
+import { sanitizeBillings, formatMoney, sumMoney, isUnpaidBillingStatus, isPaidBillingStatus, getBillDate, fetchAllRows } from '../lib/financeUtils';
+import {
+  isPatientSyntheticEmail,
+  extractPhoneFromPatientAuthEmail,
+  normalizePatientPhone,
+  parsePatientProfileAuthMeta,
+  provisionOrResetPatientAccess,
+} from '../lib/patientAuthUtils';
 import {
   fetchDocumentTemplates,
   getCachedDocumentTemplates,
@@ -116,25 +123,48 @@ export function PatientPortal() {
 
       let patientDataList: any[] | null = null;
       let fetchError: any = null;
+      let explicitBoundPatientId = '';
 
-      if (userEmail.endsWith('@patient.reforme.center')) {
+      if (isPatientSyntheticEmail(userEmail)) {
         setIsStaffPreview(false);
-        const phone = userEmail.replace('@patient.reforme.center', '').trim();
-        const digitsOnly = phone.replace(/\D/g, '');
-        const tail = digitsOnly.slice(-8);
 
-        // First find all patient IDs matching this phone number (even if formatted with spaces or +212)
+        // 1. Check if this auth user is explicitly linked to a specific patient_id in `profiles`
+        try {
+          const { data: ownProfile } = await supabase
+            .from('profiles')
+            .select('id, role, permissions, created_at')
+            .eq('id', session.user.id)
+            .maybeSingle();
+          const meta = parsePatientProfileAuthMeta(ownProfile);
+          if (meta?.patientId) {
+            explicitBoundPatientId = meta.patientId;
+          }
+        } catch {
+          // Ignore non-blocking profile metadata lookup error
+        }
+
+        // 2. Extract canonical phone (stripping any `.v<token>` password-reset suffix)
+        const canonicalPhone = extractPhoneFromPatientAuthEmail(userEmail);
+        const tail = canonicalPhone.slice(-8);
+        const validTail = tail.length === 8 && !/^0+$/.test(tail);
+
         const matchedIds = new Set<string>();
-        if (tail.length >= 8) {
-          const { data: lightPhones } = await supabase
-            .from('patients')
-            .select('id, telephone');
-          if (lightPhones) {
-            for (const row of lightPhones) {
-              if ((row.telephone || '').replace(/\D/g, '').endsWith(tail)) {
+        if (explicitBoundPatientId) {
+          matchedIds.add(explicitBoundPatientId);
+        }
+
+        if (canonicalPhone) {
+          try {
+            const lightPhones = await fetchAllRows('patients', 'id, telephone');
+            for (const row of lightPhones || []) {
+              const rowNorm = normalizePatientPhone(row.telephone || '');
+              if (!rowNorm) continue;
+              if (rowNorm === canonicalPhone || (validTail && rowNorm.slice(-8) === tail)) {
                 matchedIds.add(row.id);
               }
             }
+          } catch {
+            // Fallback to direct query below
           }
         }
 
@@ -155,13 +185,13 @@ export function PatientPortal() {
           res = await supabase
             .from('patients')
             .select(safeCols)
-            .ilike('telephone', `%${phone}%`)
+            .ilike('telephone', `%${canonicalPhone}%`)
             .order('created_at', { ascending: false });
           if (res.error) {
             res = await supabase
               .from('patients')
               .select(fallbackCols)
-              .ilike('telephone', `%${phone}%`);
+              .ilike('telephone', `%${canonicalPhone}%`);
           }
         }
 
@@ -209,13 +239,30 @@ export function PatientPortal() {
         return;
       }
 
-      // Prefer the record that has exercises (notes_antecedents) or has_access = true
+      // Prefer explicit bound patient_id first, then record with exercises, then has_access = true
       const patientData =
+        (explicitBoundPatientId
+          ? patientDataList.find((p: any) => p.id === explicitBoundPatientId)
+          : null) ||
         patientDataList.find((p: any) => p.notes_antecedents && String(p.notes_antecedents).trim().length > 2) ||
         patientDataList.find((p: any) => p.has_access) ||
         patientDataList[0];
 
       setPatient(patientData);
+
+      // Compute all IDs belonging to this exact person (handles duplicate cards without mixing family members sharing a phone)
+      const normName = (v: any) => String(v || '').trim().toLowerCase();
+      const primaryNom = normName(patientData.nom);
+      const primaryPrenom = normName(patientData.prenom);
+      const samePersonRows =
+        primaryNom || primaryPrenom
+          ? patientDataList.filter(
+              (p: any) =>
+                p.id === patientData.id ||
+                (normName(p.nom) === primaryNom && normName(p.prenom) === primaryPrenom)
+            )
+          : [patientData];
+      const samePersonIds = Array.from(new Set(samePersonRows.map((p: any) => p.id)));
 
       // 1. Load documents
       try {
@@ -225,15 +272,15 @@ export function PatientPortal() {
         }
       } catch(e) { console.warn('Erreur lecture docs', e); }
 
-      // 2. Load exercises from ALL matching rows for this patient's phone/ID + localStorage
+      // 2. Load exercises from matching rows for this patient + localStorage
       try {
-        const loadedExercises = parseExercisesFromPatient(patientDataList, patientData.id);
+        const loadedExercises = parseExercisesFromPatient(samePersonRows, patientData.id);
         setExercises(loadedExercises);
       } catch(e) { console.warn('Erreur lecture exercices', e); }
 
       // 3. Load full pain evaluations history from Supabase + localStorage
       try {
-        const loadedPainLogs = parsePainLogsFromPatient(patientDataList, patientData.id);
+        const loadedPainLogs = parsePainLogsFromPatient(samePersonRows, patientData.id);
         setPainLogs(loadedPainLogs);
 
         const todayStr = getMoroccoTodayStr();
@@ -258,7 +305,7 @@ export function PatientPortal() {
       const { data: appts } = await supabase
         .from('appointments')
         .select('*')
-        .eq('patient_id', patientData.id)
+        .in('patient_id', samePersonIds)
         .order('date_heure', { ascending: true });
 
       let loadedAppts: any[] = [];
@@ -287,7 +334,7 @@ export function PatientPortal() {
       const { data: bills } = await supabase
         .from('billings')
         .select('*')
-        .eq('patient_id', patientData.id);
+        .in('patient_id', samePersonIds);
 
       if (bills) setBillings(sanitizeBillings(bills, loadedAppts));
 
@@ -377,8 +424,9 @@ export function PatientPortal() {
     }
   };
 
-const handleLogout = async () => {
-    await supabase.auth.signOut();
+  const handleLogout = async () => {
+    clearStoredAuthSession();
+    await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
     window.location.hash = 'login';
   };
 
@@ -397,9 +445,36 @@ const handleLogout = async () => {
     setPasswordMessage({ type: '', text: '' });
 
     try {
-      const { error } = await supabase.auth.updateUser({ password: newPassword });
-      if (error) throw error;
-      setPasswordMessage({ type: 'success', text: 'Mot de passe mis à jour avec succès !' });
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const sessEmail = (session?.user?.email || '').trim().toLowerCase();
+      const isLoggedAsStaff =
+        isStaffPreview || (Boolean(sessEmail) && !isPatientSyntheticEmail(sessEmail));
+
+      if (isLoggedAsStaff) {
+        // CRITICAL: Never overwrite the logged-in practitioner/admin password when previewing a patient's portal!
+        if (!patient?.id || !patient?.telephone) {
+          throw new Error('Ce patient doit avoir un numéro de téléphone renseigné.');
+        }
+        const res = await provisionOrResetPatientAccess(
+          supabase,
+          supabaseUrl,
+          supabaseAnonKey,
+          { id: patient.id, telephone: patient.telephone },
+          newPassword
+        );
+        setPatient({ ...patient, has_access: true });
+        setPasswordMessage({
+          type: 'success',
+          text: `Mot de passe du patient (${res.canonicalPhone}) mis à jour avec succès !`,
+        });
+      } else {
+        const { error } = await supabase.auth.updateUser({ password: newPassword });
+        if (error) throw error;
+        setPasswordMessage({ type: 'success', text: 'Mot de passe mis à jour avec succès !' });
+      }
+
       setNewPassword('');
       setConfirmPassword('');
       setTimeout(() => setIsPasswordModalOpen(false), 2000);
@@ -1583,8 +1658,18 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
       </Modal>
 
       {/* Password Change Modal */}
-      <Modal isOpen={isPasswordModalOpen} onClose={() => setIsPasswordModalOpen(false)} title="Changer mon mot de passe">
+      <Modal
+        isOpen={isPasswordModalOpen}
+        onClose={() => setIsPasswordModalOpen(false)}
+        title={isStaffPreview ? `Mot de passe patient — ${patient?.prenom || ''} ${patient?.nom || ''}` : 'Changer mon mot de passe'}
+      >
         <form onSubmit={handleChangePassword} className="space-y-4">
+          {isStaffPreview && (
+            <div className="p-3 rounded-lg text-xs bg-blue-50 text-blue-800 border border-blue-200">
+              Mode Aperçu Cabinet : ce formulaire modifie uniquement le mot de passe du patient{' '}
+              <strong>{patient?.prenom} {patient?.nom}</strong> (votre compte praticien/administrateur reste inchangé).
+            </div>
+          )}
           {passwordMessage.text && (
             <div className={`p-3 rounded-lg text-sm ${passwordMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
               {passwordMessage.text}

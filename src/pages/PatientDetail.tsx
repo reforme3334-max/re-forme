@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy, Lock, Wallet, LayoutTemplate } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy, Lock, Wallet, LayoutTemplate, Eye, EyeOff } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Modal } from '../components/ui/modal';
-import { createClient } from '@supabase/supabase-js';
 import { supabase, supabaseUrl, supabaseAnonKey } from '../lib/supabaseClient';
 import * as XLSX from 'xlsx';
 import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
@@ -12,6 +11,7 @@ import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, pa
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 import { ORGANISMES_MUTUELLE, SPORTS_DISCIPLINES, PartnerClub, parsePatientMutuelle, serializeAtcdWithMutuelle, fetchPartnerClubs, upsertPartnerClub } from '../lib/mutuelleUtils';
 import { resolveOrBindCollaboratorSession } from '../lib/teamUtils';
+import { normalizePatientPhone, provisionOrResetPatientAccess } from '../lib/patientAuthUtils';
 import { roundMoney, sumMoney, formatMoney, sanitizeBillings, isPaidBillingStatus, isUnpaidBillingStatus, getBillDate } from '../lib/financeUtils';
 import {
   DocumentTemplatesConfig,
@@ -84,9 +84,12 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [practitionerPainNote, setPractitionerPainNote] = useState<string>('');
   const [practitionerPainDate, setPractitionerPainDate] = useState<string>(() => getMoroccoTodayStr());
   const [practitionerPainLoading, setPractitionerPainLoading] = useState<boolean>(false);
+  const [confirmDeletePainId, setConfirmDeletePainId] = useState<string | null>(null);
+  const [confirmDeleteExerciseId, setConfirmDeleteExerciseId] = useState<string | null>(null);
 
   const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
   const [accessPassword, setAccessPassword] = useState('');
+  const [showAccessPassword, setShowAccessPassword] = useState(true);
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessMessage, setAccessMessage] = useState({ type: '', text: '' });
 
@@ -395,12 +398,6 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     }
 
     // Fetch motifs
-    const { data: motifData } = await supabase.from('seance_motifs').select('nom');
-    if (motifData && motifData.length > 0) {
-      setMotifs(motifData.map(m => m.nom));
-    }
-
-    // Fetch motifs
     const { data: motifsData } = await supabase.from('seance_motifs').select('nom');
     if (motifsData) {
       const dbMotifs = motifsData.map(m => m.nom);
@@ -528,7 +525,8 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       setVideoSuccessNotice('Exercice YouTube ajouté et synchronisé en direct avec l\'accès du patient !');
       setTimeout(() => setVideoSuccessNotice(''), 4000);
     } else {
-      alert('Enregistré localement. Note de synchronisation réseau : ' + res.error);
+      setVideoSuccessNotice('Enregistré localement. Note de synchronisation réseau : ' + (res.error || ''));
+      setTimeout(() => setVideoSuccessNotice(''), 5000);
     }
 
     setNewVideoUrl('');
@@ -538,9 +536,9 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   };
 
   const handleDeleteExercise = async (id: string) => {
-    if (!confirm('Supprimer cet exercice pour ce patient ?')) return;
     const updated = exercises.filter(e => e.id !== id);
     setExercises(updated);
+    setConfirmDeleteExerciseId(null);
     await saveExercisesForPatient(patient.id, updated, patient.telephone);
     setVideoSuccessNotice('Exercice supprimé.');
     setTimeout(() => setVideoSuccessNotice(''), 3000);
@@ -585,9 +583,9 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   };
 
   const handleDeletePainLog = async (id: string) => {
-    if (!confirm('Supprimer cette évaluation de douleur ?')) return;
     const updated = painLogs.filter(p => p.id !== id);
     setPainLogs(updated);
+    setConfirmDeletePainId(null);
     if (patient) {
       await savePainLogsForPatient(patient.id, updated, patient.telephone);
     }
@@ -609,7 +607,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
   const handleGenerateAccess = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!patient.telephone) {
+    if (!patient?.telephone) {
       setAccessMessage({ type: 'error', text: 'Le patient doit avoir un numéro de téléphone renseigné.' });
       return;
     }
@@ -618,54 +616,29 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     setAccessMessage({ type: '', text: '' });
 
     try {
-      // Clean phone number (remove spaces, etc.)
-      const cleanPhone = patient.telephone.replace(/\s+/g, '');
-      const dummyEmail = `${cleanPhone}@patient.reforme.center`;
+      const result = await provisionOrResetPatientAccess(
+        supabase,
+        supabaseUrl,
+        supabaseAnonKey,
+        { id: patient.id, telephone: patient.telephone },
+        accessPassword
+      );
 
-      // Use an isolated non-persisting client so signUp never overwrites the practitioner's active session
-      const tempAuthClient = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false,
-        },
-      });
-
-      // 1. Create auth user
-      const { data: authData, error: authError } = await tempAuthClient.auth.signUp({
-        email: dummyEmail,
-        password: accessPassword,
-      });
-
-      if (authError && !authError.message?.toLowerCase().includes('already registered')) {
-        throw authError;
-      }
-
-      if (authData?.user) {
-        // 2. Create profile with 'patient' role
-        await supabase
-          .from('profiles')
-          .upsert([
-            { id: authData.user.id, role: 'patient' }
-          ]);
-      }
-
-      // 3. Update patient to record that access has been generated
-      await supabase
-        .from('patients')
-        .update({ has_access: true })
-        .eq('id', patientId);
-
-      // 4. Sync exercises across any duplicate phone records so the patient immediately sees their videos
+      // Sync exercises across any duplicate phone records so the patient immediately sees their videos
       if (exercises.length > 0) {
         await saveExercisesForPatient(patient.id, exercises, patient.telephone);
       }
 
       setPatient({ ...patient, has_access: true });
-      setAccessMessage({ type: 'success', text: 'Accès généré et synchronisé avec succès ! Le patient peut se connecter avec son numéro de téléphone et ce mot de passe.' });
+      setAccessMessage({
+        type: 'success',
+        text: result.isReset
+          ? `Mot de passe réinitialisé avec succès ! Le patient peut se connecter immédiatement avec le numéro ${result.canonicalPhone} et ce nouveau mot de passe.`
+          : `Accès généré et synchronisé avec succès ! Le patient peut se connecter avec le numéro ${result.canonicalPhone} et ce mot de passe.`,
+      });
       setAccessPassword('');
     } catch (err: any) {
-      setAccessMessage({ type: 'error', text: err.message || 'Erreur lors de la génération de l\'accès.' });
+      setAccessMessage({ type: 'error', text: err.message || "Erreur lors de la génération de l'accès." });
     } finally {
       setAccessLoading(false);
     }
@@ -1326,8 +1299,15 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
           <Button variant="outline" className="flex-1 md:flex-none text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200" onClick={() => setIsDeletePatientModalOpen(true)}>
             <Trash2 className="h-4 w-4 mr-2" /> Supprimer
           </Button>
-          <Button variant="outline" className="flex-1 md:flex-none" onClick={() => setIsAccessModalOpen(true)}>
-            <Key className="h-4 w-4 mr-2" /> Accès
+          <Button
+            variant="outline"
+            className="flex-1 md:flex-none"
+            onClick={() => {
+              setAccessMessage({ type: '', text: '' });
+              setIsAccessModalOpen(true);
+            }}
+          >
+            <Key className="h-4 w-4 mr-2" /> {patient.has_access ? 'Accès / Reset' : 'Accès'}
           </Button>
           <Button
             variant="outline"
@@ -1731,13 +1711,33 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                                   </p>
                                 </div>
                               </div>
-                              <button
-                                onClick={() => handleDeletePainLog(item.id)}
-                                className="p-1.5 text-slate-400 hover:text-red-500 rounded-md transition-colors"
-                                title="Supprimer"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
+                              {confirmDeletePainId === item.id ? (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeletePainId(null)}
+                                    className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 rounded"
+                                  >
+                                    Annuler
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeletePainLog(item.id)}
+                                    className="px-2 py-1 text-[11px] font-semibold bg-rose-600 text-white hover:bg-rose-700 rounded"
+                                  >
+                                    Supprimer
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeletePainId(item.id)}
+                                  className="p-1.5 text-slate-400 hover:text-red-500 rounded-md transition-colors"
+                                  title="Supprimer"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
                             </div>
                           );
                         })}
@@ -1763,18 +1763,21 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                       <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Aucune note pour le moment</p>
                     </div>
                   ) : (
-                    appointments.filter(app => app.notes_seance).slice(0, 5).map((app) => (
-                      <div key={app.id} className="group relative bg-white p-4 rounded-xl border border-slate-100 hover:border-primary-100 hover:shadow-md hover:shadow-primary-500/5 transition-all">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full bg-primary-500" />
-                            <span className="text-sm font-bold text-slate-900">Séance du {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR')}</span>
+                    appointments.filter(app => app.notes_seance).slice(0, 5).map((app) => {
+                      const displayNote = String(app.notes_seance || '').replace(/^\|\|TH_ID:[a-f0-9-]+\|\|/i, '').trim();
+                      return (
+                        <div key={app.id} className="group relative bg-white p-4 rounded-xl border border-slate-100 hover:border-primary-100 hover:shadow-md hover:shadow-primary-500/5 transition-all">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-primary-500" />
+                              <span className="text-sm font-bold text-slate-900">Séance du {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR')}</span>
+                            </div>
+                            <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md">{parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
-                          <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md">{parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+                          <p className="text-sm text-slate-600 leading-relaxed italic">"{displayNote || 'Séance enregistrée'}"</p>
                         </div>
-                        <p className="text-sm text-slate-600 leading-relaxed italic">"{app.notes_seance}"</p>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </CardContent>
@@ -1817,8 +1820,15 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                           </Button>
                         </div>
                         <div className="mt-3 pt-3 border-t border-indigo-50 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Durée : 30 min</span>
-                          <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Kiné : Younes</span>
+                          <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">
+                            Durée : {next.duree || 30} min
+                          </span>
+                          <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">
+                            {(() => {
+                              const th = therapists.find((t) => t.id === next.therapist_id);
+                              return th ? `Kiné : ${th.prenom || th.nom}` : 'Cabinet Re Forme';
+                            })()}
+                          </span>
                         </div>
                       </div>
                     );
@@ -2498,13 +2508,33 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                     <span className="text-[11px] text-emerald-600 font-medium flex items-center gap-1">
                       <CheckCircle2 className="h-3 w-3" /> Visible côté patient
                     </span>
-                    <button 
-                      onClick={() => handleDeleteExercise(ex.id)}
-                      className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-1 text-xs font-medium"
-                      title="Supprimer la vidéo"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" /> Supprimer
-                    </button>
+                    {confirmDeleteExerciseId === ex.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteExerciseId(null)}
+                          className="px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                        >
+                          Annuler
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteExercise(ex.id)}
+                          className="px-2.5 py-1 text-xs font-semibold bg-red-600 text-white hover:bg-red-700 rounded-lg transition-colors"
+                        >
+                          Confirmer
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteExerciseId(ex.id)}
+                        className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-1 text-xs font-medium"
+                        title="Supprimer la vidéo"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Supprimer
+                      </button>
+                    )}
                   </div>
                 </Card>
               ))
@@ -2518,31 +2548,65 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       <Modal
         isOpen={isAccessModalOpen}
         onClose={() => setIsAccessModalOpen(false)}
-        title="Générer un accès en ligne"
+        title={patient.has_access ? "Réinitialiser l'accès patient" : 'Générer un accès en ligne'}
       >
         <form onSubmit={handleGenerateAccess} className="space-y-4">
-          <p className="text-sm text-slate-600">
-            Générez un accès pour que le patient puisse se connecter à son espace personnel.
-            L'identifiant sera son numéro de téléphone : <strong>{patient.telephone || 'Non renseigné'}</strong>
-          </p>
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-700 space-y-1">
+            <p>
+              {patient.has_access
+                ? 'Définissez un nouveau mot de passe pour réinitialiser immédiatement le compte espace patient.'
+                : 'Générez un accès pour que le patient puisse se connecter à son espace personnel.'}
+            </p>
+            <p className="text-xs text-slate-500 pt-1">
+              Identifiant de connexion (téléphone) :{' '}
+              <strong className="font-mono text-slate-900">
+                {normalizePatientPhone(patient.telephone || '') || patient.telephone || 'Non renseigné'}
+              </strong>
+            </p>
+          </div>
 
           {accessMessage.text && (
-            <div className={`p-3 rounded-lg text-sm ${accessMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            <div className={`p-3 rounded-lg text-sm ${accessMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
               {accessMessage.text}
             </div>
           )}
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700">Mot de passe provisoire</label>
-            <input
-              type="text"
-              required
-              value={accessPassword}
-              onChange={(e) => setAccessPassword(e.target.value)}
-              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-              placeholder="Ex: Patient2024!"
-              minLength={6}
-            />
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-slate-700">
+                {patient.has_access ? 'Nouveau mot de passe' : 'Mot de passe provisoire'}
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  const phoneDigits = normalizePatientPhone(patient.telephone || '').slice(-4) || '2025';
+                  setAccessPassword(`Reforme${phoneDigits}`);
+                  setShowAccessPassword(true);
+                }}
+                className="text-xs font-semibold text-primary-600 hover:text-primary-700"
+              >
+                Suggérer un mot de passe
+              </button>
+            </div>
+            <div className="relative">
+              <input
+                type={showAccessPassword ? 'text' : 'password'}
+                required
+                value={accessPassword}
+                onChange={(e) => setAccessPassword(e.target.value)}
+                className="w-full p-2.5 pr-10 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                placeholder="Ex: Reforme1234"
+                minLength={6}
+              />
+              <button
+                type="button"
+                onClick={() => setShowAccessPassword((v) => !v)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                tabIndex={-1}
+              >
+                {showAccessPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
             <p className="text-xs text-slate-500">Le mot de passe doit contenir au moins 6 caractères.</p>
           </div>
 
@@ -2551,7 +2615,11 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
               Fermer
             </Button>
             <Button type="submit" disabled={accessLoading || !patient.telephone}>
-              {accessLoading ? 'Génération...' : 'Générer l\'accès'}
+              {accessLoading
+                ? 'Enregistrement...'
+                : patient.has_access
+                ? 'Mettre à jour le mot de passe'
+                : "Générer l'accès"}
             </Button>
           </div>
         </form>
@@ -2578,7 +2646,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
               onChange={(e) => {
                 setSelectedAppointmentId(e.target.value);
                 const app = appointments.find(a => a.id === e.target.value);
-                setNoteContent(app?.notes_seance || '');
+                setNoteContent(String(app?.notes_seance || '').replace(/^\|\|TH_ID:[a-f0-9-]+\|\|/i, ''));
               }}
               className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             >
