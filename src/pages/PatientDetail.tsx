@@ -89,6 +89,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
   const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
   const [accessPassword, setAccessPassword] = useState('');
+  const [lastGeneratedAccess, setLastGeneratedAccess] = useState<{ phone: string; password: string } | null>(null);
   const [showAccessPassword, setShowAccessPassword] = useState(true);
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessMessage, setAccessMessage] = useState({ type: '', text: '' });
@@ -616,13 +617,18 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     setAccessMessage({ type: '', text: '' });
 
     try {
+      const savedPlainPassword = accessPassword.trim();
       const result = await provisionOrResetPatientAccess(
         supabase,
         supabaseUrl,
         supabaseAnonKey,
         { id: patient.id, telephone: patient.telephone },
-        accessPassword
+        savedPlainPassword
       );
+
+      try {
+        localStorage.setItem('reforme_preview_patient_id', patient.id);
+      } catch {}
 
       // Sync exercises across any duplicate phone records so the patient immediately sees their videos
       if (exercises.length > 0) {
@@ -630,11 +636,12 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       }
 
       setPatient({ ...patient, has_access: true });
+      setLastGeneratedAccess({ phone: result.canonicalPhone, password: savedPlainPassword });
       setAccessMessage({
         type: 'success',
         text: result.isReset
-          ? `Mot de passe réinitialisé avec succès ! Le patient peut se connecter immédiatement avec le numéro ${result.canonicalPhone} et ce nouveau mot de passe.`
-          : `Accès généré et synchronisé avec succès ! Le patient peut se connecter avec le numéro ${result.canonicalPhone} et ce mot de passe.`,
+          ? `Mot de passe réinitialisé avec succès ! Connexion active immédiatement.`
+          : `Accès généré et synchronisé avec succès ! Connexion active immédiatement.`,
       });
       setAccessPassword('');
     } catch (err: any) {
@@ -1301,9 +1308,22 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
           </Button>
           <Button
             variant="outline"
+            className="flex-1 md:flex-none text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 border-emerald-200"
+            onClick={() => {
+              try {
+                localStorage.setItem('reforme_preview_patient_id', patient.id);
+              } catch {}
+              window.location.hash = 'espace-patient';
+            }}
+          >
+            <ExternalLink className="h-4 w-4 mr-2" /> Espace Patient
+          </Button>
+          <Button
+            variant="outline"
             className="flex-1 md:flex-none"
             onClick={() => {
               setAccessMessage({ type: '', text: '' });
+              setLastGeneratedAccess(null);
               setIsAccessModalOpen(true);
             }}
           >
@@ -2566,8 +2586,35 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
           </div>
 
           {accessMessage.text && (
-            <div className={`p-3 rounded-lg text-sm ${accessMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-              {accessMessage.text}
+            <div className={`p-3.5 rounded-xl text-sm space-y-2.5 ${accessMessage.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+              <p className="font-semibold">{accessMessage.text}</p>
+              {accessMessage.type === 'success' && lastGeneratedAccess && (
+                <div className="p-2.5 rounded-lg bg-white border border-emerald-200 text-xs text-slate-800 space-y-1">
+                  <div>
+                    Identifiant : <strong className="font-mono text-slate-900">{lastGeneratedAccess.phone}</strong>
+                  </div>
+                  <div>
+                    Mot de passe : <strong className="font-mono text-slate-900">{lastGeneratedAccess.password}</strong>
+                  </div>
+                </div>
+              )}
+              {accessMessage.type === 'success' && (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold gap-1.5"
+                  onClick={() => {
+                    try {
+                      localStorage.setItem('reforme_preview_patient_id', patient.id);
+                    } catch {}
+                    setIsAccessModalOpen(false);
+                    window.location.hash = 'espace-patient';
+                  }}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Ouvrir l'Espace Patient de {patient.prenom}
+                </Button>
+              )}
             </div>
           )}
 

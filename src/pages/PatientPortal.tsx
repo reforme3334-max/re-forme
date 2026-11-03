@@ -128,7 +128,7 @@ export function PatientPortal() {
       if (isPatientSyntheticEmail(userEmail)) {
         setIsStaffPreview(false);
 
-        // 1. Check if this auth user is explicitly linked to a specific patient_id in `profiles`
+        // 1. Check if this auth user is explicitly linked to a specific patient_id in `profiles` or `sessionStorage`
         try {
           const { data: ownProfile } = await supabase
             .from('profiles')
@@ -141,6 +141,12 @@ export function PatientPortal() {
           }
         } catch {
           // Ignore non-blocking profile metadata lookup error
+        }
+
+        if (!explicitBoundPatientId) {
+          try {
+            explicitBoundPatientId = sessionStorage.getItem('reforme_portal_patient_id') || '';
+          } catch {}
         }
 
         // 2. Extract canonical phone (stripping any `.v<token>` password-reset suffix)
@@ -425,6 +431,10 @@ export function PatientPortal() {
   };
 
   const handleLogout = async () => {
+    try {
+      sessionStorage.removeItem('reforme_portal_patient_phone');
+      sessionStorage.removeItem('reforme_portal_patient_id');
+    } catch {}
     clearStoredAuthSession();
     await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
     window.location.hash = 'login';
@@ -687,19 +697,29 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
   return (
     <div className="min-h-screen bg-slate-50 pb-20 font-sans">
       {isStaffPreview && (
-        <div className="bg-slate-900 text-white px-4 py-2.5 text-xs flex items-center justify-between gap-2">
+        <div className="bg-slate-900 text-white px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-2">
           <span className="font-medium truncate">
             Aperçu Espace Patient : <strong className="text-mint-400">{patient.prenom} {patient.nom}</strong>
+            {patient.telephone ? ` (${normalizePatientPhone(patient.telephone) || patient.telephone})` : ''}
           </span>
-          <button
-            type="button"
-            onClick={() => {
-              window.location.hash = 'patient-detail';
-            }}
-            className="bg-white/10 hover:bg-white/20 text-white font-bold px-3 py-1 rounded-lg whitespace-nowrap transition-colors"
-          >
-            ← Retour à la fiche patient
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="bg-mint-600 hover:bg-mint-700 text-white font-bold px-3 py-1 rounded-lg whitespace-nowrap transition-colors"
+            >
+              Tester la connexion patient
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                window.location.hash = 'patient-detail';
+              }}
+              className="bg-white/10 hover:bg-white/20 text-white font-bold px-3 py-1 rounded-lg whitespace-nowrap transition-colors"
+            >
+              ← Retour à la fiche patient
+            </button>
+          </div>
         </div>
       )}
       {/* Header */}

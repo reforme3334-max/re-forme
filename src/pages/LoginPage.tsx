@@ -16,6 +16,7 @@ import {
   extractPhoneFromPatientAuthEmail,
   isPatientSyntheticEmail,
   normalizePatientPhone,
+  parsePatientProfileAuthMeta,
   resolvePatientLoginCandidates,
   stripInvisibleChars,
 } from '../lib/patientAuthUtils';
@@ -310,11 +311,13 @@ export function LoginPage() {
       if (role === 'admin') {
         try {
           sessionStorage.removeItem('reforme_portal_patient_phone');
+          sessionStorage.removeItem('reforme_portal_patient_id');
         } catch {}
         window.location.hash = 'dashboard';
       } else if (role === 'therapeute' || role === 'secretaire') {
         try {
           sessionStorage.removeItem('reforme_portal_patient_phone');
+          sessionStorage.removeItem('reforme_portal_patient_id');
         } catch {}
         const perms: string[] = Array.isArray(profile?.permissions) ? profile.permissions : [];
         const hasConfigured = perms.includes('__meta_configured:1');
@@ -343,7 +346,12 @@ export function LoginPage() {
         }
       } else if (role === 'patient') {
         try {
+          const patientMeta = parsePatientProfileAuthMeta(profile);
+          if (patientMeta?.patientId) {
+            sessionStorage.setItem('reforme_portal_patient_id', patientMeta.patientId);
+          }
           const patientPhone =
+            patientMeta?.phone ||
             extractPhoneFromPatientAuthEmail(effectiveAuthEmail) ||
             normalizePatientPhone(rawIdentifier);
           if (patientPhone) {
@@ -444,7 +452,7 @@ export function LoginPage() {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       className="block w-full pl-10 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-mint-500/20 focus:border-mint-500 transition-all bg-slate-50 focus:bg-white"
-                      placeholder="Email ou 06XXXXXXXX"
+                      placeholder="Email, 06XXXXXXXX ou CIN"
                     />
                   </div>
                 </div>

@@ -38,6 +38,7 @@ import {
   Key,
   Eye,
   EyeOff,
+  ExternalLink,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import Papa from 'papaparse';
@@ -151,11 +152,17 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     text: '',
   });
 
+  const [lastQuickCreds, setLastQuickCreds] = useState<{ phone: string; password: string } | null>(null);
+
   const openQuickAccessModal = (patient: Patient) => {
     setPatientForAccess(patient);
     setQuickAccessPassword('');
+    setLastQuickCreds(null);
     setShowQuickAccessPassword(true);
     setQuickAccessMessage({ type: '', text: '' });
+    try {
+      localStorage.setItem('reforme_preview_patient_id', patient.id);
+    } catch {}
     setIsQuickAccessModalOpen(true);
   };
 
@@ -174,13 +181,18 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     setQuickAccessMessage({ type: '', text: '' });
 
     try {
+      const savedPlainPassword = quickAccessPassword.trim();
       const result = await provisionOrResetPatientAccess(
         supabase,
         supabaseUrl,
         supabaseAnonKey,
         { id: patientForAccess.id, telephone: patientForAccess.telephone },
-        quickAccessPassword
+        savedPlainPassword
       );
+
+      try {
+        localStorage.setItem('reforme_preview_patient_id', patientForAccess.id);
+      } catch {}
 
       const normTarget = result.canonicalPhone;
       setPatients((prev) =>
@@ -193,12 +205,13 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         })
       );
       setPatientForAccess((prev) => (prev ? { ...prev, has_access: true } : null));
+      setLastQuickCreds({ phone: result.canonicalPhone, password: savedPlainPassword });
       setQuickAccessPassword('');
       setQuickAccessMessage({
         type: 'success',
         text: result.isReset
-          ? `Mot de passe réinitialisé ! Connexion immédiate avec le numéro ${result.canonicalPhone}.`
-          : `Accès activé ! Connexion immédiate avec le numéro ${result.canonicalPhone}.`,
+          ? `Mot de passe réinitialisé ! Connexion active immédiatement.`
+          : `Accès activé ! Connexion active immédiatement.`,
       });
     } catch (err: any) {
       setQuickAccessMessage({
@@ -2020,13 +2033,41 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
             {quickAccessMessage.text && (
               <div
-                className={`p-3 rounded-xl text-sm border ${
+                className={`p-3.5 rounded-xl text-sm border space-y-2.5 ${
                   quickAccessMessage.type === 'success'
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                     : 'bg-rose-50 text-rose-700 border-rose-200'
                 }`}
               >
-                {quickAccessMessage.text}
+                <p className="font-semibold">{quickAccessMessage.text}</p>
+                {quickAccessMessage.type === 'success' && lastQuickCreds && (
+                  <div className="p-2.5 rounded-lg bg-white border border-emerald-200 text-xs text-slate-800 space-y-1">
+                    <div>
+                      Identifiant : <strong className="font-mono text-slate-900">{lastQuickCreds.phone}</strong>
+                    </div>
+                    <div>
+                      Mot de passe : <strong className="font-mono text-slate-900">{lastQuickCreds.password}</strong>
+                    </div>
+                  </div>
+                )}
+                {quickAccessMessage.type === 'success' && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold gap-1.5"
+                    onClick={() => {
+                      try {
+                        localStorage.setItem('reforme_preview_patient_id', patientForAccess.id);
+                      } catch {}
+                      setIsQuickAccessModalOpen(false);
+                      setPatientForAccess(null);
+                      window.location.hash = 'espace-patient';
+                    }}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Ouvrir l'Espace Patient de {patientForAccess.prenom}
+                  </Button>
+                )}
               </div>
             )}
 

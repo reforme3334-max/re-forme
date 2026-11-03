@@ -17,9 +17,9 @@ export function stripInvisibleChars(input: string): string {
 }
 
 /**
- * Normalizes a Moroccan or general phone number into a canonical login identifier
- * (e.g. "+212 6 61 65 32 07" -> "0661653207", "06-61-65-32-07" -> "0661653207",
- * "661653207" -> "0661653207").
+ * Normalizes a Moroccan or French/European diaspora phone number into a canonical
+ * login identifier (e.g. "+212 6 61 65 32 07" -> "0661653207",
+ * "+33 6 70 69 71 02" -> "0670697102", "+33 06 70 69 71 02" -> "0670697102").
  */
 export function normalizePatientPhone(rawPhone: string): string {
   const cleaned = stripInvisibleChars(rawPhone);
@@ -28,17 +28,35 @@ export function normalizePatientPhone(rawPhone: string): string {
   const digits = cleaned.replace(/\D/g, '');
   if (!digits) return '';
 
-  // 00212XXXXXXXXX -> 0XXXXXXXXX (when 9 digits follow 00212)
+  // Moroccan international prefixes: 00212 / +212 (with or without trunk 0)
+  if (digits.startsWith('002120') && digits.length === 15) {
+    return digits.slice(5);
+  }
   if (digits.startsWith('00212') && digits.length === 14) {
     return '0' + digits.slice(5);
   }
-
-  // 212XXXXXXXXX -> 0XXXXXXXXX (when 9 digits follow 212)
+  if (digits.startsWith('2120') && digits.length === 13) {
+    return digits.slice(3);
+  }
   if (digits.startsWith('212') && digits.length === 12) {
     return '0' + digits.slice(3);
   }
 
-  // 9-digit local Moroccan mobile/landline without leading 0 (e.g. 661653207 -> 0661653207)
+  // French (+33 / 0033) & common European mobile prefixes (+32, +34, +39, +41) stored locally as 06/07...
+  if (digits.startsWith('00330') && digits.length === 14 && /^[67]/.test(digits.slice(5))) {
+    return digits.slice(4);
+  }
+  if (digits.startsWith('0033') && digits.length === 13 && /^[67]/.test(digits.slice(4))) {
+    return '0' + digits.slice(4);
+  }
+  if (digits.startsWith('330') && digits.length === 12 && /^[67]/.test(digits.slice(3))) {
+    return digits.slice(2);
+  }
+  if (digits.startsWith('33') && digits.length === 11 && /^[67]/.test(digits.slice(2))) {
+    return '0' + digits.slice(2);
+  }
+
+  // 9-digit local mobile/landline without leading 0 (e.g. 670697102 -> 0670697102)
   if (digits.length === 9 && /^[5678]/.test(digits)) {
     return '0' + digits;
   }
@@ -73,6 +91,7 @@ export interface PatientProfileAuthMeta {
   phone: string;
   authEmail: string;
   updatedAt: string;
+  createdAt: string;
 }
 
 export function parsePatientProfileAuthMeta(rawProfile: any): PatientProfileAuthMeta | null {
@@ -107,6 +126,7 @@ export function parsePatientProfileAuthMeta(rawProfile: any): PatientProfileAuth
     phone,
     authEmail,
     updatedAt: updatedAt || rawProfile.created_at || '',
+    createdAt: rawProfile.created_at || updatedAt || '',
   };
 }
 
@@ -126,8 +146,8 @@ export function buildPatientProfilePermissions(meta: {
 
 /**
  * Resolves all candidate Supabase Auth emails to try when a patient logs in
- * with their phone number (handles password resets via versioned aliases,
- * +212 / 00212 / spaces / dashes / WhatsApp formatting, and legacy accounts).
+ * with their phone number, CIN, or full name (handles password resets via versioned aliases,
+ * +212 / +33 / 0033 / spaces / dashes / WhatsApp formatting, and legacy accounts).
  */
 export async function resolvePatientLoginCandidates(
   supabaseClient: SupabaseClient,
@@ -136,9 +156,7 @@ export async function resolvePatientLoginCandidates(
   const stripped = stripInvisibleChars(rawPhoneInput);
   const rawNoSpaces = stripped.replace(/\s+/g, '');
   const rawDigits = stripped.replace(/\D/g, '');
-  const canonicalPhone = normalizePatientPhone(stripped);
-  const tail = canonicalPhone.slice(-8);
-  const validTail = tail.length === 8 && !/^0+$/.test(tail);
+  let canonicalPhone = normalizePatientPhone(stripped);
 
   const candidates: string[] = [];
   const addCandidate = (email?: string | null) => {
@@ -148,7 +166,59 @@ export async function resolvePatientLoginCandidates(
     }
   };
 
-  // 1. Check `profiles` (role = 'patient') for any explicit/versioned auth emails (most recent reset first)
+  let allPatients: any[] = [];
+  try {
+    allPatients =
+      (await fetchAllRows(
+        'patients',
+        'id, nom, prenom, cin, telephone, email, has_access, created_at'
+      )) || [];
+  } catch {
+    allPatients = [];
+  }
+
+  // Support login via CIN (e.g. "JB491394") or exact full name (e.g. "ANIS BISTARINE") if user typed letters
+  const matchedPatientIds = new Set<string>();
+  const lowerInput = stripped.toLowerCase().replace(/\s+/g, ' ');
+  const compactAlphaNum = stripped.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  if (/[a-z]/i.test(stripped) && !stripped.includes('@')) {
+    for (const p of allPatients) {
+      const pCin = String(p.cin || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      const fullA = `${String(p.prenom || '').trim()} ${String(p.nom || '').trim()}`
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+      const fullB = `${String(p.nom || '').trim()} ${String(p.prenom || '').trim()}`
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+
+      if (
+        (pCin && compactAlphaNum && pCin === compactAlphaNum) ||
+        (lowerInput.length >= 4 && (lowerInput === fullA || lowerInput === fullB))
+      ) {
+        matchedPatientIds.add(p.id);
+        if (!canonicalPhone && p.telephone) {
+          canonicalPhone = normalizePatientPhone(p.telephone);
+        }
+      }
+    }
+  }
+
+  const tail = canonicalPhone.slice(-8);
+  const validTail = tail.length === 8 && !/^0+$/.test(tail);
+
+  for (const p of allPatients) {
+    const pNorm = normalizePatientPhone(p.telephone || '');
+    if (!pNorm) continue;
+    if ((canonicalPhone && pNorm === canonicalPhone) || (validTail && pNorm.slice(-8) === tail)) {
+      matchedPatientIds.add(p.id);
+    }
+  }
+
+  // 1. Check `profiles` (role = 'patient') for any explicit/versioned auth emails
+  // Sort by server-authoritative `created_at` first to avoid client clock skew issues
   try {
     const { data: patientProfiles } = await supabaseClient
       .from('profiles')
@@ -161,12 +231,18 @@ export async function resolvePatientLoginCandidates(
         .map(parsePatientProfileAuthMeta)
         .filter((m): m is PatientProfileAuthMeta => {
           if (!m || !m.authEmail) return false;
+          if (m.patientId && matchedPatientIds.has(m.patientId)) return true;
           const mNorm = normalizePatientPhone(m.phone);
           if (canonicalPhone && mNorm === canonicalPhone) return true;
           if (validTail && mNorm.slice(-8) === tail) return true;
           return false;
         })
-        .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+        .sort((a, b) => {
+          const serverDiff =
+            new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+          if (serverDiff !== 0) return serverDiff;
+          return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+        });
 
       for (const meta of matchedMetas) {
         addCandidate(meta.authEmail);
@@ -176,53 +252,46 @@ export async function resolvePatientLoginCandidates(
     // Non-blocking fallback to standard candidates
   }
 
-  // 2. Canonical Moroccan format (e.g. 0612345678@patient.reforme.center)
+  // 2. Canonical normalized format (e.g. 0670697102@patient.reforme.center)
   if (canonicalPhone) {
     addCandidate(`${canonicalPhone}@patient.reforme.center`);
   }
 
   // 3. Check `patients` table for exact stored telephone format or real email
-  try {
-    const allPatients = await fetchAllRows(
-      'patients',
-      'id, telephone, email, has_access, created_at'
-    );
-    const matchingPatients = (allPatients || [])
-      .filter((p: any) => {
-        const pNorm = normalizePatientPhone(p.telephone || '');
-        if (!pNorm) return false;
-        if (canonicalPhone && pNorm === canonicalPhone) return true;
-        if (validTail && pNorm.slice(-8) === tail) return true;
-        return false;
-      })
-      .sort((a: any, b: any) => Number(Boolean(b.has_access)) - Number(Boolean(a.has_access)));
+  const matchingPatients = allPatients
+    .filter((p: any) => matchedPatientIds.has(p.id))
+    .sort((a: any, b: any) => Number(Boolean(b.has_access)) - Number(Boolean(a.has_access)));
 
-    for (const p of matchingPatients) {
-      const exactStored = stripInvisibleChars(p.telephone || '').replace(/\s+/g, '');
-      if (exactStored) {
-        addCandidate(`${exactStored}@patient.reforme.center`);
-      }
-      if (p.email && String(p.email).includes('@')) {
-        addCandidate(p.email);
-      }
+  for (const p of matchingPatients) {
+    const exactStored = stripInvisibleChars(p.telephone || '').replace(/\s+/g, '');
+    if (exactStored) {
+      addCandidate(`${exactStored}@patient.reforme.center`);
     }
-  } catch {
-    // Ignore table lookup errors and rely on computed variants
+    const pNorm = normalizePatientPhone(p.telephone || '');
+    if (pNorm) {
+      addCandidate(`${pNorm}@patient.reforme.center`);
+    }
+    if (p.email && String(p.email).includes('@')) {
+      addCandidate(p.email);
+    }
   }
 
-  // 4. Fallback phone variants (+212, 212, 00212, raw digits, raw non-space input)
+  // 4. Fallback phone variants (+212, +33, raw digits, raw non-space input)
   if (/^0[5678]\d{8}$/.test(canonicalPhone)) {
     const withoutZero = canonicalPhone.slice(1);
     addCandidate(`+212${withoutZero}@patient.reforme.center`);
     addCandidate(`212${withoutZero}@patient.reforme.center`);
     addCandidate(`00212${withoutZero}@patient.reforme.center`);
+    addCandidate(`+33${withoutZero}@patient.reforme.center`);
+    addCandidate(`33${withoutZero}@patient.reforme.center`);
+    addCandidate(`0033${withoutZero}@patient.reforme.center`);
     addCandidate(`${withoutZero}@patient.reforme.center`);
   }
 
   if (rawDigits) {
     addCandidate(`${rawDigits}@patient.reforme.center`);
   }
-  if (rawNoSpaces && !rawNoSpaces.includes('@')) {
+  if (rawNoSpaces && !rawNoSpaces.includes('@') && !/\s/.test(rawNoSpaces)) {
     addCandidate(`${rawNoSpaces}@patient.reforme.center`);
   }
 
