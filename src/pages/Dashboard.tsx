@@ -6,6 +6,8 @@ import { supabase } from '../lib/supabaseClient';
 import { Button } from '../components/ui/button';
 import { MultiMonthPicker } from '../components/ui/MultiMonthPicker';
 import { useAppointmentNotifications } from '../contexts/AppointmentNotificationsContext';
+import { PatientNameLink } from '../components/patients/PatientNameLink';
+import { openPatientDossier } from '../lib/patientNavigation';
 import { 
   fetchAllRows, 
   getBillDate, 
@@ -265,14 +267,14 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
     }
 
     // Top 5 Impayés
-    const unpaidMap = new Map<string, { name: string; amount: number; sessions: number; email?: string; telephone?: string }>();
+    const unpaidMap = new Map<string, { id: string; name: string; amount: number; sessions: number; email?: string; telephone?: string }>();
     const patientsMap = new Map(rawData.patients.map(p => [p.id, p]));
     
     unpaidBillings.forEach(b => {
       const p = (b.patients as any) || patientsMap.get(b.patient_id);
       if (p) {
         const pName = `${p.prenom} ${p.nom}`;
-        const current = unpaidMap.get(p.id) || { name: pName, amount: 0, sessions: 0, email: p.email, telephone: p.telephone };
+        const current = unpaidMap.get(p.id) || { id: p.id, name: pName, amount: 0, sessions: 0, email: p.email, telephone: p.telephone };
         current.amount = roundMoney(current.amount + roundMoney(b.montant));
         current.sessions += 1;
         unpaidMap.set(p.id, current);
@@ -530,7 +532,12 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                 <div>
                   <div className="flex items-center gap-1.5 font-bold text-slate-900">
                     <span className={`w-2 h-2 rounded-full ${req.type === 'changement_rdv' ? 'bg-purple-500' : 'bg-amber-500'}`} />
-                    <span>{req.patient_name}</span>
+                    <PatientNameLink
+                      patientId={req.patient_id}
+                      name={req.patient_name}
+                      fromRoute="dashboard"
+                      className="font-bold text-slate-900"
+                    />
                     <span className="text-[10px] text-slate-400 font-normal">({req.patient_phone || 'Sans tel'})</span>
                   </div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
@@ -738,8 +745,15 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                 </thead>
                 <tbody>
                   {dashboardData.topUnpaidList.length > 0 ? dashboardData.topUnpaidList.map((p, i) => (
-                    <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors last:border-0">
-                      <td className="px-4 py-3 font-medium text-slate-900">{p.name}</td>
+                    <tr key={p.id || i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors last:border-0">
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        <PatientNameLink
+                          patientId={p.id}
+                          name={p.name}
+                          fromRoute="dashboard"
+                          className="font-semibold text-slate-900"
+                        />
+                      </td>
                       <td className="px-4 py-3 text-center text-slate-600">
                         <span className="bg-slate-100 px-2 py-1 rounded-md text-xs font-medium">{p.sessions}</span>
                       </td>
@@ -797,9 +811,14 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                 <tbody className="divide-y divide-slate-100">
                   {dashboardData.attendanceAlerts.length > 0 ? (
                     dashboardData.attendanceAlerts.slice(0, 5).map((alertItem: any, index: number) => (
-                      <tr key={index} className="hover:bg-slate-50/50 transition-colors">
+                      <tr key={alertItem.patientId || index} className="hover:bg-slate-50/50 transition-colors">
                         <td className="px-4 py-3 font-semibold text-slate-900">
-                          {alertItem.prenom} {alertItem.nom}
+                          <PatientNameLink
+                            patientId={alertItem.patientId}
+                            name={`${alertItem.prenom} ${alertItem.nom}`}
+                            fromRoute="dashboard"
+                            className="font-semibold text-slate-900"
+                          />
                         </td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold border ${alertItem.badgeColor}`}>
@@ -835,7 +854,11 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                               size="sm"
                               variant="ghost"
                               className="h-8 text-xs text-slate-600 hover:bg-slate-50"
-                              onClick={() => onSelectPatient ? onSelectPatient(alertItem.patientId) : window.location.hash = `patients`}
+                              onClick={() =>
+                                onSelectPatient
+                                  ? onSelectPatient(alertItem.patientId)
+                                  : openPatientDossier(alertItem.patientId, 'dashboard')
+                              }
                             >
                               Fiche
                             </Button>
@@ -924,13 +947,20 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                 </thead>
                 <tbody>
                   {dashboardData.patientsSansAccesList.length > 0 ? dashboardData.patientsSansAccesList.map((p, i) => (
-                    <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors last:border-0">
-                      <td className="px-4 py-3 font-medium text-slate-900">{p.nom} {p.prenom}</td>
+                    <tr key={p.id || i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors last:border-0">
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        <PatientNameLink
+                          patientId={p.id}
+                          name={`${p.nom} ${p.prenom}`}
+                          fromRoute="dashboard"
+                          className="font-semibold text-slate-900"
+                        />
+                      </td>
                       <td className="px-4 py-3 text-slate-600">
                         <div className="text-xs">
                           {p.email ? <div className="flex items-center gap-1"><Mail className="h-3 w-3" /> {p.email}</div> : null}
-                          {p.tel ? <div className="flex items-center gap-1"><Send className="h-3 w-3" /> {p.tel}</div> : null}
-                          {!p.email && !p.tel ? <span className="text-rose-500 font-bold">Aucun contact !</span> : null}
+                          {(p.telephone || p.tel) ? <div className="flex items-center gap-1"><Phone className="h-3 w-3" /> {p.telephone || p.tel}</div> : null}
+                          {!p.email && !(p.telephone || p.tel) ? <span className="text-rose-500 font-bold">Aucun contact !</span> : null}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-center">
@@ -938,7 +968,11 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
                           size="sm" 
                           variant="ghost" 
                           className="h-8 text-xs text-indigo-600 hover:bg-indigo-50" 
-                          onClick={() => onSelectPatient ? onSelectPatient(p.id) : window.location.hash = `patients`}
+                          onClick={() =>
+                            onSelectPatient
+                              ? onSelectPatient(p.id)
+                              : openPatientDossier(p.id, 'dashboard')
+                          }
                         >
                           Gérer l'accès
                         </Button>

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useAppointmentNotifications, AppointmentRequest } from '../../contexts/AppointmentNotificationsContext';
 import { Button } from '../ui/button';
+import { PatientNameLink } from '../patients/PatientNameLink';
 import { parseClinicDate, formatUtcToMoroccoTime } from '../../lib/timeUtils';
 
 export function NotificationCenter() {
@@ -272,9 +273,13 @@ export function NotificationCenter() {
                     {/* Patient info */}
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <h4 className="text-xs font-bold text-slate-900 leading-tight">
-                          {req.patient_name}
-                        </h4>
+                        <PatientNameLink
+                          patientId={req.patient_id}
+                          name={req.patient_name}
+                          showIconAlways
+                          onBeforeNavigate={() => setIsOpen(false)}
+                          className="text-xs font-bold text-slate-900 leading-tight"
+                        />
                         {req.patient_phone && (
                           <p className="text-[11px] text-slate-500 mt-0.5">{req.patient_phone}</p>
                         )}
@@ -436,9 +441,14 @@ export function NotificationCenter() {
                 <p className="text-xs font-black text-amber-400 uppercase tracking-wider">
                   {latestNotification.type === 'changement_rdv' ? 'Demande de Report' : 'Nouveau RDV'}
                 </p>
-                <p className="text-sm font-bold mt-0.5 text-white">
-                  {latestNotification.patient_name}
-                </p>
+                <PatientNameLink
+                  patientId={latestNotification.patient_id}
+                  name={latestNotification.patient_name}
+                  variant="dark"
+                  showIconAlways
+                  onBeforeNavigate={clearLatestNotification}
+                  className="text-sm font-bold mt-0.5 text-white"
+                />
                 <p className="text-xs text-slate-300 mt-0.5">
                   {latestNotification.type === 'changement_rdv'
                     ? `Souhaite reporter au ${latestNotification.requested_date || 'prochain créneau'}`

@@ -1338,7 +1338,17 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             }}
           >
             <ArrowLeft className="h-4 w-4 mr-2" />
-            {returnRoute === 'agenda' ? "Retour à l'agenda" : returnRoute === 'dashboard' ? 'Retour au tableau de bord' : 'Retour'}
+            {returnRoute === 'agenda'
+              ? "Retour à l'agenda"
+              : returnRoute === 'dashboard'
+              ? 'Retour au tableau de bord'
+              : returnRoute === 'finance'
+              ? 'Retour aux finances'
+              : returnRoute === 'patients'
+              ? 'Retour aux patients'
+              : returnRoute === 'settings'
+              ? 'Retour aux paramètres'
+              : 'Retour'}
           </Button>
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => {
             const mutInfo = parsePatientMutuelle(patient);

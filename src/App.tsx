@@ -13,6 +13,7 @@ import { AppointmentNotificationsProvider } from './contexts/AppointmentNotifica
 import { supabase } from './lib/supabaseClient';
 import { resolveOrBindCollaboratorSession, isPrimaryAdminEmail } from './lib/teamUtils';
 import { isPatientSyntheticEmail } from './lib/patientAuthUtils';
+import { SELECT_PATIENT_EVENT, SelectPatientEventDetail } from './lib/patientNavigation';
 import { Activity, Lock, Eye, EyeOff, CheckCircle, AlertCircle } from 'lucide-react';
 import { Card, CardContent } from './components/ui/card';
 import { Button } from './components/ui/button';
@@ -80,11 +81,23 @@ export default function App() {
 
       const hash = rawHash || 'login';
       setCurrentRoute(hash);
-      if (hash === 'patient-detail' && !selectedPatientId) {
+      if (hash === 'patient-detail') {
         try {
           const savedId = localStorage.getItem('reforme_preview_patient_id');
           if (savedId) setSelectedPatientId(savedId);
+          const savedReturn = sessionStorage.getItem('reforme_patient_return_route');
+          if (savedReturn) setReturnRoute(savedReturn);
         } catch {}
+      }
+    };
+
+    const handleSelectPatientEvent = (e: Event) => {
+      const customEvt = e as CustomEvent<SelectPatientEventDetail>;
+      if (customEvt.detail?.patientId) {
+        setSelectedPatientId(customEvt.detail.patientId);
+        if (customEvt.detail.fromRoute) {
+          setReturnRoute(customEvt.detail.fromRoute);
+        }
       }
     };
 
@@ -95,13 +108,15 @@ export default function App() {
     });
 
     window.addEventListener('hashchange', handleHashChange);
+    window.addEventListener(SELECT_PATIENT_EVENT, handleSelectPatientEvent);
     handleHashChange();
 
     return () => {
       window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener(SELECT_PATIENT_EVENT, handleSelectPatientEvent);
       authSub.subscription.unsubscribe();
     };
-  }, [selectedPatientId]);
+  }, []);
 
   const handleSaveRecoveryPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -270,7 +285,7 @@ export default function App() {
   const renderContent = () => {
     if (currentRoute === 'patient-detail' && selectedPatientId) {
       return (
-        <ProtectedRoute allowedPermissions={['patients', 'agenda']}>
+        <ProtectedRoute allowedPermissions={['patients', 'agenda', 'finance_recettes', 'finance_stats']}>
           <PatientDetail patientId={selectedPatientId} returnRoute={returnRoute} />
         </ProtectedRoute>
       );

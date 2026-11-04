@@ -23,6 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button';
 import { Modal } from '../components/ui/modal';
 import { MultiMonthPicker } from '../components/ui/MultiMonthPicker';
+import { PatientNameLink } from '../components/patients/PatientNameLink';
 import * as XLSX from 'xlsx';
 import {
   fetchAllRows,
@@ -216,7 +217,30 @@ export function Finance() {
     return userProfile.permissions?.includes(permission);
   };
 
-  // Map patient_id -> club name
+  // Map patient_id -> patient record & club name
+  const patientsByIdMap = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const p of patientsList) {
+      if (p?.id) map.set(p.id, p);
+    }
+    return map;
+  }, [patientsList]);
+
+  const resolveBillPatient = (bill: any): { id: string | null; name: string } => {
+    const relPat = bill?.patients
+      ? Array.isArray(bill.patients)
+        ? bill.patients[0]
+        : bill.patients
+      : null;
+    const fallbackPat = bill?.patient_id ? patientsByIdMap.get(bill.patient_id) : null;
+    const pat = relPat || fallbackPat;
+    const resolvedId = pat?.id || bill?.patient_id || null;
+    const resolvedName = pat
+      ? `${pat.prenom || ''} ${pat.nom || ''}`.trim() || 'Patient'
+      : 'Client divers';
+    return { id: resolvedId, name: resolvedName };
+  };
+
   const patientClubMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const p of patientsList) {
@@ -1169,7 +1193,12 @@ export function Finance() {
                                   {clubStat.athletes.map((ath) => (
                                     <tr key={ath.id} className="hover:bg-slate-50">
                                       <td className="px-4 py-2.5 font-bold text-slate-900">
-                                        {ath.fullName}
+                                        <PatientNameLink
+                                          patientId={ath.id}
+                                          name={ath.fullName}
+                                          fromRoute="finance"
+                                          className="font-bold text-slate-900"
+                                        />
                                       </td>
                                       <td className="px-4 py-2.5 text-slate-600">
                                         {ath.telephone || '-'}
@@ -1349,9 +1378,17 @@ export function Finance() {
                               )}
                             </td>
                             <td className="px-6 py-4 font-medium text-slate-900">
-                              {bill.patients
-                                ? `${bill.patients.prenom} ${bill.patients.nom}`
-                                : 'Client divers'}
+                              {(() => {
+                                const billPat = resolveBillPatient(bill);
+                                return (
+                                  <PatientNameLink
+                                    patientId={billPat.id}
+                                    name={billPat.name}
+                                    fromRoute="finance"
+                                    className="font-semibold text-slate-900"
+                                  />
+                                );
+                              })()}
                             </td>
                             <td className="px-6 py-4">
                               {clubName ? (
@@ -1559,9 +1596,17 @@ export function Finance() {
                               )}
                             </td>
                             <td className="px-6 py-4 font-medium text-slate-900">
-                              {bill.patients
-                                ? `${bill.patients.prenom} ${bill.patients.nom}`
-                                : 'Client divers'}
+                              {(() => {
+                                const billPat = resolveBillPatient(bill);
+                                return (
+                                  <PatientNameLink
+                                    patientId={billPat.id}
+                                    name={billPat.name}
+                                    fromRoute="finance"
+                                    className="font-semibold text-slate-900"
+                                  />
+                                );
+                              })()}
                             </td>
                             <td className="px-6 py-4">
                               {clubName ? (
@@ -1880,14 +1925,26 @@ export function Finance() {
         maxWidth="sm"
       >
         <form onSubmit={handleSaveBillEdit} className="space-y-4">
-          {editingBill?.patients && (
-            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm">
-              <span className="text-xs font-semibold uppercase text-slate-400 block">Patient</span>
-              <span className="font-bold text-slate-900">
-                {editingBill.patients.prenom} {editingBill.patients.nom}
-              </span>
-            </div>
-          )}
+          {editingBill && (() => {
+            const editBillPat = resolveBillPatient(editingBill);
+            if (!editBillPat.id && editBillPat.name === 'Client divers') return null;
+            return (
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm">
+                <span className="text-xs font-semibold uppercase text-slate-400 block">Patient</span>
+                <PatientNameLink
+                  patientId={editBillPat.id}
+                  name={editBillPat.name}
+                  fromRoute="finance"
+                  showIconAlways
+                  onBeforeNavigate={() => {
+                    setIsEditBillModalOpen(false);
+                    setConfirmDeleteBill(false);
+                  }}
+                  className="font-bold text-slate-900 mt-0.5"
+                />
+              </div>
+            );
+          })()}
 
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-slate-700">

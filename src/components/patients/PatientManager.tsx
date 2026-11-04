@@ -39,8 +39,11 @@ import {
   Eye,
   EyeOff,
   ExternalLink,
+  FolderOpen,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
+import { PatientNameLink } from './PatientNameLink';
+import { openPatientDossier } from '@/lib/patientNavigation';
 import Papa from 'papaparse';
 
 interface Patient {
@@ -1496,9 +1499,15 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                             </div>
                             <div>
                               <div className="flex flex-wrap items-center gap-1.5">
-                                <span className="font-medium text-slate-900">
-                                  {patient.nom} {patient.prenom}
-                                </span>
+                                <PatientNameLink
+                                  patientId={patient.id}
+                                  name={`${patient.nom} ${patient.prenom}`}
+                                  fromRoute="patients"
+                                  onBeforeNavigate={() => {
+                                    if (onSelectPatient) onSelectPatient(patient.id);
+                                  }}
+                                  className="font-semibold text-slate-900"
+                                />
                                 {alertBadge && (
                                   <span
                                     className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${alertBadge.className}`}
@@ -1666,20 +1675,40 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                           })}
                         </td>
                         <td className="px-4 py-4 text-right" onClick={(e) => e.stopPropagation()}>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setPatientToDelete(patient);
-                              setIsDeleteModalOpen(true);
-                            }}
-                            className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 h-8 w-8 p-0 rounded-full"
-                            title="Supprimer le patient"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="inline-flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (onSelectPatient) {
+                                  onSelectPatient(patient.id);
+                                } else {
+                                  openPatientDossier(patient.id, 'patients');
+                                }
+                              }}
+                              className="text-primary-600 hover:text-primary-700 hover:bg-primary-50 h-8 px-2.5 text-xs font-semibold rounded-lg gap-1"
+                              title="Ouvrir le dossier du patient"
+                            >
+                              <FolderOpen className="h-3.5 w-3.5" />
+                              <span className="hidden xl:inline">Dossier</span>
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setPatientToDelete(patient);
+                                setIsDeleteModalOpen(true);
+                              }}
+                              className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 h-8 w-8 p-0 rounded-full"
+                              title="Supprimer le patient"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1791,36 +1820,57 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
             ) : (
               partnerClubs.map((club) => {
                 const count = statsCounts.perClub.get(club.name) || 0;
+                const clubMembers = patients.filter(
+                  (p) =>
+                    (parsePatientMutuelle(p, mutuelleBillingIds).club || '').toLowerCase() ===
+                    club.name.toLowerCase()
+                );
                 return (
                   <div
                     key={club.name}
-                    className="p-3 rounded-xl border border-slate-200 bg-white flex items-center justify-between gap-3"
+                    className="p-3 rounded-xl border border-slate-200 bg-white space-y-2"
                   >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <Trophy className="h-4 w-4 text-indigo-600" />
-                        <span className="font-bold text-sm text-slate-900">{club.name}</span>
-                        <span className="text-[11px] font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
-                          {club.sport}
-                        </span>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Trophy className="h-4 w-4 text-indigo-600" />
+                          <span className="font-bold text-sm text-slate-900">{club.name}</span>
+                          <span className="text-[11px] font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                            {club.sport}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {count} patient(s) affilié(s)
+                          {club.tarifConvention ? ` • Tarif : ${club.tarifConvention} DH/séance` : ''}
+                          {club.note ? ` • ${club.note}` : ''}
+                        </p>
                       </div>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        {count} patient(s) affilié(s)
-                        {club.tarifConvention ? ` • Tarif : ${club.tarifConvention} DH/séance` : ''}
-                        {club.note ? ` • ${club.note}` : ''}
-                      </p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        disabled={clubSaving}
+                        onClick={() => handleDeletePartnerClub(club.name)}
+                        className="text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+                        title="Supprimer ce club"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      disabled={clubSaving}
-                      onClick={() => handleDeletePartnerClub(club.name)}
-                      className="text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                      title="Supprimer ce club"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {clubMembers.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-1.5 border-t border-slate-100">
+                        {clubMembers.map((m) => (
+                          <PatientNameLink
+                            key={m.id}
+                            patientId={m.id}
+                            name={`${m.nom} ${m.prenom}`}
+                            fromRoute="patients"
+                            onBeforeNavigate={() => setIsClubsModalOpen(false)}
+                            className="px-2 py-0.5 rounded-md bg-slate-50 hover:bg-primary-50 border border-slate-200 text-xs font-semibold text-slate-700"
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })
@@ -1841,12 +1891,20 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         title="Club sportif & Couverture mutuelle"
       >
         <form onSubmit={handleSaveQuickMutuelle} className="space-y-5">
-          <p className="text-sm text-slate-600">
-            Patient :{' '}
-            <strong className="text-slate-900">
-              {patientForMutuelle?.nom} {patientForMutuelle?.prenom}
-            </strong>
-          </p>
+          <div className="text-sm text-slate-600 flex items-center gap-1.5 flex-wrap">
+            <span>Patient :</span>
+            <PatientNameLink
+              patientId={patientForMutuelle?.id}
+              name={`${patientForMutuelle?.nom || ''} ${patientForMutuelle?.prenom || ''}`.trim()}
+              fromRoute="patients"
+              showIconAlways
+              onBeforeNavigate={() => {
+                setIsMutuelleModalOpen(false);
+                setPatientForMutuelle(null);
+              }}
+              className="font-bold text-slate-900"
+            />
+          </div>
 
           {/* Club Sportif Conventionné */}
           <div className="space-y-2 p-3.5 rounded-xl bg-indigo-50/60 border border-indigo-100">
@@ -1965,9 +2023,17 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         <div className="space-y-4">
           <p className="text-sm text-slate-600">
             Êtes-vous sûr de vouloir supprimer définitivement le patient{' '}
-            <strong className="text-slate-900 font-bold">
-              {patientToDelete?.nom} {patientToDelete?.prenom}
-            </strong>{' '}
+            <PatientNameLink
+              patientId={patientToDelete?.id}
+              name={`${patientToDelete?.nom || ''} ${patientToDelete?.prenom || ''}`.trim()}
+              fromRoute="patients"
+              showIconAlways
+              onBeforeNavigate={() => {
+                setIsDeleteModalOpen(false);
+                setPatientToDelete(null);
+              }}
+              className="text-slate-900 font-bold"
+            />{' '}
             de la base de données ?
           </p>
           <div className="p-3 bg-rose-50 text-rose-800 rounded-lg text-sm flex gap-2 border border-rose-100">
@@ -2018,9 +2084,17 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         {patientForAccess && (
           <form onSubmit={handleQuickGenerateAccess} className="space-y-4">
             <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-700 space-y-1">
-              <div className="font-bold text-slate-900">
-                {patientForAccess.prenom} {patientForAccess.nom}
-              </div>
+              <PatientNameLink
+                patientId={patientForAccess.id}
+                name={`${patientForAccess.prenom} ${patientForAccess.nom}`}
+                fromRoute="patients"
+                showIconAlways
+                onBeforeNavigate={() => {
+                  setIsQuickAccessModalOpen(false);
+                  setPatientForAccess(null);
+                }}
+                className="font-bold text-slate-900"
+              />
               <div className="text-xs text-slate-600">
                 Identifiant téléphone :{' '}
                 <strong className="font-mono text-slate-900">

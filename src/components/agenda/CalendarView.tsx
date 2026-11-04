@@ -12,6 +12,7 @@ import { getMoroccoNow, parseClinicDate, toClinicIsoString } from '@/lib/timeUti
 import { parsePatientMutuelle } from '@/lib/mutuelleUtils';
 import { resolveOrBindCollaboratorSession } from '@/lib/teamUtils';
 import { roundMoney, isPaidBillingStatus } from '@/lib/financeUtils';
+import { openPatientDossier } from '@/lib/patientNavigation';
 
 interface Patient {
   id: string;
@@ -192,14 +193,13 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
     if (!patientId) return;
     try {
       sessionStorage.setItem('reforme_agenda_current_date', currentDate.toISOString());
-      sessionStorage.setItem('reforme_patient_return_route', 'agenda');
-      localStorage.setItem('reforme_preview_patient_id', patientId);
     } catch {}
     setIsBillingModalOpen(false);
+    setIsModalOpen(false);
     if (onSelectPatient) {
       onSelectPatient(patientId);
     } else {
-      window.location.hash = 'patient-detail';
+      openPatientDossier(patientId, 'agenda');
     }
   };
 
@@ -738,30 +738,44 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
 
           <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0">
             {requests.map(r => (
-              <button
+              <div
                 key={r.id}
-                type="button"
-                onClick={() => {
-                  const appt = appointments.find(a => a.id === r.id);
-                  if (appt) {
-                    setSelectedAppointment(appt);
-                    const appDate = parseClinicDate(appt.date_heure);
-                    setEditDate(format(appDate, 'yyyy-MM-dd'));
-                    setEditTime(format(appDate, 'HH:mm'));
-                    setEditMotif(appt.notes_seance || '');
-                    setEditTherapist(appt.therapist_id || '');
-                    setIsBillingModalOpen(true);
-                  }
-                }}
-                className={`text-[11px] font-bold px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1.5 whitespace-nowrap shadow-2xs ${
+                className={`text-[11px] font-bold px-2.5 py-1 rounded-xl border transition-all flex items-center gap-1.5 whitespace-nowrap shadow-2xs ${
                   r.type === 'changement_rdv'
-                    ? 'bg-purple-100/80 text-purple-900 border-purple-300 hover:bg-purple-200'
-                    : 'bg-amber-100/80 text-amber-900 border-amber-300 hover:bg-amber-200'
+                    ? 'bg-purple-100/80 text-purple-900 border-purple-300'
+                    : 'bg-amber-100/80 text-amber-900 border-amber-300'
                 }`}
               >
                 <span>{r.type === 'changement_rdv' ? '🔄' : '✨'}</span>
-                <span>{r.patient_name}</span>
-              </button>
+                <button
+                  type="button"
+                  title={`Accéder au dossier de ${r.patient_name}`}
+                  onClick={() => handleOpenPatientDossier(r.patient_id)}
+                  className="hover:underline cursor-pointer font-bold flex items-center gap-1"
+                >
+                  <span>{r.patient_name}</span>
+                  <FolderOpen className="h-3 w-3 opacity-75" />
+                </button>
+                <span className="opacity-30">|</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const appt = appointments.find(a => a.id === r.id);
+                    if (appt) {
+                      setSelectedAppointment(appt);
+                      const appDate = parseClinicDate(appt.date_heure);
+                      setEditDate(format(appDate, 'yyyy-MM-dd'));
+                      setEditTime(format(appDate, 'HH:mm'));
+                      setEditMotif(appt.notes_seance || '');
+                      setEditTherapist(appt.therapist_id || '');
+                      setIsBillingModalOpen(true);
+                    }
+                  }}
+                  className="px-1.5 py-0.5 rounded-md bg-white/80 hover:bg-white text-[10px] font-black uppercase tracking-tight cursor-pointer transition-colors"
+                >
+                  Gérer RDV
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -919,9 +933,23 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
                               >
                                 <div className={`absolute left-0 top-0 bottom-0 ${isNarrow ? 'w-0.5' : 'w-1'} ${accentColor}`} />
                                 <div className={`font-bold flex items-start justify-between ${isNarrow ? 'mb-0' : 'mb-0.5'} gap-1 pl-1`}>
-                                  <span className={`${isNarrow ? 'line-clamp-2 text-[10px] leading-tight break-words group-hover/app:line-clamp-none group-hover/app:text-[11px]' : 'truncate'}`}>
-                                    {app.patients ? `${app.patients.prenom} ${app.patients.nom}` : (app.patient_id ? `Chargement...` : 'Patient inconnu')}
-                                  </span>
+                                  {app.patient_id ? (
+                                    <button
+                                      type="button"
+                                      title="Accéder au dossier du patient"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenPatientDossier(app.patient_id);
+                                      }}
+                                      className={`text-left hover:underline hover:text-primary-700 cursor-pointer ${isNarrow ? 'line-clamp-2 text-[10px] leading-tight break-words group-hover/app:line-clamp-none group-hover/app:text-[11px]' : 'truncate'}`}
+                                    >
+                                      {app.patients ? `${app.patients.prenom} ${app.patients.nom}` : 'Chargement...'}
+                                    </button>
+                                  ) : (
+                                    <span className={`${isNarrow ? 'line-clamp-2 text-[10px] leading-tight break-words group-hover/app:line-clamp-none group-hover/app:text-[11px]' : 'truncate'}`}>
+                                      Patient inconnu
+                                    </span>
+                                  )}
                                   <div className="flex items-center shrink-0 gap-1">
                                     {app.patient_id && (
                                       <button
@@ -1085,9 +1113,21 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
           </div>
 
           <div className="space-y-2 relative">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 flex items-center gap-2">
-              Patient
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 flex items-center gap-2">
+                Patient
+              </label>
+              {selectedPatient && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenPatientDossier(selectedPatient)}
+                  className="inline-flex items-center gap-1 text-xs font-bold text-primary-600 hover:text-primary-700 hover:underline cursor-pointer"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  Accéder au dossier
+                </button>
+              )}
+            </div>
             <div className="relative group">
               <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                 <Search className="h-4 w-4 text-slate-400 group-focus-within:text-primary-500 transition-colors" />
@@ -1119,17 +1159,31 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
                     patients.filter(p => `${p.nom} ${p.prenom}`.toLowerCase().includes(patientSearchQuery.toLowerCase())).map(p => (
                       <div
                         key={p.id}
-                        className="px-4 py-3 text-sm hover:bg-primary-50 rounded-xl cursor-pointer text-slate-700 font-medium transition-colors flex items-center gap-3"
+                        className="px-4 py-3 text-sm hover:bg-primary-50 rounded-xl cursor-pointer text-slate-700 font-medium transition-colors flex items-center justify-between gap-3"
                         onClick={() => {
                           setSelectedPatient(p.id);
                           setPatientSearchQuery(`${p.nom} ${p.prenom}`);
                           setIsPatientDropdownOpen(false);
                         }}
                       >
-                        <div className="h-8 w-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold text-xs">
-                          {p.nom[0]}{p.prenom[0]}
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="h-8 w-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold text-xs shrink-0">
+                            {p.nom?.[0]}{p.prenom?.[0]}
+                          </div>
+                          <span className="truncate">{p.nom} {p.prenom}</span>
                         </div>
-                        {p.nom} {p.prenom}
+                        <button
+                          type="button"
+                          title={`Ouvrir le dossier de ${p.nom} ${p.prenom}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenPatientDossier(p.id);
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold text-primary-600 hover:bg-primary-100 transition-colors shrink-0"
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                          Dossier
+                        </button>
                       </div>
                     ))
                   ) : (
@@ -1259,9 +1313,20 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
                 </div>
                 <div className="min-w-0">
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Patient</p>
-                  <p className="font-black text-slate-900 text-lg truncate">
-                    {selectedAppointment.patients?.prenom} {selectedAppointment.patients?.nom}
-                  </p>
+                  {selectedAppointment.patient_id ? (
+                    <button
+                      type="button"
+                      title="Accéder au dossier du patient"
+                      onClick={() => handleOpenPatientDossier(selectedAppointment.patient_id)}
+                      className="font-black text-slate-900 hover:text-primary-600 hover:underline text-lg truncate block text-left cursor-pointer transition-colors"
+                    >
+                      {selectedAppointment.patients?.prenom} {selectedAppointment.patients?.nom}
+                    </button>
+                  ) : (
+                    <p className="font-black text-slate-900 text-lg truncate">
+                      {selectedAppointment.patients?.prenom} {selectedAppointment.patients?.nom}
+                    </p>
+                  )}
                   {selectedAppointment.patients?.pathologie && (
                     <p className="text-xs text-slate-500 font-medium truncate">
                       {selectedAppointment.patients.pathologie}
