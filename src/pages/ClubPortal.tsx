@@ -23,6 +23,9 @@ import {
   FileText,
   Stethoscope,
   Phone,
+  Edit2,
+  Plus,
+  FolderOpen,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase, clearStoredAuthSession } from '../lib/supabaseClient';
@@ -58,6 +61,7 @@ import {
   isRevokedClubProfile,
   parseClubProfileMeta,
 } from '../lib/clubPortalUtils';
+import { openPatientDossier } from '../lib/patientNavigation';
 
 const STANDARD_MOTIFS_LOWER = new Set(
   [
@@ -342,6 +346,12 @@ export function ClubPortal() {
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+
+  // Staff-only Quick Edit Prescribed Sessions Modal (`isStaffPreview` only)
+  const [playerForSessionsEdit, setPlayerForSessionsEdit] = useState<PlayerSummary | null>(null);
+  const [sessionsEditValue, setSessionsEditValue] = useState<string>('10');
+  const [sessionsEditSaving, setSessionsEditSaving] = useState(false);
+  const [sessionsEditError, setSessionsEditError] = useState<string>('');
 
   useEffect(() => {
     try {
@@ -1039,6 +1049,67 @@ export function ClubPortal() {
     }
   };
 
+  const openStaffEditSessions = (player: PlayerSummary, e?: React.MouseEvent) => {
+    if (!isStaffPreview) return;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setPlayerForSessionsEdit(player);
+    setSessionsEditValue(String(player.prescribedSessions || player.completedSessions || 10));
+    setSessionsEditError('');
+  };
+
+  const handleSaveStaffSessions = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isStaffPreview || !playerForSessionsEdit) return;
+
+    const parsed = Math.max(0, parseInt(sessionsEditValue, 10) || 0);
+    setSessionsEditSaving(true);
+    setSessionsEditError('');
+
+    try {
+      const { error: patErr } = await supabase
+        .from('patients')
+        .update({ nombre_seances: parsed })
+        .eq('id', playerForSessionsEdit.id);
+
+      if (patErr) throw patErr;
+
+      const patTrs = clubTreatments.filter((t) => t.patient_id === playerForSessionsEdit.id);
+      const activeTr =
+        patTrs.find((t) => String(t.statut || '').toLowerCase() === 'en cours') ||
+        (patTrs.length === 1 ? patTrs[0] : null);
+
+      if (activeTr?.id) {
+        const { error: trErr } = await supabase
+          .from('treatments')
+          .update({ nombre_seances_prescrites: parsed })
+          .eq('id', activeTr.id);
+        if (!trErr) {
+          setClubTreatments((prev) =>
+            prev.map((t) =>
+              t.id === activeTr.id ? { ...t, nombre_seances_prescrites: parsed } : t
+            )
+          );
+        }
+      }
+
+      setClubPatients((prev) =>
+        prev.map((p) =>
+          p.id === playerForSessionsEdit.id ? { ...p, nombre_seances: parsed } : p
+        )
+      );
+      setPlayerForSessionsEdit(null);
+    } catch (err: any) {
+      setSessionsEditError(
+        err.message || 'Impossible de modifier le nombre de séances prescrites.'
+      );
+    } finally {
+      setSessionsEditSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
@@ -1068,7 +1139,7 @@ export function ClubPortal() {
                 Retour au cabinet
               </button>
               <span className="text-xs font-medium text-slate-300">
-                Mode Aperçu Administration Club (lecture seule)
+                Mode Administration Cabinet — Portail Club
               </span>
             </div>
 
@@ -1499,11 +1570,24 @@ export function ClubPortal() {
                                 {/* Progression Bar & Session Counters */}
                                 <div className="space-y-1.5">
                                   <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
-                                    <span className="font-bold text-slate-800">
-                                      {player.prescribedSessions > 0
-                                        ? `${player.completedSessions} / ${player.prescribedSessions} séances`
-                                        : `${player.completedSessions} séance(s) réalisée(s)`}
-                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-bold text-slate-800">
+                                        {player.prescribedSessions > 0
+                                          ? `${player.completedSessions} / ${player.prescribedSessions} séances`
+                                          : `${player.completedSessions} séance(s) réalisée(s)`}
+                                      </span>
+                                      {isStaffPreview && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => openStaffEditSessions(player, e)}
+                                          title="Modifier le nombre de séances prescrites"
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 hover:bg-indigo-100 text-slate-600 hover:text-indigo-700 text-[10px] font-semibold transition-colors cursor-pointer"
+                                        >
+                                          <Edit2 className="h-2.5 w-2.5" />
+                                          <span>Modifier</span>
+                                        </button>
+                                      )}
+                                    </div>
                                     {player.prescribedSessions > 0 && (
                                       <span
                                         className={`font-bold ${
@@ -1696,16 +1780,28 @@ export function ClubPortal() {
 
                             {/* Progression Bar Card */}
                             <div className="p-3 rounded-lg bg-slate-50 border border-slate-100 space-y-2 tabular-nums">
-                              <div className="flex items-center justify-between text-xs">
+                              <div className="flex items-center justify-between gap-2 text-xs">
                                 <span className="font-semibold text-slate-700">
                                   Progression du protocole
                                 </span>
-                                <span className="font-bold text-slate-900">
-                                  {player.completedSessions}
-                                  {player.prescribedSessions > 0
-                                    ? ` / ${player.prescribedSessions} séances (${player.progressPercent}%)`
-                                    : ' séance(s) réalisée(s)'}
-                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-slate-900">
+                                    {player.completedSessions}
+                                    {player.prescribedSessions > 0
+                                      ? ` / ${player.prescribedSessions} séances (${player.progressPercent}%)`
+                                      : ' séance(s) réalisée(s)'}
+                                  </span>
+                                  {isStaffPreview && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => openStaffEditSessions(player, e)}
+                                      title="Modifier le nombre de séances prescrites"
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white border border-slate-200 hover:border-indigo-300 text-slate-600 hover:text-indigo-700 text-[10px] font-semibold transition-colors cursor-pointer"
+                                    >
+                                      <Edit2 className="h-2.5 w-2.5" />
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                               <div className="w-full h-2 bg-slate-200/80 rounded-full overflow-hidden">
                                 <div
@@ -2034,12 +2130,37 @@ export function ClubPortal() {
                         {selectedPlayer.telephone}
                       </span>
                     )}
-                    <span>
-                      Séances réalisées : <strong>{selectedPlayer.completedSessions}</strong>
-                      {selectedPlayer.prescribedSessions > 0
-                        ? ` / ${selectedPlayer.prescribedSessions} prescrites (${selectedPlayer.progressPercent}%)`
-                        : ''}
+                    <span className="inline-flex items-center gap-1.5">
+                      <span>
+                        Séances réalisées : <strong>{selectedPlayer.completedSessions}</strong>
+                        {selectedPlayer.prescribedSessions > 0
+                          ? ` / ${selectedPlayer.prescribedSessions} prescrites (${selectedPlayer.progressPercent}%)`
+                          : ''}
+                      </span>
+                      {isStaffPreview && (
+                        <button
+                          type="button"
+                          onClick={(e) => openStaffEditSessions(selectedPlayer, e)}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-slate-200 hover:border-indigo-300 text-[11px] font-semibold text-indigo-700 cursor-pointer"
+                        >
+                          <Edit2 className="h-2.5 w-2.5" />
+                          Modifier séances
+                        </button>
+                      )}
                     </span>
+                    {isStaffPreview && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedPlayerId(null);
+                          openPatientDossier(selectedPlayer.id, 'espace-club');
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-[11px] font-bold text-indigo-700 cursor-pointer"
+                      >
+                        <FolderOpen className="h-3 w-3" />
+                        Dossier cabinet
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -2501,6 +2622,142 @@ export function ClubPortal() {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* MODAL: MODIFIER LE NOMBRE DE SÉANCES PRESCRITES (ADMIN / CABINET UNIQUEMENT) */}
+      <Modal
+        isOpen={Boolean(playerForSessionsEdit) && isStaffPreview}
+        onClose={() => {
+          if (!sessionsEditSaving) {
+            setPlayerForSessionsEdit(null);
+            setSessionsEditError('');
+          }
+        }}
+        title="Modifier le nombre de séances prescrites"
+        maxWidth="sm"
+      >
+        {playerForSessionsEdit && (
+          <form onSubmit={handleSaveStaffSessions} className="space-y-4">
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-center justify-between gap-2">
+              <div>
+                Joueur :{' '}
+                <strong className="text-slate-900">{playerForSessionsEdit.fullName}</strong>
+              </div>
+              <span className="font-bold text-indigo-700 tabular-nums">
+                {playerForSessionsEdit.completedSessions} réalisée(s)
+              </span>
+            </div>
+
+            {sessionsEditError && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs font-medium text-rose-700 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>{sessionsEditError}</span>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase text-slate-600 block">
+                Nombre total de séances prescrites
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSessionsEditValue((prev) =>
+                      String(Math.max(0, (parseInt(prev, 10) || 0) - 1))
+                    )
+                  }
+                  className="h-10 w-10 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 flex items-center justify-center text-slate-700 shrink-0 cursor-pointer"
+                >
+                  <Minus className="h-4 w-4" />
+                </button>
+                <input
+                  type="number"
+                  min="0"
+                  required
+                  value={sessionsEditValue}
+                  onChange={(e) => setSessionsEditValue(e.target.value)}
+                  className="w-full h-10 px-3 text-center font-bold text-base border border-slate-200 rounded-xl bg-white text-slate-900 focus:border-indigo-500 outline-none tabular-nums"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSessionsEditValue((prev) =>
+                      String((parseInt(prev, 10) || 0) + 1)
+                    )
+                  }
+                  className="h-10 w-10 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 flex items-center justify-center text-slate-700 shrink-0 cursor-pointer"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                {[10, 15, 20, 25, 30].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setSessionsEditValue(String(preset))}
+                    className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 tabular-nums cursor-pointer"
+                  >
+                    {preset} séances
+                  </button>
+                ))}
+                {playerForSessionsEdit.completedSessions > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSessionsEditValue(String(playerForSessionsEdit.completedSessions))
+                    }
+                    className="px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-xs font-bold text-emerald-700 tabular-nums cursor-pointer"
+                  >
+                    Ajuster au réalisé ({playerForSessionsEdit.completedSessions})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSessionsEditValue((prev) =>
+                      String((parseInt(prev, 10) || 0) + 5)
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-xs font-bold text-indigo-700 tabular-nums cursor-pointer"
+                >
+                  +5 séances
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSessionsEditValue((prev) =>
+                      String((parseInt(prev, 10) || 0) + 10)
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-xs font-bold text-indigo-700 tabular-nums cursor-pointer"
+                >
+                  +10 séances
+                </button>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={sessionsEditSaving}
+                onClick={() => setPlayerForSessionsEdit(null)}
+              >
+                Annuler
+              </Button>
+              <Button
+                type="submit"
+                disabled={sessionsEditSaving}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                {sessionsEditSaving ? 'Enregistrement...' : 'Enregistrer'}
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
     </div>
   );

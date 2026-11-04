@@ -40,6 +40,8 @@ import {
   EyeOff,
   ExternalLink,
   FolderOpen,
+  Edit2,
+  Minus,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { PatientNameLink } from './PatientNameLink';
@@ -122,6 +124,11 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const [modalClubSelect, setModalClubSelect] = useState('');
   const [modalCustomClub, setModalCustomClub] = useState('');
   const [savingMutuelle, setSavingMutuelle] = useState(false);
+
+  // Quick Prescribed Sessions (`nombre_seances`) Edit Modal state
+  const [patientForSeances, setPatientForSeances] = useState<Patient | null>(null);
+  const [seancesModalValue, setSeancesModalValue] = useState<string>('10');
+  const [savingSeancesModal, setSavingSeancesModal] = useState(false);
 
   // Manage Partner Clubs Modal state
   const [isClubsModalOpen, setIsClubsModalOpen] = useState(false);
@@ -263,7 +270,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
           column: 'date_heure',
           ascending: false,
         }),
-        fetchAllRows('treatments', 'patient_id, statut, nombre_seances_prescrites'),
+        fetchAllRows('treatments', 'id, patient_id, statut, nombre_seances_prescrites'),
         fetchAllRows('billings', 'patient_id, type_paiement'),
         fetchPartnerClubs(supabase, loadedPatients),
       ]);
@@ -620,6 +627,64 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
     setIsMutuelleModalOpen(true);
   };
 
+  const handleOpenSeancesModal = (patient: Patient, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const activeTr = treatments.find(
+      (t) => t.patient_id === patient.id && t.statut === 'En cours'
+    );
+    const currentPrescribed =
+      activeTr?.nombre_seances_prescrites || patient.nombre_seances || 0;
+    setPatientForSeances(patient);
+    setSeancesModalValue(String(currentPrescribed));
+  };
+
+  const handleSaveQuickSeances = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!patientForSeances) return;
+
+    const parsed = Math.max(0, parseInt(seancesModalValue, 10) || 0);
+    setSavingSeancesModal(true);
+    setError(null);
+    try {
+      const { error: updErr } = await supabase
+        .from('patients')
+        .update({ nombre_seances: parsed })
+        .eq('id', patientForSeances.id);
+      if (updErr) throw updErr;
+
+      const patTrs = treatments.filter((t) => t.patient_id === patientForSeances.id);
+      const activeTr =
+        patTrs.find((t) => t.statut === 'En cours') ||
+        (patTrs.length === 1 ? patTrs[0] : null);
+
+      if (activeTr?.id) {
+        const { error: trErr } = await supabase
+          .from('treatments')
+          .update({ nombre_seances_prescrites: parsed })
+          .eq('id', activeTr.id);
+        if (!trErr) {
+          setTreatments((prev) =>
+            prev.map((t) =>
+              t.id === activeTr.id ? { ...t, nombre_seances_prescrites: parsed } : t
+            )
+          );
+        }
+      }
+
+      setPatients((prev) =>
+        prev.map((p) =>
+          p.id === patientForSeances.id ? { ...p, nombre_seances: parsed } : p
+        )
+      );
+      setPatientForSeances(null);
+    } catch (err: any) {
+      setError(`Erreur lors de la mise à jour des séances : ${err.message}`);
+    } finally {
+      setSavingSeancesModal(false);
+    }
+  };
+
   const handleSaveQuickMutuelle = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!patientForMutuelle) return;
@@ -695,7 +760,9 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
   const getPatientAlertBadge = (patientItem: Patient) => {
     const pAppts = appointments.filter((a) => a.patient_id === patientItem.id);
-    const completedAppts = pAppts.filter((a) => a.statut === 'Effectué');
+    const completedAppts = pAppts.filter(
+      (a) => a.statut === 'Effectué' || a.statut === 'Impayé'
+    );
 
     const nowLocalDate = getMoroccoNow();
     const upcomingAppts = pAppts.filter((a) => {
@@ -1632,11 +1699,38 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                             ) : (
                               <span className="text-slate-400 italic text-xs">Non renseigné</span>
                             )}
-                            {patient.nombre_seances && (
-                              <div className="text-xs text-slate-500">
-                                {patient.nombre_seances} séance(s)
-                              </div>
-                            )}
+                            {(() => {
+                              const doneCount = appointments.filter(
+                                (a) =>
+                                  a.patient_id === patient.id &&
+                                  (a.statut === 'Effectué' || a.statut === 'Impayé')
+                              ).length;
+                              const activeTr = treatments.find(
+                                (t) => t.patient_id === patient.id && t.statut === 'En cours'
+                              );
+                              const prescribed =
+                                activeTr?.nombre_seances_prescrites ||
+                                patient.nombre_seances ||
+                                0;
+
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleOpenSeancesModal(patient, e)}
+                                  title="Modifier le nombre de séances prescrites"
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-50 hover:bg-primary-50 border border-slate-200 hover:border-primary-200 text-xs font-semibold text-slate-700 hover:text-primary-700 transition-colors cursor-pointer tabular-nums"
+                                >
+                                  <span>
+                                    {prescribed > 0
+                                      ? `${doneCount}/${prescribed} séance(s)`
+                                      : doneCount > 0
+                                      ? `${doneCount} réalisée(s) • Fixer total`
+                                      : '+ Fixer séances'}
+                                  </span>
+                                  <Edit2 className="h-2.5 w-2.5 opacity-70" />
+                                </button>
+                              );
+                            })()}
                             {(patient as any).follow_up_status &&
                               String((patient as any).follow_up_status).startsWith('PAIN:') &&
                               (() => {
@@ -2047,6 +2141,128 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal modification rapide du nombre de séances prescrites */}
+      <Modal
+        isOpen={Boolean(patientForSeances)}
+        onClose={() => {
+          if (!savingSeancesModal) {
+            setPatientForSeances(null);
+          }
+        }}
+        title="Modifier le nombre de séances prescrites"
+        maxWidth="sm"
+      >
+        {patientForSeances && (
+          <form onSubmit={handleSaveQuickSeances} className="space-y-4">
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-center justify-between gap-2">
+              <div>
+                Patient :{' '}
+                <strong className="text-slate-900">
+                  {patientForSeances.nom} {patientForSeances.prenom}
+                </strong>
+              </div>
+              <span className="font-bold text-primary-700 tabular-nums">
+                {
+                  appointments.filter(
+                    (a) =>
+                      a.patient_id === patientForSeances.id &&
+                      (a.statut === 'Effectué' || a.statut === 'Impayé')
+                  ).length
+                }{' '}
+                réalisée(s)
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase text-slate-600 block">
+                Nombre de séances prescrites
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSeancesModalValue((prev) =>
+                      String(Math.max(0, (parseInt(prev, 10) || 0) - 1))
+                    )
+                  }
+                  className="h-10 w-10 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 flex items-center justify-center text-slate-700 shrink-0"
+                >
+                  <Minus className="h-4 w-4" />
+                </button>
+                <input
+                  type="number"
+                  min="0"
+                  required
+                  value={seancesModalValue}
+                  onChange={(e) => setSeancesModalValue(e.target.value)}
+                  className="w-full h-10 px-3 text-center font-bold text-base border border-slate-200 rounded-xl bg-white text-slate-900 focus:ring-2 focus:ring-primary-500 outline-none tabular-nums"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSeancesModalValue((prev) =>
+                      String((parseInt(prev, 10) || 0) + 1)
+                    )
+                  }
+                  className="h-10 w-10 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 flex items-center justify-center text-slate-700 shrink-0"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                {[5, 10, 15, 20, 30].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setSeancesModalValue(String(preset))}
+                    className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 tabular-nums"
+                  >
+                    {preset} séances
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSeancesModalValue((prev) =>
+                      String((parseInt(prev, 10) || 0) + 5)
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-primary-50 border border-primary-200 hover:bg-primary-100 text-xs font-bold text-primary-700 tabular-nums"
+                >
+                  +5 séances
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSeancesModalValue((prev) =>
+                      String((parseInt(prev, 10) || 0) + 10)
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-primary-50 border border-primary-200 hover:bg-primary-100 text-xs font-bold text-primary-700 tabular-nums"
+                >
+                  +10 séances
+                </button>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={savingSeancesModal}
+                onClick={() => setPatientForSeances(null)}
+              >
+                Annuler
+              </Button>
+              <Button type="submit" disabled={savingSeancesModal}>
+                {savingSeancesModal ? 'Enregistrement...' : 'Enregistrer'}
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
 
       {/* Modal de confirmation de suppression */}

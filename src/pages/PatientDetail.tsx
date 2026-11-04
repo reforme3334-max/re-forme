@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy, Lock, Wallet, LayoutTemplate, Eye, EyeOff } from 'lucide-react';
+import { User, Phone, Mail, Calendar, FileText, Clock, Activity, Plus, Minus, Check, X, ArrowLeft, Download, AlertCircle, FileSpreadsheet, Key, CheckCircle2, Trash2, MapPin, ShieldAlert, Play, Camera, HeartPulse, ExternalLink, Edit2, RefreshCw, Trophy, Lock, Wallet, LayoutTemplate, Eye, EyeOff } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -121,7 +121,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [therapists, setTherapists] = useState<any[]>([]);
   const [newAppointmentTherapist, setNewAppointmentTherapist] = useState('');
 
-  // New Treatment Modal State
+  // New & Edit Treatment Modal State
   const [isNewTreatmentModalOpen, setIsNewTreatmentModalOpen] = useState(false);
   const [newTreatmentData, setNewTreatmentData] = useState({
     motif: '',
@@ -132,6 +132,20 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   });
   const [newTreatmentLoading, setNewTreatmentLoading] = useState(false);
   const [newTreatmentMessage, setNewTreatmentMessage] = useState({ type: '', text: '' });
+
+  const [isEditTreatmentModalOpen, setIsEditTreatmentModalOpen] = useState(false);
+  const [treatmentToEdit, setTreatmentToEdit] = useState<any | null>(null);
+  const [editTreatmentLoading, setEditTreatmentLoading] = useState(false);
+  const [editTreatmentMessage, setEditTreatmentMessage] = useState({ type: '', text: '' });
+
+  // Quick Inline Edit for Prescribed Sessions & Forfait
+  const [isEditingSeances, setIsEditingSeances] = useState(false);
+  const [seancesInputVal, setSeancesInputVal] = useState<string>('0');
+  const [savingSeances, setSavingSeances] = useState(false);
+
+  const [isEditingForfait, setIsEditingForfait] = useState(false);
+  const [forfaitInputVal, setForfaitInputVal] = useState<string>('0');
+  const [savingForfait, setSavingForfait] = useState(false);
 
   // Delete Appointment Modal State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -613,6 +627,59 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     await supabase.from('patients').update({ forfait_seances: newForfait }).eq('id', patientId);
   };
 
+  const handleQuickSaveForfait = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!patientId) return;
+    const parsed = Math.max(0, parseInt(forfaitInputVal, 10) || 0);
+    setSavingForfait(true);
+    try {
+      const { error } = await supabase
+        .from('patients')
+        .update({ forfait_seances: parsed })
+        .eq('id', patientId);
+      if (!error) {
+        setForfait(parsed);
+        setPatient((prev: any) => (prev ? { ...prev, forfait_seances: parsed } : prev));
+        setIsEditingForfait(false);
+      }
+    } finally {
+      setSavingForfait(false);
+    }
+  };
+
+  const handleQuickSaveSeances = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!patientId) return;
+    const parsed = Math.max(0, parseInt(seancesInputVal, 10) || 0);
+    setSavingSeances(true);
+    try {
+      const { error } = await supabase
+        .from('patients')
+        .update({ nombre_seances: parsed })
+        .eq('id', patientId);
+
+      if (!error) {
+        setPatient((prev: any) => (prev ? { ...prev, nombre_seances: parsed } : prev));
+
+        const activeTr = treatments.find(t => t.statut === 'En cours') || (treatments.length === 1 ? treatments[0] : null);
+        if (activeTr?.id) {
+          const { error: trErr } = await supabase
+            .from('treatments')
+            .update({ nombre_seances_prescrites: parsed })
+            .eq('id', activeTr.id);
+          if (!trErr) {
+            setTreatments(prev =>
+              prev.map(t => (t.id === activeTr.id ? { ...t, nombre_seances_prescrites: parsed } : t))
+            );
+          }
+        }
+        setIsEditingSeances(false);
+      }
+    } finally {
+      setSavingSeances(false);
+    }
+  };
+
   const handleGenerateAccess = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!patient?.telephone) {
@@ -730,6 +797,13 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       resolvedClub
     );
 
+    const parsedNbSeances =
+      editPatientData.nombre_seances === '' ||
+      editPatientData.nombre_seances === null ||
+      editPatientData.nombre_seances === undefined
+        ? null
+        : Math.max(0, parseInt(String(editPatientData.nombre_seances), 10) || 0);
+
     const updatePayload = {
       nom: editPatientData.nom,
       prenom: editPatientData.prenom,
@@ -739,7 +813,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       cin: editPatientData.cin,
       adresse: editPatientData.adresse,
       pathologie: editPatientData.pathologie,
-      nombre_seances: editPatientData.nombre_seances,
+      nombre_seances: parsedNbSeances,
       atcd: serializedAtcd,
     };
 
@@ -752,6 +826,25 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     if (error) {
       setEditPatientMessage({ type: 'error', text: error.message });
     } else {
+      if (parsedNbSeances !== null) {
+        const activeTr =
+          treatments.find(t => t.statut === 'En cours') ||
+          (treatments.length === 1 ? treatments[0] : null);
+        if (activeTr?.id) {
+          const { error: trErr } = await supabase
+            .from('treatments')
+            .update({ nombre_seances_prescrites: parsedNbSeances })
+            .eq('id', activeTr.id);
+          if (!trErr) {
+            setTreatments(prev =>
+              prev.map(t =>
+                t.id === activeTr.id ? { ...t, nombre_seances_prescrites: parsedNbSeances } : t
+              )
+            );
+          }
+        }
+      }
+
       setEditPatientMessage({ type: 'success', text: 'Patient modifié avec succès' });
       const updatedPatient = { ...patient, ...updatePayload };
       setPatient(updatedPatient);
@@ -779,6 +872,11 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     if (error) {
       setNewTreatmentMessage({ type: 'error', text: error.message });
     } else {
+      await supabase
+        .from('patients')
+        .update({ nombre_seances: newTreatmentData.nombre_seances_prescrites })
+        .eq('id', patientId);
+
       setNewTreatmentMessage({ type: 'success', text: 'Traitement ajouté avec succès' });
       fetchPatientDetails();
       setTimeout(() => {
@@ -792,6 +890,59 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
         });
         setNewTreatmentMessage({ type: '', text: '' });
       }, 1500);
+    }
+  };
+
+  const openEditTreatmentModal = (tr: any) => {
+    setTreatmentToEdit({
+      id: tr.id,
+      motif: tr.motif || '',
+      nombre_seances_prescrites: Number(tr.nombre_seances_prescrites) || 10,
+      date_debut: tr.date_debut ? String(tr.date_debut).split('T')[0] : getMoroccoTodayStr(),
+      medecin_prescripteur: tr.medecin_prescripteur || '',
+      statut: tr.statut || 'En cours',
+    });
+    setEditTreatmentMessage({ type: '', text: '' });
+    setIsEditTreatmentModalOpen(true);
+  };
+
+  const handleUpdateTreatment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!treatmentToEdit?.id) return;
+    setEditTreatmentLoading(true);
+    setEditTreatmentMessage({ type: '', text: '' });
+
+    const parsedSeances = Math.max(1, Number(treatmentToEdit.nombre_seances_prescrites) || 1);
+    const payload = {
+      motif: treatmentToEdit.motif,
+      nombre_seances_prescrites: parsedSeances,
+      date_debut: treatmentToEdit.date_debut || null,
+      medecin_prescripteur: treatmentToEdit.medecin_prescripteur,
+      statut: treatmentToEdit.statut || 'En cours',
+    };
+
+    const { error } = await supabase
+      .from('treatments')
+      .update(payload)
+      .eq('id', treatmentToEdit.id);
+
+    setEditTreatmentLoading(false);
+    if (error) {
+      setEditTreatmentMessage({ type: 'error', text: error.message });
+    } else {
+      if (payload.statut === 'En cours' || treatments.length === 1) {
+        await supabase
+          .from('patients')
+          .update({ nombre_seances: parsedSeances })
+          .eq('id', patientId);
+      }
+      setEditTreatmentMessage({ type: 'success', text: 'Traitement mis à jour avec succès' });
+      await fetchPatientDetails();
+      setTimeout(() => {
+        setIsEditTreatmentModalOpen(false);
+        setTreatmentToEdit(null);
+        setEditTreatmentMessage({ type: '', text: '' });
+      }, 1000);
     }
   };
 
@@ -1357,6 +1508,8 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
               ? 'Retour aux patients'
               : returnRoute === 'settings'
               ? 'Retour aux paramètres'
+              : returnRoute === 'espace-club'
+              ? 'Retour au portail club'
               : 'Retour'}
           </Button>
           <Button variant="outline" className="flex-1 md:flex-none" onClick={() => {
@@ -1364,6 +1517,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             setNewInlineClubName('');
             setEditPatientData({
               ...patient,
+              nombre_seances: activeTreatment.seances_prescrites || patient.nombre_seances || '',
               cleanAtcd: mutInfo.cleanAtcd,
               isMutualiste: mutInfo.isMutualiste,
               organismeMutuelle: mutInfo.organisme || 'CNOPS',
@@ -1468,6 +1622,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                       setNewInlineClubName('');
                       setEditPatientData({
                         ...patient,
+                        nombre_seances: activeTreatment.seances_prescrites || patient.nombre_seances || '',
                         cleanAtcd: mutInfo.cleanAtcd,
                         isMutualiste: mutInfo.isMutualiste,
                         organismeMutuelle: mutInfo.organisme || 'CNOPS',
@@ -1553,11 +1708,26 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <Card className="border-0 shadow-sm border-t-4 border-t-primary-500">
-                <CardHeader className="pb-2">
+                <CardHeader className="flex flex-row items-center justify-between pb-2">
                   <CardTitle className="text-sm font-bold flex items-center gap-2 text-primary-700">
                     <Activity className="h-4 w-4" />
                     Traitement Actuel
                   </CardTitle>
+                  {!isEditingSeances && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-[11px] font-bold text-primary-600 hover:text-primary-700 hover:bg-primary-50 gap-1"
+                      onClick={() => {
+                        setSeancesInputVal(String(activeTreatment.seances_prescrites || 0));
+                        setIsEditingSeances(true);
+                      }}
+                    >
+                      <Edit2 className="h-3 w-3" />
+                      Modifier séances
+                    </Button>
+                  )}
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
@@ -1570,18 +1740,135 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                         </p>
                       )}
                     </div>
-                    <div className="pt-2">
-                      <div className="flex justify-between text-[11px] mb-1.5 font-bold uppercase text-slate-500">
-                        <span>Séances effectuées</span>
-                        <span className="text-primary-600">{activeTreatment.seances_effectuees} / {activeTreatment.seances_prescrites}</span>
+
+                    {isEditingSeances ? (
+                      <form
+                        onSubmit={handleQuickSaveSeances}
+                        className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-bold uppercase text-slate-600">
+                            Nombre de séances prescrites
+                          </label>
+                          <span className="text-[11px] font-semibold text-slate-500">
+                            {activeTreatment.seances_effectuees} réalisée(s)
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSeancesInputVal(prev =>
+                                String(Math.max(0, (parseInt(prev, 10) || 0) - 1))
+                              )
+                            }
+                            className="h-8 w-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 flex items-center justify-center text-slate-700 shrink-0"
+                          >
+                            <Minus className="h-3.5 w-3.5" />
+                          </button>
+                          <input
+                            type="number"
+                            min="0"
+                            value={seancesInputVal}
+                            onChange={e => setSeancesInputVal(e.target.value)}
+                            className="w-full h-8 px-2.5 text-center font-bold text-sm border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-primary-500 outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSeancesInputVal(prev =>
+                                String((parseInt(prev, 10) || 0) + 1)
+                              )
+                            }
+                            className="h-8 w-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 flex items-center justify-center text-slate-700 shrink-0"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                          <div className="flex items-center gap-1">
+                            {[10, 15, 20, 30].map(preset => (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => setSeancesInputVal(String(preset))}
+                                className="px-2 py-0.5 rounded bg-white border border-slate-200 hover:border-primary-300 text-[11px] font-semibold text-slate-700"
+                              >
+                                {preset}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSeancesInputVal(prev =>
+                                  String((parseInt(prev, 10) || 0) + 5)
+                                )
+                              }
+                              className="px-2 py-0.5 rounded bg-primary-50 border border-primary-200 text-[11px] font-bold text-primary-700"
+                            >
+                              +5
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={savingSeances}
+                              onClick={() => setIsEditingSeances(false)}
+                              className="h-7 px-2 text-xs text-slate-500"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              type="submit"
+                              size="sm"
+                              disabled={savingSeances}
+                              className="h-7 px-2.5 text-xs gap-1"
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                              {savingSeances ? '...' : 'Valider'}
+                            </Button>
+                          </div>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className="pt-2">
+                        <div className="flex justify-between text-[11px] mb-1.5 font-bold uppercase text-slate-500">
+                          <span>Séances effectuées</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSeancesInputVal(String(activeTreatment.seances_prescrites || 0));
+                              setIsEditingSeances(true);
+                            }}
+                            title="Cliquer pour modifier le nombre de séances prescrites"
+                            className="text-primary-600 hover:text-primary-700 inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <span>
+                              {activeTreatment.seances_effectuees} / {activeTreatment.seances_prescrites}
+                            </span>
+                            <Edit2 className="h-2.5 w-2.5 opacity-70" />
+                          </button>
+                        </div>
+                        <div className="h-2 w-full bg-slate-200/50 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-primary-500 rounded-full transition-all duration-500 shadow-[0_0_8px_rgba(var(--primary-500),0.3)]"
+                            style={{ width: `${progressPercentage}%` }}
+                          ></div>
+                        </div>
+                        {remainingSessions > 0 ? (
+                          <p className="text-[11px] text-slate-500 mt-1.5 font-medium">
+                            Reste {remainingSessions} séance{remainingSessions > 1 ? 's' : ''} sur la prescription
+                          </p>
+                        ) : activeTreatment.seances_prescrites > 0 &&
+                          activeTreatment.seances_effectuees > activeTreatment.seances_prescrites ? (
+                          <p className="text-[11px] text-emerald-700 mt-1.5 font-semibold">
+                            Protocole initial complété (+{activeTreatment.seances_effectuees - activeTreatment.seances_prescrites} de suivi)
+                          </p>
+                        ) : null}
                       </div>
-                      <div className="h-2 w-full bg-slate-200/50 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-primary-500 rounded-full transition-all duration-500 shadow-[0_0_8px_rgba(var(--primary-500),0.3)]"
-                          style={{ width: `${progressPercentage}%` }}
-                        ></div>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -1592,23 +1879,100 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                     <FileText className="h-4 w-4" />
                     Forfait
                   </CardTitle>
-                  <Button variant="ghost" size="sm" className="h-7 text-[10px] font-bold" onClick={handleAddForfait}>+ 10 SÉANCES</Button>
+                  <div className="flex items-center gap-1">
+                    {!isEditingForfait && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[10px] font-bold text-slate-600 hover:text-slate-900"
+                        onClick={() => {
+                          setForfaitInputVal(String(forfait));
+                          setIsEditingForfait(true);
+                        }}
+                      >
+                        <Edit2 className="h-3 w-3 mr-1" />
+                        MODIFIER
+                      </Button>
+                    )}
+                    <Button variant="ghost" size="sm" className="h-7 text-[10px] font-bold text-emerald-700 hover:bg-emerald-50" onClick={handleAddForfait}>+ 10 SÉANCES</Button>
+                  </div>
                 </CardHeader>
                 <CardContent>
-                  <div className={`p-4 rounded-xl flex items-center justify-between ${forfait < 2 ? 'bg-orange-50' : 'bg-emerald-50'}`}>
-                    <div className="flex items-center gap-3">
-                      <span className={`text-2xl font-black ${forfait < 2 ? 'text-orange-600' : 'text-emerald-600'}`}>{forfait}</span>
-                      <div>
-                        <h4 className={`text-[10px] font-black uppercase tracking-wider ${forfait < 2 ? 'text-orange-800' : 'text-emerald-800'}`}>
-                          Restantes
-                        </h4>
-                        <p className={`text-[9px] font-bold ${forfait < 2 ? 'text-orange-600' : 'text-emerald-600'}`}>
-                          {forfait < 2 ? 'Renouvellement conseillé' : 'Solde suffisant'}
-                        </p>
+                  {isEditingForfait ? (
+                    <form
+                      onSubmit={handleQuickSaveForfait}
+                      className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2"
+                    >
+                      <label className="text-[11px] font-bold uppercase text-slate-600 block">
+                        Solde forfait (séances restantes)
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForfaitInputVal(prev =>
+                              String(Math.max(0, (parseInt(prev, 10) || 0) - 1))
+                            )
+                          }
+                          className="h-8 w-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 flex items-center justify-center text-slate-700 shrink-0"
+                        >
+                          <Minus className="h-3.5 w-3.5" />
+                        </button>
+                        <input
+                          type="number"
+                          min="0"
+                          value={forfaitInputVal}
+                          onChange={e => setForfaitInputVal(e.target.value)}
+                          className="w-full h-8 px-2.5 text-center font-bold text-sm border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForfaitInputVal(prev =>
+                              String((parseInt(prev, 10) || 0) + 1)
+                            )
+                          }
+                          className="h-8 w-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 flex items-center justify-center text-slate-700 shrink-0"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={savingForfait}
+                          onClick={() => setIsEditingForfait(false)}
+                          className="h-8 px-2 text-slate-500"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          type="submit"
+                          size="sm"
+                          disabled={savingForfait}
+                          className="h-8 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
+                    </form>
+                  ) : (
+                    <div className={`p-4 rounded-xl flex items-center justify-between ${forfait < 2 ? 'bg-orange-50' : 'bg-emerald-50'}`}>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-2xl font-black ${forfait < 2 ? 'text-orange-600' : 'text-emerald-600'}`}>{forfait}</span>
+                        <div>
+                          <h4 className={`text-[10px] font-black uppercase tracking-wider ${forfait < 2 ? 'text-orange-800' : 'text-emerald-800'}`}>
+                            Restantes
+                          </h4>
+                          <p className={`text-[9px] font-bold ${forfait < 2 ? 'text-orange-600' : 'text-emerald-600'}`}>
+                            {forfait < 2 ? 'Renouvellement conseillé' : 'Solde suffisant'}
+                          </p>
+                        </div>
+                      </div>
+                      <Activity className={`h-8 w-8 opacity-20 ${forfait < 2 ? 'text-orange-500' : 'text-emerald-500'}`} />
                     </div>
-                    <Activity className={`h-8 w-8 opacity-20 ${forfait < 2 ? 'text-orange-500' : 'text-emerald-500'}`} />
-                  </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -1913,7 +2277,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
               <CardContent className="pt-2 space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-white/5 p-3 rounded-lg">
-                    <p className="text-xl font-black">{appointments.filter(a => a.statut === 'Effectué').length}</p>
+                    <p className="text-xl font-black">{appointments.filter(a => a.statut === 'Effectué' || a.statut === 'Impayé').length}</p>
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Séances effectuées</p>
                   </div>
                   <div className="bg-white/5 p-3 rounded-lg">
@@ -1962,20 +2326,32 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                 ) : (
                   treatments.map((treatment) => (
                     <div key={treatment.id} className="border border-slate-200 rounded-lg p-5 bg-white shadow-sm">
-                      <div className="flex justify-between items-start mb-4">
+                      <div className="flex justify-between items-start gap-3 mb-4">
                         <div>
                           <h3 className="font-semibold text-slate-900 text-lg">{treatment.motif}</h3>
                           <p className="text-sm text-slate-500 mt-1">
                             {treatment.date_debut ? `Depuis le ${new Date(treatment.date_debut).toLocaleDateString('fr-FR')}` : 'Date non renseignée'}
                           </p>
                         </div>
-                        <Badge variant="outline" className={
-                          treatment.statut === 'Terminé' ? "bg-green-100 text-green-700 border-green-200" : 
-                          treatment.statut === 'En cours' ? "bg-blue-100 text-blue-700 border-blue-200" : 
-                          "bg-slate-100 text-slate-700 border-slate-200"
-                        }>
-                          {treatment.statut || 'En cours'}
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openEditTreatmentModal(treatment)}
+                            className="h-7 px-2.5 text-xs gap-1 border-slate-200 text-slate-700"
+                          >
+                            <Edit2 className="h-3 w-3" />
+                            Modifier
+                          </Button>
+                          <Badge variant="outline" className={
+                            treatment.statut === 'Terminé' ? "bg-green-100 text-green-700 border-green-200" : 
+                            treatment.statut === 'En cours' ? "bg-blue-100 text-blue-700 border-blue-200" : 
+                            "bg-slate-100 text-slate-700 border-slate-200"
+                          }>
+                            {treatment.statut || 'En cours'}
+                          </Badge>
+                        </div>
                       </div>
                       
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-slate-100">
@@ -2820,6 +3196,17 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
               />
             </div>
             <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Nombre de séances prescrites</label>
+              <input
+                type="number"
+                min="0"
+                placeholder="Ex: 15"
+                value={editPatientData.nombre_seances ?? ''}
+                onChange={(e) => setEditPatientData({ ...editPatientData, nombre_seances: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+            <div className="space-y-1.5">
               <label className="text-sm font-medium text-slate-700">CIN</label>
               <input
                 type="text"
@@ -3112,6 +3499,107 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Edit Treatment Modal */}
+      <Modal
+        isOpen={isEditTreatmentModalOpen && Boolean(treatmentToEdit)}
+        onClose={() => {
+          if (!editTreatmentLoading) {
+            setIsEditTreatmentModalOpen(false);
+            setTreatmentToEdit(null);
+          }
+        }}
+        title="Modifier le traitement & le nombre de séances"
+      >
+        {treatmentToEdit && (
+          <form onSubmit={handleUpdateTreatment} className="space-y-4">
+            {editTreatmentMessage.text && (
+              <div className={`p-3 rounded-md text-sm flex items-center gap-2 ${
+                editTreatmentMessage.type === 'success'
+                  ? 'bg-green-50 text-green-700 border border-green-200'
+                  : 'bg-red-50 text-red-700 border border-red-200'
+              }`}>
+                {editTreatmentMessage.type === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+                {editTreatmentMessage.text}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Motif du traitement / Pathologie</label>
+              <input
+                type="text"
+                required
+                value={treatmentToEdit.motif}
+                onChange={(e) => setTreatmentToEdit({ ...treatmentToEdit, motif: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Séances prescrites</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={treatmentToEdit.nombre_seances_prescrites}
+                  onChange={(e) =>
+                    setTreatmentToEdit({
+                      ...treatmentToEdit,
+                      nombre_seances_prescrites: parseInt(e.target.value, 10) || 1,
+                    })
+                  }
+                  className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-bold"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Date de début</label>
+                <input
+                  type="date"
+                  value={treatmentToEdit.date_debut}
+                  onChange={(e) => setTreatmentToEdit({ ...treatmentToEdit, date_debut: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Statut</label>
+                <select
+                  value={treatmentToEdit.statut}
+                  onChange={(e) => setTreatmentToEdit({ ...treatmentToEdit, statut: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                >
+                  <option value="En cours">En cours</option>
+                  <option value="Terminé">Terminé</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Médecin Prescripteur</label>
+              <input
+                type="text"
+                value={treatmentToEdit.medecin_prescripteur}
+                onChange={(e) => setTreatmentToEdit({ ...treatmentToEdit, medecin_prescripteur: e.target.value })}
+                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+
+            <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={editTreatmentLoading}
+                onClick={() => setIsEditTreatmentModalOpen(false)}
+              >
+                Annuler
+              </Button>
+              <Button type="submit" disabled={editTreatmentLoading}>
+                {editTreatmentLoading ? 'Enregistrement...' : 'Enregistrer'}
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
 
       {/* Delete Appointment Modal */}
