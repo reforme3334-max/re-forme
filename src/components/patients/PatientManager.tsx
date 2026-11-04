@@ -14,6 +14,7 @@ import {
   upsertPartnerClub,
   removePartnerClub,
 } from '@/lib/mutuelleUtils';
+import { resolveOrBindCollaboratorSession, canManageSessionCounts } from '@/lib/teamUtils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -125,7 +126,8 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const [modalCustomClub, setModalCustomClub] = useState('');
   const [savingMutuelle, setSavingMutuelle] = useState(false);
 
-  // Quick Prescribed Sessions (`nombre_seances`) Edit Modal state
+  // Quick Prescribed Sessions (`nombre_seances`) Edit Modal state (Admin & Secrétaire ONLY)
+  const [canEditSessionCount, setCanEditSessionCount] = useState(false);
   const [patientForSeances, setPatientForSeances] = useState<Patient | null>(null);
   const [seancesModalValue, setSeancesModalValue] = useState<string>('10');
   const [savingSeancesModal, setSavingSeancesModal] = useState(false);
@@ -238,6 +240,15 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
   useEffect(() => {
     fetchPatients();
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session?.user) {
+        const profile = await resolveOrBindCollaboratorSession(supabase, {
+          id: session.user.id,
+          email: session.user.email,
+        });
+        setCanEditSessionCount(canManageSessionCounts(profile?.role, session.user.email));
+      }
+    });
   }, []);
 
   const fetchPatients = async () => {
@@ -581,7 +592,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
           cin,
           adresse,
           pathologie,
-          nombre_seances: nombreSeances ? parseInt(nombreSeances, 10) : null,
+          nombre_seances: canEditSessionCount && nombreSeances ? parseInt(nombreSeances, 10) : null,
           atcd: serializedAtcd,
         },
       ]);
@@ -630,6 +641,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
   const handleOpenSeancesModal = (patient: Patient, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!canEditSessionCount) return;
     const activeTr = treatments.find(
       (t) => t.patient_id === patient.id && t.statut === 'En cours'
     );
@@ -641,7 +653,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
   const handleSaveQuickSeances = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!patientForSeances) return;
+    if (!canEditSessionCount || !patientForSeances) return;
 
     const parsed = Math.max(0, parseInt(seancesModalValue, 10) || 0);
     setSavingSeancesModal(true);
@@ -1050,18 +1062,29 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
               </div>
               <div className="space-y-1.5">
                 <label htmlFor="nombreSeances" className="block text-sm font-medium text-slate-700">
-                  Nombre de séances *
+                  Nombre de séances {canEditSessionCount ? '*' : '(Admin / Secrétariat)'}
                 </label>
-                <input
-                  id="nombreSeances"
-                  type="number"
-                  min="1"
-                  required
-                  value={nombreSeances}
-                  onChange={(e) => setNombreSeances(e.target.value)}
-                  className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all"
-                  placeholder="Ex: 10"
-                />
+                {canEditSessionCount ? (
+                  <input
+                    id="nombreSeances"
+                    type="number"
+                    min="1"
+                    required
+                    value={nombreSeances}
+                    onChange={(e) => setNombreSeances(e.target.value)}
+                    className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 transition-all"
+                    placeholder="Ex: 10"
+                  />
+                ) : (
+                  <input
+                    id="nombreSeances"
+                    type="text"
+                    disabled
+                    value=""
+                    placeholder="Réservé à l'administration & secrétariat"
+                    className="block w-full rounded-md border border-slate-200 bg-slate-100 text-slate-500 px-3 py-2 text-sm cursor-not-allowed"
+                  />
+                )}
               </div>
 
               {/* Couverture Médicale & Club Sportif Conventionné */}
@@ -1713,7 +1736,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                                 patient.nombre_seances ||
                                 0;
 
-                              return (
+                              return canEditSessionCount ? (
                                 <button
                                   type="button"
                                   onClick={(e) => handleOpenSeancesModal(patient, e)}
@@ -1729,7 +1752,13 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                                   </span>
                                   <Edit2 className="h-2.5 w-2.5 opacity-70" />
                                 </button>
-                              );
+                              ) : prescribed > 0 || doneCount > 0 ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-600 tabular-nums">
+                                  {prescribed > 0
+                                    ? `${doneCount}/${prescribed} séance(s)`
+                                    : `${doneCount} séance(s)`}
+                                </span>
+                              ) : null;
                             })()}
                             {(patient as any).follow_up_status &&
                               String((patient as any).follow_up_status).startsWith('PAIN:') &&
@@ -2143,9 +2172,9 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         </form>
       </Modal>
 
-      {/* Modal modification rapide du nombre de séances prescrites */}
+      {/* Modal modification rapide du nombre de séances prescrites (Admin & Secrétaire uniquement) */}
       <Modal
-        isOpen={Boolean(patientForSeances)}
+        isOpen={Boolean(canEditSessionCount && patientForSeances)}
         onClose={() => {
           if (!savingSeancesModal) {
             setPatientForSeances(null);

@@ -10,7 +10,7 @@ import { PainEvolutionChart } from '../components/patients/PainEvolutionChart';
 import { parseYouTubeUrl, parseExercisesFromPatient, saveExercisesForPatient, parsePainLogsFromPatient, savePainLogsForPatient, ExerciseItem, PainLogItem } from '../lib/exercisesService';
 import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate, toClinicIsoString } from '../lib/timeUtils';
 import { ORGANISMES_MUTUELLE, SPORTS_DISCIPLINES, PartnerClub, parsePatientMutuelle, serializeAtcdWithMutuelle, fetchPartnerClubs, upsertPartnerClub } from '../lib/mutuelleUtils';
-import { resolveOrBindCollaboratorSession } from '../lib/teamUtils';
+import { resolveOrBindCollaboratorSession, canManageSessionCounts, isPrimaryAdminEmail } from '../lib/teamUtils';
 import { normalizePatientPhone, provisionOrResetPatientAccess } from '../lib/patientAuthUtils';
 import { roundMoney, sumMoney, formatMoney, sanitizeBillings, isPaidBillingStatus, isUnpaidBillingStatus, getBillDate } from '../lib/financeUtils';
 import {
@@ -163,8 +163,9 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [showEditAppMotifDropdown, setShowEditAppMotifDropdown] = useState(false);
   const [editAppLoading, setEditAppLoading] = useState(false);
 
-  // Delete & Edit Billing Modal State (Admin-only modification)
+  // Delete & Edit Billing Modal State (Admin-only modification) & Session Count Role Gate (Admin + Secrétaire only)
   const [isAdmin, setIsAdmin] = useState(false);
+  const [canEditSessionCount, setCanEditSessionCount] = useState(false);
   const [isDeleteBillingModalOpen, setIsDeleteBillingModalOpen] = useState(false);
   const [billingToDelete, setBillingToDelete] = useState<string | null>(null);
   const [deleteBillingLoading, setDeleteBillingLoading] = useState(false);
@@ -214,7 +215,8 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             id: session.user.id,
             email: session.user.email,
           });
-          setIsAdmin(profile?.role === 'admin');
+          setIsAdmin(profile?.role === 'admin' || isPrimaryAdminEmail(session.user.email));
+          setCanEditSessionCount(canManageSessionCounts(profile?.role, session.user.email));
         }
       } catch (err) {
         console.warn('Could not determine user role or templates in PatientDetail:', err);
@@ -626,6 +628,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   }
 
   const handleAddForfait = async () => {
+    if (!canEditSessionCount) return;
     const newForfait = forfait + 10;
     setForfait(newForfait);
     await supabase.from('patients').update({ forfait_seances: newForfait }).eq('id', patientId);
@@ -633,7 +636,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
   const handleQuickSaveForfait = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!patientId) return;
+    if (!canEditSessionCount || !patientId) return;
     const parsed = Math.max(0, parseInt(forfaitInputVal, 10) || 0);
     setSavingForfait(true);
     try {
@@ -653,7 +656,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
   const handleQuickSaveSeances = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!patientId) return;
+    if (!canEditSessionCount || !patientId) return;
     const parsed = Math.max(0, parseInt(seancesInputVal, 10) || 0);
     setSavingSeances(true);
     try {
@@ -808,7 +811,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
         ? null
         : Math.max(0, parseInt(String(editPatientData.nombre_seances), 10) || 0);
 
-    const updatePayload = {
+    const updatePayload: Record<string, any> = {
       nom: editPatientData.nom,
       prenom: editPatientData.prenom,
       telephone: editPatientData.telephone,
@@ -817,9 +820,12 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       cin: editPatientData.cin,
       adresse: editPatientData.adresse,
       pathologie: editPatientData.pathologie,
-      nombre_seances: parsedNbSeances,
       atcd: serializedAtcd,
     };
+
+    if (canEditSessionCount) {
+      updatePayload.nombre_seances = parsedNbSeances;
+    }
 
     const { error } = await supabase
       .from('patients')
@@ -830,7 +836,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     if (error) {
       setEditPatientMessage({ type: 'error', text: error.message });
     } else {
-      if (parsedNbSeances !== null) {
+      if (canEditSessionCount && parsedNbSeances !== null) {
         const activeTr =
           treatments.find(t => t.statut === 'En cours') ||
           (treatments.length === 1 ? treatments[0] : null);
@@ -865,21 +871,28 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     setNewTreatmentLoading(true);
     setNewTreatmentMessage({ type: '', text: '' });
 
+    const effectiveNewSeances = canEditSessionCount
+      ? Math.max(1, Number(newTreatmentData.nombre_seances_prescrites) || 1)
+      : Math.max(1, Number(patient?.nombre_seances) || 10);
+
     const { error } = await supabase
       .from('treatments')
       .insert([{
         patient_id: patientId,
-        ...newTreatmentData
+        ...newTreatmentData,
+        nombre_seances_prescrites: effectiveNewSeances,
       }]);
 
     setNewTreatmentLoading(false);
     if (error) {
       setNewTreatmentMessage({ type: 'error', text: error.message });
     } else {
-      await supabase
-        .from('patients')
-        .update({ nombre_seances: newTreatmentData.nombre_seances_prescrites })
-        .eq('id', patientId);
+      if (canEditSessionCount) {
+        await supabase
+          .from('patients')
+          .update({ nombre_seances: effectiveNewSeances })
+          .eq('id', patientId);
+      }
 
       setNewTreatmentMessage({ type: 'success', text: 'Traitement ajouté avec succès' });
       fetchPatientDetails();
@@ -917,13 +930,15 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     setEditTreatmentMessage({ type: '', text: '' });
 
     const parsedSeances = Math.max(1, Number(treatmentToEdit.nombre_seances_prescrites) || 1);
-    const payload = {
+    const payload: Record<string, any> = {
       motif: treatmentToEdit.motif,
-      nombre_seances_prescrites: parsedSeances,
       date_debut: treatmentToEdit.date_debut || null,
       medecin_prescripteur: treatmentToEdit.medecin_prescripteur,
       statut: treatmentToEdit.statut || 'En cours',
     };
+    if (canEditSessionCount) {
+      payload.nombre_seances_prescrites = parsedSeances;
+    }
 
     const { error } = await supabase
       .from('treatments')
@@ -934,7 +949,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     if (error) {
       setEditTreatmentMessage({ type: 'error', text: error.message });
     } else {
-      if (payload.statut === 'En cours' || treatments.length === 1) {
+      if (canEditSessionCount && (payload.statut === 'En cours' || treatments.length === 1)) {
         await supabase
           .from('patients')
           .update({ nombre_seances: parsedSeances })
@@ -1747,7 +1762,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                     <Activity className="h-4 w-4" />
                     Traitement Actuel
                   </CardTitle>
-                  {!isEditingSeances && (
+                  {canEditSessionCount && !isEditingSeances && (
                     <Button
                       type="button"
                       variant="ghost"
@@ -1775,7 +1790,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                       )}
                     </div>
 
-                    {isEditingSeances ? (
+                    {canEditSessionCount && isEditingSeances ? (
                       <form
                         onSubmit={handleQuickSaveSeances}
                         className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5"
@@ -1870,20 +1885,26 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                       <div className="pt-2">
                         <div className="flex justify-between text-[11px] mb-1.5 font-bold uppercase text-slate-500">
                           <span>Séances effectuées</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSeancesInputVal(String(activeTreatment.seances_prescrites || 0));
-                              setIsEditingSeances(true);
-                            }}
-                            title="Cliquer pour modifier le nombre de séances prescrites"
-                            className="text-primary-600 hover:text-primary-700 inline-flex items-center gap-1 cursor-pointer"
-                          >
-                            <span>
+                          {canEditSessionCount ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSeancesInputVal(String(activeTreatment.seances_prescrites || 0));
+                                setIsEditingSeances(true);
+                              }}
+                              title="Cliquer pour modifier le nombre de séances prescrites"
+                              className="text-primary-600 hover:text-primary-700 inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <span>
+                                {activeTreatment.seances_effectuees} / {activeTreatment.seances_prescrites}
+                              </span>
+                              <Edit2 className="h-2.5 w-2.5 opacity-70" />
+                            </button>
+                          ) : (
+                            <span className="text-primary-600">
                               {activeTreatment.seances_effectuees} / {activeTreatment.seances_prescrites}
                             </span>
-                            <Edit2 className="h-2.5 w-2.5 opacity-70" />
-                          </button>
+                          )}
                         </div>
                         <div className="h-2 w-full bg-slate-200/50 rounded-full overflow-hidden">
                           <div 
@@ -1913,27 +1934,29 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                     <FileText className="h-4 w-4" />
                     Forfait
                   </CardTitle>
-                  <div className="flex items-center gap-1">
-                    {!isEditingForfait && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-[10px] font-bold text-slate-600 hover:text-slate-900"
-                        onClick={() => {
-                          setForfaitInputVal(String(forfait));
-                          setIsEditingForfait(true);
-                        }}
-                      >
-                        <Edit2 className="h-3 w-3 mr-1" />
-                        MODIFIER
-                      </Button>
-                    )}
-                    <Button variant="ghost" size="sm" className="h-7 text-[10px] font-bold text-emerald-700 hover:bg-emerald-50" onClick={handleAddForfait}>+ 10 SÉANCES</Button>
-                  </div>
+                  {canEditSessionCount && (
+                    <div className="flex items-center gap-1">
+                      {!isEditingForfait && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-[10px] font-bold text-slate-600 hover:text-slate-900"
+                          onClick={() => {
+                            setForfaitInputVal(String(forfait));
+                            setIsEditingForfait(true);
+                          }}
+                        >
+                          <Edit2 className="h-3 w-3 mr-1" />
+                          MODIFIER
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="sm" className="h-7 text-[10px] font-bold text-emerald-700 hover:bg-emerald-50" onClick={handleAddForfait}>+ 10 SÉANCES</Button>
+                    </div>
+                  )}
                 </CardHeader>
                 <CardContent>
-                  {isEditingForfait ? (
+                  {canEditSessionCount && isEditingForfait ? (
                     <form
                       onSubmit={handleQuickSaveForfait}
                       className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2"
@@ -3269,14 +3292,27 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-slate-700">Nombre de séances prescrites</label>
-              <input
-                type="number"
-                min="0"
-                placeholder="Ex: 15"
-                value={editPatientData.nombre_seances ?? ''}
-                onChange={(e) => setEditPatientData({ ...editPatientData, nombre_seances: e.target.value })}
-                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-              />
+              {canEditSessionCount ? (
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="Ex: 15"
+                  value={editPatientData.nombre_seances ?? ''}
+                  onChange={(e) => setEditPatientData({ ...editPatientData, nombre_seances: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                />
+              ) : (
+                <input
+                  type="text"
+                  disabled
+                  value={
+                    editPatientData.nombre_seances !== undefined && editPatientData.nombre_seances !== null && editPatientData.nombre_seances !== ''
+                      ? `${editPatientData.nombre_seances} séance(s) (Admin / Secrétariat)`
+                      : 'Réservé à Admin / Secrétariat'
+                  }
+                  className="w-full p-2 border border-slate-200 rounded-lg bg-slate-100 text-slate-500 cursor-not-allowed text-sm"
+                />
+              )}
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-slate-700">CIN</label>
@@ -3555,14 +3591,23 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">Séances prescrites</label>
-              <input
-                type="number"
-                min="1"
-                required
-                value={newTreatmentData.nombre_seances_prescrites}
-                onChange={(e) => setNewTreatmentData({ ...newTreatmentData, nombre_seances_prescrites: parseInt(e.target.value) })}
-                className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-              />
+              {canEditSessionCount ? (
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={newTreatmentData.nombre_seances_prescrites}
+                  onChange={(e) => setNewTreatmentData({ ...newTreatmentData, nombre_seances_prescrites: parseInt(e.target.value) })}
+                  className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                />
+              ) : (
+                <input
+                  type="text"
+                  disabled
+                  value={`${patient?.nombre_seances || 10} séances (Admin / Secrétariat)`}
+                  className="w-full p-2 border border-slate-200 rounded-lg bg-slate-100 text-slate-500 cursor-not-allowed text-sm"
+                />
+              )}
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">Date de début</label>
@@ -3607,7 +3652,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             setTreatmentToEdit(null);
           }
         }}
-        title="Modifier le traitement & le nombre de séances"
+        title={canEditSessionCount ? 'Modifier le traitement & le nombre de séances' : 'Modifier le traitement'}
       >
         {treatmentToEdit && (
           <form onSubmit={handleUpdateTreatment} className="space-y-4">
@@ -3636,19 +3681,28 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">Séances prescrites</label>
-                <input
-                  type="number"
-                  min="1"
-                  required
-                  value={treatmentToEdit.nombre_seances_prescrites}
-                  onChange={(e) =>
-                    setTreatmentToEdit({
-                      ...treatmentToEdit,
-                      nombre_seances_prescrites: parseInt(e.target.value, 10) || 1,
-                    })
-                  }
-                  className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-bold"
-                />
+                {canEditSessionCount ? (
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={treatmentToEdit.nombre_seances_prescrites}
+                    onChange={(e) =>
+                      setTreatmentToEdit({
+                        ...treatmentToEdit,
+                        nombre_seances_prescrites: parseInt(e.target.value, 10) || 1,
+                      })
+                    }
+                    className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-bold"
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    disabled
+                    value={`${treatmentToEdit.nombre_seances_prescrites} (Admin / Secrétaire)`}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-slate-100 text-slate-500 cursor-not-allowed text-xs font-semibold"
+                  />
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">Date de début</label>

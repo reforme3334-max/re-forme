@@ -55,6 +55,16 @@ export function isPrimaryAdminEmail(email?: string | null): boolean {
   return PRIMARY_ADMIN_EMAILS.includes(clean);
 }
 
+/**
+ * Only clinic Administrators (`admin`) and Secretaries (`secretaire`) are authorized
+ * to set or modify prescribed session counts (`nombre_seances`, `nombre_seances_prescrites`, `forfait_seances`).
+ */
+export function canManageSessionCounts(role?: string | null, email?: string | null): boolean {
+  if (isPrimaryAdminEmail(email)) return true;
+  const r = String(role || '').trim().toLowerCase();
+  return r === 'admin' || r === 'secretaire' || r === 'secrétaire';
+}
+
 export function getDefaultPermissionsForRole(role: string): string[] {
   if (role === 'admin') {
     return PERMISSIONS_LIST.map((p) => p.id);

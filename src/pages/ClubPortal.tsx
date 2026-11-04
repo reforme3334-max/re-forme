@@ -63,6 +63,7 @@ import {
   parseClubProfileMeta,
 } from '../lib/clubPortalUtils';
 import { openPatientDossier } from '../lib/patientNavigation';
+import { resolveOrBindCollaboratorSession, canManageSessionCounts } from '../lib/teamUtils';
 
 const STANDARD_MOTIFS_LOWER = new Set(
   [
@@ -365,7 +366,8 @@ export function ClubPortal() {
     text: string;
   } | null>(null);
 
-  // Staff-only Quick Edit Prescribed Sessions Modal (`isStaffPreview` only)
+  // Staff-only Quick Edit Prescribed Sessions Modal (`isStaffPreview` + Admin/Secrétaire ONLY)
+  const [canEditSessionCount, setCanEditSessionCount] = useState(false);
   const [playerForSessionsEdit, setPlayerForSessionsEdit] = useState<PlayerSummary | null>(null);
   const [sessionsEditValue, setSessionsEditValue] = useState<string>('10');
   const [sessionsEditSaving, setSessionsEditSaving] = useState(false);
@@ -498,6 +500,7 @@ export function ClubPortal() {
 
       if (isClubAccount) {
         setIsStaffPreview(false);
+        setCanEditSessionCount(false);
         const clubMeta = parseClubProfileMeta(ownProfile);
         let boundName = clubMeta?.clubName || '';
         if (!boundName) {
@@ -541,6 +544,13 @@ export function ClubPortal() {
         }
       } else {
         setIsStaffPreview(true);
+        const resolvedStaffProf = await resolveOrBindCollaboratorSession(supabase, {
+          id: session.user.id,
+          email: sessionEmail,
+        });
+        setCanEditSessionCount(
+          canManageSessionCounts(resolvedStaffProf?.role || ownProfile?.role, sessionEmail)
+        );
         setAllPartnerClubs(loadedClubs);
 
         let targetName = overridePreviewClubName || '';
@@ -1087,7 +1097,7 @@ export function ClubPortal() {
   };
 
   const openStaffEditSessions = (player: PlayerSummary, e?: React.MouseEvent) => {
-    if (!isStaffPreview) return;
+    if (!isStaffPreview || !canEditSessionCount) return;
     if (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -1099,7 +1109,7 @@ export function ClubPortal() {
 
   const handleSaveStaffSessions = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isStaffPreview || !playerForSessionsEdit) return;
+    if (!isStaffPreview || !canEditSessionCount || !playerForSessionsEdit) return;
 
     const parsed = Math.max(0, parseInt(sessionsEditValue, 10) || 0);
     setSessionsEditSaving(true);
@@ -1685,7 +1695,7 @@ export function ClubPortal() {
                                           ? `${player.completedSessions} / ${player.prescribedSessions} séances`
                                           : `${player.completedSessions} séance(s) réalisée(s)`}
                                       </span>
-                                      {isStaffPreview && (
+                                      {isStaffPreview && canEditSessionCount && (
                                         <button
                                           type="button"
                                           onClick={(e) => openStaffEditSessions(player, e)}
@@ -1900,7 +1910,7 @@ export function ClubPortal() {
                                       ? ` / ${player.prescribedSessions} séances (${player.progressPercent}%)`
                                       : ' séance(s) réalisée(s)'}
                                   </span>
-                                  {isStaffPreview && (
+                                  {isStaffPreview && canEditSessionCount && (
                                     <button
                                       type="button"
                                       onClick={(e) => openStaffEditSessions(player, e)}
@@ -2246,7 +2256,7 @@ export function ClubPortal() {
                           ? ` / ${selectedPlayer.prescribedSessions} prescrites (${selectedPlayer.progressPercent}%)`
                           : ''}
                       </span>
-                      {isStaffPreview && (
+                      {isStaffPreview && canEditSessionCount && (
                         <button
                           type="button"
                           onClick={(e) => openStaffEditSessions(selectedPlayer, e)}
@@ -2757,9 +2767,9 @@ export function ClubPortal() {
         </form>
       </Modal>
 
-      {/* MODAL: MODIFIER LE NOMBRE DE SÉANCES PRESCRITES (ADMIN / CABINET UNIQUEMENT) */}
+      {/* MODAL: MODIFIER LE NOMBRE DE SÉANCES PRESCRITES (ADMIN & SECRÉTAIRE UNIQUEMENT) */}
       <Modal
-        isOpen={Boolean(playerForSessionsEdit) && isStaffPreview}
+        isOpen={Boolean(playerForSessionsEdit) && isStaffPreview && canEditSessionCount}
         onClose={() => {
           if (!sessionsEditSaving) {
             setPlayerForSessionsEdit(null);
