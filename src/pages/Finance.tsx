@@ -18,12 +18,16 @@ import {
   ChevronDown,
   Edit2,
   Trash2,
+  Key,
+  ExternalLink,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Modal } from '../components/ui/modal';
 import { MultiMonthPicker } from '../components/ui/MultiMonthPicker';
 import { PatientNameLink } from '../components/patients/PatientNameLink';
+import { ClubAccessModal } from '../components/clubs/ClubAccessModal';
+import { openClubPortalPreview } from '../lib/clubPortalUtils';
 import * as XLSX from 'xlsx';
 import {
   fetchAllRows,
@@ -105,6 +109,7 @@ export function Finance() {
     note: '',
   });
   const [savingClub, setSavingClub] = useState(false);
+  const [clubForAccessModal, setClubForAccessModal] = useState<PartnerClub | null>(null);
 
   // Modal state: Edit Patient Billing (Admin ONLY)
   const [isEditBillModalOpen, setIsEditBillModalOpen] = useState(false);
@@ -330,7 +335,7 @@ export function Finance() {
       const periodAppts = appointmentsList.filter(
         (a) =>
           clubPatientIds.has(a.patient_id) &&
-          a.statut === 'Effectué' &&
+          (a.statut === 'Effectué' || a.statut === 'Impayé') &&
           isDateInRange(a.date_heure, dateRange)
       );
 
@@ -371,6 +376,10 @@ export function Finance() {
         sport: meta.sport,
         tarifConvention: meta.tarifConvention,
         note: meta.note,
+        hasAccess: Boolean(meta.hasAccess),
+        loginId: meta.loginId || '',
+        authEmail: meta.authEmail || '',
+        rawClubMeta: meta,
         patientsCount: clubPatients.length,
         sessionsCount: periodAppts.length,
         totalPaid,
@@ -1087,6 +1096,12 @@ export function Finance() {
                                   Convention : {clubStat.tarifConvention} DH/séance
                                 </span>
                               )}
+                              {clubStat.hasAccess && (
+                                <span className="inline-flex items-center gap-1 text-xs font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200">
+                                  <CheckCircle2 className="h-3 w-3" />
+                                  Accès portail{clubStat.loginId ? ` (${clubStat.loginId})` : ''}
+                                </span>
+                              )}
                             </div>
                             <p className="text-xs text-slate-500 mt-1">
                               <strong>{clubStat.patientsCount}</strong> joueur(s) affilié(s) •{' '}
@@ -1120,9 +1135,37 @@ export function Finance() {
                           </div>
 
                           <div
-                            className="flex items-center gap-2"
+                            className="flex flex-wrap items-center gap-2"
                             onClick={(e) => e.stopPropagation()}
                           >
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setClubForAccessModal(clubStat.rawClubMeta)}
+                              className={`gap-1.5 text-xs ${
+                                clubStat.hasAccess
+                                  ? 'text-indigo-700 border-indigo-200 bg-indigo-50/60 hover:bg-indigo-100/70'
+                                  : 'text-slate-700 border-slate-200 hover:bg-slate-50'
+                              }`}
+                              title="Créer ou modifier l'accès de l'administration du club"
+                            >
+                              <Key className="h-3.5 w-3.5" />
+                              {clubStat.hasAccess ? 'Gérer accès' : 'Accès Club'}
+                            </Button>
+
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openClubPortalPreview(clubStat.name, 'finance')}
+                              className="text-slate-700 border-slate-200 hover:bg-slate-50 gap-1.5 text-xs"
+                              title="Ouvrir le portail de suivi du club"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              Portail Club
+                            </Button>
+
                             <Button
                               type="button"
                               variant="outline"
@@ -2067,6 +2110,23 @@ export function Finance() {
           )}
         </form>
       </Modal>
+
+      <ClubAccessModal
+        isOpen={Boolean(clubForAccessModal)}
+        club={clubForAccessModal}
+        fromRoute="finance"
+        onClose={() => setClubForAccessModal(null)}
+        onUpdated={async () => {
+          const updatedClubs = await fetchPartnerClubs(supabase, patientsList);
+          setPartnerClubs(updatedClubs);
+          if (clubForAccessModal) {
+            const refreshed = updatedClubs.find(
+              (c) => c.name.toLowerCase() === clubForAccessModal.name.toLowerCase()
+            );
+            if (refreshed) setClubForAccessModal(refreshed);
+          }
+        }}
+      />
     </div>
   );
 }

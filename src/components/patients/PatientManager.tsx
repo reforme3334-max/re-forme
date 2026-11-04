@@ -44,6 +44,8 @@ import {
 import { Modal } from '@/components/ui/modal';
 import { PatientNameLink } from './PatientNameLink';
 import { openPatientDossier } from '@/lib/patientNavigation';
+import { ClubAccessModal } from '@/components/clubs/ClubAccessModal';
+import { openClubPortalPreview } from '@/lib/clubPortalUtils';
 import Papa from 'papaparse';
 
 interface Patient {
@@ -123,6 +125,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
   // Manage Partner Clubs Modal state
   const [isClubsModalOpen, setIsClubsModalOpen] = useState(false);
+  const [clubForAccessModal, setClubForAccessModal] = useState<PartnerClub | null>(null);
   const [newClubForm, setNewClubForm] = useState({
     name: '',
     sport: 'Football',
@@ -1830,14 +1833,20 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                     key={club.name}
                     className="p-3 rounded-xl border border-slate-200 bg-white space-y-2"
                   >
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Trophy className="h-4 w-4 text-indigo-600" />
                           <span className="font-bold text-sm text-slate-900">{club.name}</span>
                           <span className="text-[11px] font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
                             {club.sport}
                           </span>
+                          {club.hasAccess && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                              <CheckCircle2 className="h-3 w-3" />
+                              Accès actif{club.loginId ? ` (${club.loginId})` : ''}
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-slate-500 mt-0.5">
                           {count} patient(s) affilié(s)
@@ -1845,17 +1854,48 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                           {club.note ? ` • ${club.note}` : ''}
                         </p>
                       </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        disabled={clubSaving}
-                        onClick={() => handleDeletePartnerClub(club.name)}
-                        className="text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                        title="Supprimer ce club"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setClubForAccessModal(club)}
+                          className={`h-8 text-xs gap-1 ${
+                            club.hasAccess
+                              ? 'border-indigo-200 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-100/60'
+                              : 'border-slate-200 text-slate-700'
+                          }`}
+                          title="Créer ou modifier l'accès portail de ce club"
+                        >
+                          <Key className="h-3.5 w-3.5" />
+                          {club.hasAccess ? 'Gérer accès' : 'Accès Club'}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setIsClubsModalOpen(false);
+                            openClubPortalPreview(club.name, 'patients');
+                          }}
+                          className="h-8 text-xs gap-1 border-slate-200 text-slate-700"
+                          title="Ouvrir le portail de suivi du club"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          Portail
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          disabled={clubSaving}
+                          onClick={() => handleDeletePartnerClub(club.name)}
+                          className="text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+                          title="Supprimer ce club"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                     {clubMembers.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 pt-1.5 border-t border-slate-100">
@@ -2218,6 +2258,23 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
           </form>
         )}
       </Modal>
+
+      <ClubAccessModal
+        isOpen={Boolean(clubForAccessModal)}
+        club={clubForAccessModal}
+        fromRoute="patients"
+        onClose={() => setClubForAccessModal(null)}
+        onUpdated={async () => {
+          const updatedClubs = await fetchPartnerClubs(supabase, patients);
+          setPartnerClubs(updatedClubs);
+          if (clubForAccessModal) {
+            const refreshed = updatedClubs.find(
+              (c) => c.name.toLowerCase() === clubForAccessModal.name.toLowerCase()
+            );
+            if (refreshed) setClubForAccessModal(refreshed);
+          }
+        }}
+      />
     </div>
   );
 }

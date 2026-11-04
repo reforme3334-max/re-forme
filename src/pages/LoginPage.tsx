@@ -20,6 +20,13 @@ import {
   resolvePatientLoginCandidates,
   stripInvisibleChars,
 } from '../lib/patientAuthUtils';
+import {
+  isClubSyntheticEmail,
+  isClubProfile,
+  isRevokedClubProfile,
+  parseClubProfileMeta,
+  resolveClubLoginCandidates,
+} from '../lib/clubPortalUtils';
 
 export function LoginPage() {
   const [email, setEmail] = useState('');
@@ -70,6 +77,18 @@ export function LoginPage() {
           email: sessEmail,
         });
         if (cancelled || !profile || profile.__blocked || profile.__transientError) return;
+
+        if (isClubSyntheticEmail(sessEmail) || isClubProfile(profile)) {
+          const clubMeta = parseClubProfileMeta(profile);
+          if (!cancelled && !clubMeta?.revoked) {
+            setExistingSessionBanner({
+              label: clubMeta?.clubName || clubMeta?.loginId || sessEmail,
+              roleLabel: 'Espace Club',
+              targetHash: 'espace-club',
+            });
+          }
+          return;
+        }
 
         const parsed = parseCollaboratorProfile(profile, [], session.user);
         const effRole = isPrimaryAdminEmail(sessEmail) ? 'admin' : parsed.role;
@@ -123,10 +142,10 @@ export function LoginPage() {
       return;
     }
 
-    // Patient phone number entered -> explain instant reset by secretariat
+    // Patient phone number or Club code entered -> explain instant reset by cabinet administration
     if (!rawClean.includes('@') && rawClean !== 'admin') {
       setInfoMessage(
-        "Pour un accès Patient (connexion par téléphone), contactez le secrétariat du cabinet Re Forme Center : un nouveau mot de passe peut vous être attribué immédiatement depuis votre fiche patient."
+        "Pour un accès Patient (téléphone) ou Administration Club (identifiant équipe), contactez l'administration du cabinet Re Forme Center : un nouveau mot de passe peut vous être attribué immédiatement."
       );
       return;
     }
@@ -192,12 +211,37 @@ export function LoginPage() {
       let candidateEmails: string[] = [];
       let displayEmailForCheck = '';
       let isPatientAccount = false;
+      let isClubCandidate = false;
+      let matchedClubNameFromLookup = '';
+
+      // Check if this identifier matches a Partner Club account (supports both short codes like `club.husa` and emails like `direction@husa.ma`)
+      if (!isAdminShorthand && !isPrimaryAdminEmail(rawIdentifier.toLowerCase())) {
+        const clubRes = await resolveClubLoginCandidates(supabase, rawIdentifier);
+        if (clubRes.revoked) {
+          clearStoredAuthSession();
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          throw new Error(
+            "L'accès au portail de ce club a été désactivé par l'administration du cabinet."
+          );
+        }
+        if (clubRes.candidateEmails.length > 0) {
+          isClubCandidate = true;
+          matchedClubNameFromLookup = clubRes.matchedClubName;
+          candidateEmails.push(...clubRes.candidateEmails);
+        }
+      }
 
       if (isEmailInput) {
         displayEmailForCheck = isAdminShorthand ? 'admin@reforme.com' : rawIdentifier.toLowerCase();
         isPatientAccount = isPatientSyntheticEmail(displayEmailForCheck);
+        const isClubDirect = isClubSyntheticEmail(displayEmailForCheck);
 
-        if (!isPatientAccount && !isPrimaryAdminEmail(displayEmailForCheck)) {
+        if (
+          !isPatientAccount &&
+          !isClubDirect &&
+          !isClubCandidate &&
+          !isPrimaryAdminEmail(displayEmailForCheck)
+        ) {
           const blocked = await isEmailBlocked(supabase, displayEmailForCheck);
           if (blocked) {
             clearStoredAuthSession();
@@ -208,16 +252,24 @@ export function LoginPage() {
 
         if (isPatientAccount) {
           const extractedPhone = extractPhoneFromPatientAuthEmail(displayEmailForCheck);
-          candidateEmails = extractedPhone
+          const patCandidates = extractedPhone
             ? await resolvePatientLoginCandidates(supabase, extractedPhone)
             : [displayEmailForCheck];
+          for (const c of patCandidates) {
+            if (!candidateEmails.includes(c)) candidateEmails.push(c);
+          }
           if (!candidateEmails.includes(displayEmailForCheck)) {
             candidateEmails.unshift(displayEmailForCheck);
           }
-        } else {
-          candidateEmails = await resolveStaffLoginCandidates(supabase, displayEmailForCheck);
+        } else if (!isClubDirect) {
+          const staffCandidates = await resolveStaffLoginCandidates(supabase, displayEmailForCheck);
+          for (const c of staffCandidates) {
+            if (!candidateEmails.includes(c)) candidateEmails.push(c);
+          }
+        } else if (!candidateEmails.includes(displayEmailForCheck)) {
+          candidateEmails.push(displayEmailForCheck);
         }
-      } else {
+      } else if (!isClubCandidate) {
         isPatientAccount = true;
         candidateEmails = await resolvePatientLoginCandidates(supabase, rawIdentifier);
         if (candidateEmails.length === 0) {
@@ -277,23 +329,32 @@ export function LoginPage() {
       }
 
       const effectiveAuthEmail = (authenticatedUser.email || matchedLoginEmail || '').toLowerCase();
+      const effectiveIsClub = isClubSyntheticEmail(effectiveAuthEmail);
       const effectiveIsPatient =
-        isPatientSyntheticEmail(effectiveAuthEmail) ||
-        (isPatientAccount && !effectiveAuthEmail.endsWith('@staff.reforme.center'));
+        !effectiveIsClub &&
+        (isPatientSyntheticEmail(effectiveAuthEmail) ||
+          (isPatientAccount && !effectiveAuthEmail.endsWith('@staff.reforme.center')));
 
-      // 2. Récupération ou rattachement automatique du profil collaborateur/admin
+      // 2. Récupération ou rattachement automatique du profil collaborateur/admin/club
       const profile = await resolveOrBindCollaboratorSession(supabase, {
         id: authenticatedUser.id,
-        email: displayEmailForCheck || effectiveAuthEmail,
+        email: effectiveIsClub ? effectiveAuthEmail : displayEmailForCheck || effectiveAuthEmail,
       });
 
-      if (profile?.__blocked) {
+      if (profile?.__blocked || isRevokedClubProfile(profile)) {
         clearStoredAuthSession();
         await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
         throw new Error("Accès bloqué : ce compte a été désactivé par l'administrateur du cabinet.");
       }
 
-      if ((!profile || profile.__transientError) && !effectiveIsPatient && !isPrimaryAdminEmail(displayEmailForCheck || effectiveAuthEmail)) {
+      const confirmedClubAccount = effectiveIsClub || isClubProfile(profile);
+
+      if (
+        (!profile || profile.__transientError) &&
+        !effectiveIsPatient &&
+        !confirmedClubAccount &&
+        !isPrimaryAdminEmail(displayEmailForCheck || effectiveAuthEmail)
+      ) {
         clearStoredAuthSession();
         await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
         throw new Error("Accès révoqué ou profil introuvable. Contactez l'administrateur du cabinet.");
@@ -302,13 +363,26 @@ export function LoginPage() {
       // 3. Redirection intelligente selon le rôle et les permissions
       const role = isPrimaryAdminEmail(displayEmailForCheck || effectiveAuthEmail)
         ? 'admin'
+        : confirmedClubAccount
+        ? 'club'
         : profile?.role && !profile.__transientError
         ? profile.role
         : effectiveIsPatient
         ? 'patient'
         : '';
 
-      if (role === 'admin') {
+      if (role === 'club') {
+        try {
+          sessionStorage.removeItem('reforme_portal_patient_phone');
+          sessionStorage.removeItem('reforme_portal_patient_id');
+          const clubMeta = parseClubProfileMeta(profile);
+          const resolvedName = clubMeta?.clubName || matchedClubNameFromLookup || '';
+          if (resolvedName) {
+            sessionStorage.setItem('reforme_portal_club_name', resolvedName);
+          }
+        } catch {}
+        window.location.hash = 'espace-club';
+      } else if (role === 'admin') {
         try {
           sessionStorage.removeItem('reforme_portal_patient_phone');
           sessionStorage.removeItem('reforme_portal_patient_id');
@@ -437,7 +511,7 @@ export function LoginPage() {
               <div className="space-y-4">
                 <div className="space-y-1.5">
                   <label className="text-sm font-semibold text-slate-700">
-                    Email ou Numéro de téléphone
+                    Email, Téléphone ou Identifiant Club
                   </label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -452,7 +526,7 @@ export function LoginPage() {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       className="block w-full pl-10 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-mint-500/20 focus:border-mint-500 transition-all bg-slate-50 focus:bg-white"
-                      placeholder="Email, 06XXXXXXXX ou CIN"
+                      placeholder="Email, 06XXXXXXXX ou identifiant club"
                     />
                   </div>
                 </div>

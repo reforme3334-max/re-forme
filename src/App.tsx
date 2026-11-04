@@ -5,6 +5,7 @@ import { Agenda } from './pages/Agenda';
 import { Patients } from './pages/Patients';
 import { PatientDetail } from './pages/PatientDetail';
 import { PatientPortal } from './pages/PatientPortal';
+import { ClubPortal } from './pages/ClubPortal';
 import { LoginPage } from './pages/LoginPage';
 import { Settings } from './pages/Settings';
 import { Finance } from './pages/Finance';
@@ -13,6 +14,7 @@ import { AppointmentNotificationsProvider } from './contexts/AppointmentNotifica
 import { supabase } from './lib/supabaseClient';
 import { resolveOrBindCollaboratorSession, isPrimaryAdminEmail } from './lib/teamUtils';
 import { isPatientSyntheticEmail } from './lib/patientAuthUtils';
+import { isClubSyntheticEmail } from './lib/clubPortalUtils';
 import { SELECT_PATIENT_EVENT, SelectPatientEventDetail } from './lib/patientNavigation';
 import { Activity, Lock, Eye, EyeOff, CheckCircle, AlertCircle } from 'lucide-react';
 import { Card, CardContent } from './components/ui/card';
@@ -62,6 +64,10 @@ export default function App() {
             return;
           }
           const userEmail = (session.user.email || '').toLowerCase();
+          if (isClubSyntheticEmail(userEmail)) {
+            window.location.hash = 'espace-club';
+            return;
+          }
           if (isPatientSyntheticEmail(userEmail)) {
             window.location.hash = 'espace-patient';
             return;
@@ -143,7 +149,9 @@ export default function App() {
 
       if (updatedUser) {
         const userEmail = (updatedUser.email || '').toLowerCase();
-        if (isPatientSyntheticEmail(userEmail)) {
+        if (isClubSyntheticEmail(userEmail)) {
+          targetHash = 'espace-club';
+        } else if (isPatientSyntheticEmail(userEmail)) {
           targetHash = 'espace-patient';
         } else {
           const prof = await resolveOrBindCollaboratorSession(supabase, {
@@ -340,6 +348,10 @@ export default function App() {
       {currentRoute === 'espace-patient' ? (
         <ProtectedRoute allowedRoles={['patient', 'admin', 'therapeute', 'secretaire']}>
           <PatientPortal />
+        </ProtectedRoute>
+      ) : currentRoute === 'espace-club' ? (
+        <ProtectedRoute allowedRoles={['club', 'admin', 'therapeute', 'secretaire']}>
+          <ClubPortal />
         </ProtectedRoute>
       ) : (
         <Layout>

@@ -8,6 +8,11 @@ import {
   resolveOrBindCollaboratorSession,
 } from '../../lib/teamUtils';
 import { isPatientSyntheticEmail } from '../../lib/patientAuthUtils';
+import {
+  isClubSyntheticEmail,
+  isClubProfile,
+  isRevokedClubProfile,
+} from '../../lib/clubPortalUtils';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -103,9 +108,15 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
 
       const sessionEmail = (session.user.email || '').trim().toLowerCase();
       const isPatientEmail = isPatientSyntheticEmail(sessionEmail);
+      const isClubEmail = isClubSyntheticEmail(sessionEmail);
 
       // 1. Immediate blocklist enforcement (never blocking primary admin accounts)
-      if (sessionEmail && !isPatientEmail && !isPrimaryAdminEmail(sessionEmail)) {
+      if (
+        sessionEmail &&
+        !isPatientEmail &&
+        !isClubEmail &&
+        !isPrimaryAdminEmail(sessionEmail)
+      ) {
         const blocked = await isEmailBlocked(supabase, sessionEmail);
         if (blocked) {
           await kickOutSession("Accès bloqué : votre compte a été désactivé par l'administrateur du cabinet.");
@@ -127,9 +138,22 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
           return;
         }
 
+        if (isRevokedClubProfile(profile)) {
+          await kickOutSession(
+            "L'accès au portail de ce club a été désactivé par l'administration du cabinet."
+          );
+          return;
+        }
+
+        const isClubAccount = isClubEmail || isClubProfile(profile);
+
         // Preserve active session on transient network blips
         if (profile?.__transientError) {
           if (authorizedRef.current || isPrimaryAdminEmail(sessionEmail)) {
+            updateAuthorized(true);
+            return;
+          }
+          if (isClubAccount && checkRoles && allowedRoles?.includes('club')) {
             updateAuthorized(true);
             return;
           }
@@ -139,8 +163,17 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
           }
         }
 
-        // Patient accounts without a `profiles` row still have role 'patient'
+        // Patient or Club accounts without a staff `profiles` row
         if (!profile || profile.__transientError) {
+          if (isClubAccount) {
+            if (checkRoles && allowedRoles?.includes('club')) {
+              updateAuthorized(true);
+            } else {
+              updateAuthorized(false);
+              window.location.hash = 'espace-club';
+            }
+            return;
+          }
           if (isPatientEmail) {
             if (checkRoles && allowedRoles?.includes('patient')) {
               updateAuthorized(true);
@@ -154,7 +187,22 @@ export function ProtectedRoute({ children, allowedRoles, allowedPermissions }: P
           return;
         }
 
-        const effectiveRole = isPrimaryAdminEmail(sessionEmail) ? 'admin' : profile.role;
+        const effectiveRole = isPrimaryAdminEmail(sessionEmail)
+          ? 'admin'
+          : isClubAccount
+          ? 'club'
+          : profile.role;
+
+        // If a Partner Club account navigated to any non-club page, redirect strictly to `#espace-club`
+        if (effectiveRole === 'club') {
+          if (checkRoles && allowedRoles?.includes('club')) {
+            updateAuthorized(true);
+          } else {
+            updateAuthorized(false);
+            window.location.hash = 'espace-club';
+          }
+          return;
+        }
 
         // If a patient account navigated to a staff-only page, redirect them back to their portal without signing out
         if ((effectiveRole === 'patient' || isPatientEmail) && !(checkRoles && allowedRoles?.includes('patient'))) {

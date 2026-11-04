@@ -34,6 +34,10 @@ export interface PartnerClub {
   sport: string;
   tarifConvention?: number | null;
   note?: string;
+  hasAccess?: boolean;
+  loginId?: string;
+  authEmail?: string;
+  accessUpdatedAt?: string;
 }
 
 export interface ParsedPatientMutuelle {
@@ -177,7 +181,8 @@ export async function fetchPartnerClubs(
     const { data: admins } = await supabaseClient
       .from('profiles')
       .select('permissions')
-      .eq('role', 'admin');
+      .eq('role', 'admin')
+      .order('created_at', { ascending: true });
 
     for (const admin of admins || []) {
       const rawArr: string[] = Array.isArray(admin?.permissions) ? admin.permissions : [];
@@ -187,14 +192,23 @@ export async function fetchPartnerClubs(
             const parsed: PartnerClub = JSON.parse(item.slice(CLUB_CONV_PREFIX.length));
             const cleanName = (parsed?.name || '').trim();
             if (cleanName) {
-              clubMap.set(cleanName.toLowerCase(), {
+              const key = cleanName.toLowerCase();
+              const prev = clubMap.get(key);
+              clubMap.set(key, {
                 name: cleanName,
-                sport: (parsed.sport || 'Omnisports').trim(),
+                sport: (parsed.sport || prev?.sport || 'Omnisports').trim(),
                 tarifConvention:
                   parsed.tarifConvention !== undefined && parsed.tarifConvention !== null
                     ? Number(parsed.tarifConvention)
-                    : null,
-                note: (parsed.note || '').trim(),
+                    : prev?.tarifConvention ?? null,
+                note: (parsed.note ?? prev?.note ?? '').trim(),
+                hasAccess:
+                  parsed.hasAccess !== undefined ? Boolean(parsed.hasAccess) : prev?.hasAccess,
+                loginId: parsed.loginId ? String(parsed.loginId).trim() : prev?.loginId,
+                authEmail: parsed.authEmail ? String(parsed.authEmail).trim() : prev?.authEmail,
+                accessUpdatedAt: parsed.accessUpdatedAt
+                  ? String(parsed.accessUpdatedAt).trim()
+                  : prev?.accessUpdatedAt,
               });
             }
           } catch {
@@ -228,6 +242,7 @@ export async function fetchPartnerClubs(
 
 /**
  * Saves or updates a partner sports club in Supabase so all staff accounts see it.
+ * Preserves existing portal access credentials (`hasAccess`, `loginId`, `authEmail`) unless explicitly updated.
  */
 export async function upsertPartnerClub(
   supabaseClient: SupabaseClient,
@@ -249,12 +264,32 @@ export async function upsertPartnerClub(
     throw new Error('Aucun profil administrateur trouvé pour enregistrer ce club.');
   }
 
+  const targetKey = cleanName.toLowerCase();
+  let existingClubEntry: PartnerClub | null = null;
+
+  for (const admin of admins) {
+    const rawArr: string[] = Array.isArray(admin.permissions)
+      ? admin.permissions.filter((x: any) => typeof x === 'string')
+      : [];
+    for (const item of rawArr) {
+      if (item.startsWith(CLUB_CONV_PREFIX)) {
+        try {
+          const parsed: PartnerClub = JSON.parse(item.slice(CLUB_CONV_PREFIX.length));
+          if ((parsed?.name || '').trim().toLowerCase() === targetKey) {
+            existingClubEntry = parsed;
+          }
+        } catch {
+          // Ignore malformed entry
+        }
+      }
+    }
+  }
+
   const primaryAdmin = admins[0];
   const rawArr: string[] = Array.isArray(primaryAdmin.permissions)
     ? primaryAdmin.permissions.filter((x: any) => typeof x === 'string')
     : [];
 
-  const targetKey = cleanName.toLowerCase();
   const filtered = rawArr.filter((item) => {
     if (!item.startsWith(CLUB_CONV_PREFIX)) return true;
     try {
@@ -265,17 +300,33 @@ export async function upsertPartnerClub(
     }
   });
 
+  const resolvedHasAccess =
+    club.hasAccess !== undefined ? Boolean(club.hasAccess) : existingClubEntry?.hasAccess;
+  const resolvedLoginId =
+    club.loginId !== undefined ? club.loginId.trim() : existingClubEntry?.loginId;
+  const resolvedAuthEmail =
+    club.authEmail !== undefined ? club.authEmail.trim() : existingClubEntry?.authEmail;
+  const resolvedUpdatedAt =
+    club.accessUpdatedAt !== undefined
+      ? club.accessUpdatedAt
+      : existingClubEntry?.accessUpdatedAt;
+
   const payload: PartnerClub = {
     name: cleanName,
-    sport: (club.sport || 'Football').trim(),
+    sport: (club.sport || existingClubEntry?.sport || 'Football').trim(),
     tarifConvention:
-      club.tarifConvention !== undefined &&
-      club.tarifConvention !== null &&
-      !isNaN(Number(club.tarifConvention)) &&
-      Number(club.tarifConvention) > 0
-        ? Number(club.tarifConvention)
-        : null,
-    note: (club.note || '').trim(),
+      club.tarifConvention !== undefined
+        ? club.tarifConvention !== null &&
+          !isNaN(Number(club.tarifConvention)) &&
+          Number(club.tarifConvention) > 0
+          ? Number(club.tarifConvention)
+          : null
+        : existingClubEntry?.tarifConvention ?? null,
+    note: (club.note !== undefined ? club.note : existingClubEntry?.note || '').trim(),
+    ...(resolvedHasAccess !== undefined ? { hasAccess: resolvedHasAccess } : {}),
+    ...(resolvedLoginId ? { loginId: resolvedLoginId } : {}),
+    ...(resolvedAuthEmail ? { authEmail: resolvedAuthEmail } : {}),
+    ...(resolvedUpdatedAt ? { accessUpdatedAt: resolvedUpdatedAt } : {}),
   };
 
   filtered.push(`${CLUB_CONV_PREFIX}${JSON.stringify(payload)}`);
@@ -286,6 +337,29 @@ export async function upsertPartnerClub(
     .eq('id', primaryAdmin.id);
 
   if (updErr) throw updErr;
+
+  // Clean up duplicate entries for the same club on secondary admin profiles if any
+  for (let i = 1; i < admins.length; i++) {
+    const secAdmin = admins[i];
+    const secArr: string[] = Array.isArray(secAdmin.permissions)
+      ? secAdmin.permissions.filter((x: any) => typeof x === 'string')
+      : [];
+    const secFiltered = secArr.filter((item) => {
+      if (!item.startsWith(CLUB_CONV_PREFIX)) return true;
+      try {
+        const parsed = JSON.parse(item.slice(CLUB_CONV_PREFIX.length));
+        return (parsed?.name || '').trim().toLowerCase() !== targetKey;
+      } catch {
+        return false;
+      }
+    });
+    if (secFiltered.length !== secArr.length) {
+      await supabaseClient
+        .from('profiles')
+        .update({ permissions: secFiltered })
+        .eq('id', secAdmin.id);
+    }
+  }
 }
 
 /**
@@ -325,6 +399,31 @@ export async function removePartnerClub(
         .update({ permissions: nextArr })
         .eq('id', admin.id);
     }
+  }
+
+  // Revoke any active portal profile bound to this club
+  try {
+    const { data: clubProfiles } = await supabaseClient
+      .from('profiles')
+      .select('id, permissions')
+      .eq('role', 'patient');
+
+    for (const row of clubProfiles || []) {
+      const perms: string[] = Array.isArray(row?.permissions) ? row.permissions : [];
+      if (!perms.includes('__club_portal:1')) continue;
+      const nameTag = perms.find(
+        (x) => typeof x === 'string' && x.startsWith('__club_name:')
+      );
+      const rowClub = nameTag ? nameTag.slice('__club_name:'.length).trim().toLowerCase() : '';
+      if (rowClub === targetKey) {
+        await supabaseClient
+          .from('profiles')
+          .update({ permissions: ['__club_revoked:1', `__club_name:${clubName.trim()}`] })
+          .eq('id', row.id);
+      }
+    }
+  } catch {
+    // Non-blocking cleanup
   }
 
   // Detach patients that were assigned to this club

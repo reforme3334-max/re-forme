@@ -431,17 +431,24 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     }
   };
 
-  // Calculate session progression based on actual appointments
+  // Calculate session progression based on actual performed appointments ('Effectué' + 'Impayé')
   const activeTreatment = useMemo(() => {
-    // Find the current active treatment or the most recent one
     const activeTreatmentData = treatments.find(t => t.statut === 'En cours') || treatments[0];
-    
-    // Count completed sessions
-    // We count all 'Effectué' appointments for this patient to ensure synchronization with history
-    const seances_effectuees = appointments.filter(a => a.statut === 'Effectué').length;
+    const performedAppts = appointments.filter(
+      a => a.statut === 'Effectué' || a.statut === 'Impayé'
+    );
+    const seances_effectuees = performedAppts.length;
+    const latestActMotif =
+      performedAppts.find(a => a.notes_seance && !/^\d+([.,]\d+)?$/.test(a.notes_seance.trim()))
+        ?.notes_seance || '';
 
     return {
-      motif: activeTreatmentData?.motif || patient?.pathologie || 'Non renseigné',
+      motif:
+        activeTreatmentData?.motif ||
+        patient?.pathologie ||
+        latestActMotif ||
+        'Non renseigné',
+      medecin_prescripteur: activeTreatmentData?.medecin_prescripteur || '',
       seances_prescrites: activeTreatmentData?.nombre_seances_prescrites || patient?.nombre_seances || 0,
       seances_effectuees: seances_effectuees,
     };
@@ -1218,7 +1225,9 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     if (!patient) return null;
     const nowLocalDate = getMoroccoNow();
     
-    const completedAppts = appointments.filter(a => a.statut === 'Effectué');
+    const completedAppts = appointments.filter(
+      a => a.statut === 'Effectué' || a.statut === 'Impayé'
+    );
     const upcomingAppts = appointments.filter(a => {
       const apptDate = parseClinicDate(a.date_heure);
       return apptDate >= nowLocalDate;

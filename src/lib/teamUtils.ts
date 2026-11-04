@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { isPatientSyntheticEmail, stripInvisibleChars } from './patientAuthUtils';
+import { isClubSyntheticEmail, isClubProfile, isRevokedClubProfile } from './clubPortalUtils';
 
 export const PRIMARY_ADMIN_EMAILS = ['admin@reforme.com', 'reforme3334@gmail.com'];
 export const OWNER_RECOVERY_EMAIL = 'reforme3334@gmail.com';
@@ -815,7 +816,12 @@ export async function ensureStaffAuthAccountForRecovery(
   targetEmail: string
 ): Promise<boolean> {
   const cleanEmail = stripInvisibleChars(targetEmail).toLowerCase();
-  if (!cleanEmail || !cleanEmail.includes('@') || isPatientSyntheticEmail(cleanEmail)) {
+  if (
+    !cleanEmail ||
+    !cleanEmail.includes('@') ||
+    isPatientSyntheticEmail(cleanEmail) ||
+    isClubSyntheticEmail(cleanEmail)
+  ) {
     return false;
   }
 
@@ -895,9 +901,10 @@ export async function resolveOrBindCollaboratorSession(
   if (!authUser?.id) return null;
   const cleanEmail = stripInvisibleChars(authUser.email || '').toLowerCase();
   const isPatientEmail = isPatientSyntheticEmail(cleanEmail);
+  const isClubEmail = isClubSyntheticEmail(cleanEmail);
 
   // 1. Check explicit email blocklist first (never blocking primary admin accounts)
-  if (cleanEmail && !isPatientEmail && !isPrimaryAdminEmail(cleanEmail)) {
+  if (cleanEmail && !isPatientEmail && !isClubEmail && !isPrimaryAdminEmail(cleanEmail)) {
     const blocked = await isEmailBlocked(supabaseClient, cleanEmail);
     if (blocked) {
       await supabaseClient
@@ -966,8 +973,14 @@ export async function resolveOrBindCollaboratorSession(
     return existingProfile;
   }
 
-  // Patient synthetic accounts immediately resolve to their patient profile (or null so caller treats as patient)
-  if (!cleanEmail || isPatientEmail) {
+  // Patient & Partner Club synthetic accounts immediately resolve to their own profile (or null)
+  if (
+    !cleanEmail ||
+    isPatientEmail ||
+    isClubEmail ||
+    isClubProfile(existingProfile) ||
+    isRevokedClubProfile(existingProfile)
+  ) {
     return existingProfile || null;
   }
 
