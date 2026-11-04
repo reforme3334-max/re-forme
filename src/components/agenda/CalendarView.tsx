@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { format, addDays, subDays, startOfWeek, isSameDay, setHours, setMinutes, isSameMonth } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight, Bell, FolderOpen, Trophy, Lock, ShieldCheck } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Plus, CreditCard, Wallet, CheckCircle, Search, AlertCircle, ArrowLeft, ArrowRight, Bell, FolderOpen, Trophy, Lock, ShieldCheck, Edit2, X } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -52,6 +52,7 @@ const MOTIFS_SEANCE = [
   'Consultation nutritionnelle',
   'Séance de contrôle',
   'Thérapie manuelle',
+  'Séance de Suivi',
   'Séance à domicile',
   'Clinique Taghzout',
   'Clinique Chiekhe Essaadi Agadir'
@@ -1081,35 +1082,61 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
 
           <div className="space-y-2 relative">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Motif de la séance</label>
-            <input
-              type="text"
-              value={newAppointmentMotif}
-              onChange={(e) => {
-                setNewAppointmentMotif(e.target.value);
-                setShowNewMotifDropdown(true);
-              }}
-              onFocus={() => setShowNewMotifDropdown(true)}
-              onBlur={() => setTimeout(() => setShowNewMotifDropdown(false), 200)}
-              placeholder="Sélectionner ou écrire un motif..."
-              className="w-full p-3 border border-slate-200 rounded-xl font-medium text-slate-900 focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50"
-            />
-            {showNewMotifDropdown && (
-              <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                {motifs.filter(m => m.toLowerCase().includes(newAppointmentMotif.toLowerCase())).map(m => (
-                  <div 
-                    key={m} 
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      setNewAppointmentMotif(m);
-                      setShowNewMotifDropdown(false);
-                    }}
-                    className="p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 border-b border-slate-50 last:border-0"
-                  >
-                    {m}
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="relative">
+              <input
+                type="text"
+                value={newAppointmentMotif}
+                onChange={(e) => {
+                  setNewAppointmentMotif(e.target.value);
+                  setShowNewMotifDropdown(true);
+                }}
+                onFocus={() => setShowNewMotifDropdown(true)}
+                onBlur={() => setTimeout(() => setShowNewMotifDropdown(false), 200)}
+                placeholder="Sélectionner ou écrire un motif..."
+                className="w-full p-3 pr-9 border border-slate-200 rounded-xl font-medium text-slate-900 focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-slate-50/50"
+              />
+              {newAppointmentMotif && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setNewAppointmentMotif('');
+                    setShowNewMotifDropdown(true);
+                  }}
+                  title="Effacer pour voir tous les motifs"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            {showNewMotifDropdown && (() => {
+              const trimmed = newAppointmentMotif.trim().toLowerCase();
+              const isExactMatch = motifs.some(m => m.toLowerCase() === trimmed);
+              const displayedMotifs =
+                !trimmed || isExactMatch
+                  ? motifs
+                  : motifs.filter(m => m.toLowerCase().includes(trimmed));
+              return displayedMotifs.length > 0 ? (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                  {displayedMotifs.map(m => (
+                    <div 
+                      key={m} 
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setNewAppointmentMotif(m);
+                        setShowNewMotifDropdown(false);
+                      }}
+                      className={`p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium border-b border-slate-50 last:border-0 ${
+                        m.toLowerCase() === trimmed ? 'bg-primary-50/60 text-primary-700 font-bold' : 'text-slate-700'
+                      }`}
+                    >
+                      {m}
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
           </div>
 
           <div className="space-y-2 relative">
@@ -1388,36 +1415,95 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
                 </select>
               </div>
               <div className="space-y-1.5 col-span-2 relative">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Motif</label>
-                <input
-                  type="text"
-                  value={editMotif}
-                  onChange={(e) => {
-                    setEditMotif(e.target.value);
-                    setShowEditMotifDropdown(true);
-                  }}
-                  onFocus={() => setShowEditMotifDropdown(true)}
-                  onBlur={() => setTimeout(() => setShowEditMotifDropdown(false), 200)}
-                  placeholder="Sélectionner ou écrire un motif..."
-                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all bg-slate-50/30"
-                />
-                {showEditMotifDropdown && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                    {motifs.filter(m => m.toLowerCase().includes(editMotif.toLowerCase())).map(m => (
-                      <div 
-                        key={m} 
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          setEditMotif(m);
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">
+                  Motif / Acte de la séance
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={editMotif}
+                    onChange={(e) => {
+                      setEditMotif(e.target.value);
+                      setShowEditMotifDropdown(true);
+                    }}
+                    onFocus={() => setShowEditMotifDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowEditMotifDropdown(false), 200)}
+                    placeholder="Sélectionner ou écrire un motif..."
+                    className="w-full rounded-xl border border-slate-200 px-4 pr-9 py-2.5 text-sm font-bold text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-4 focus:ring-primary-500/10 transition-all bg-slate-50/30"
+                  />
+                  {editMotif && (
+                    <button
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setEditMotif('');
+                        setShowEditMotifDropdown(true);
+                      }}
+                      title="Effacer pour choisir un autre motif"
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+                {showEditMotifDropdown && (() => {
+                  const trimmed = editMotif.trim().toLowerCase();
+                  const isExactMatch = motifs.some(m => m.toLowerCase() === trimmed);
+                  const displayedMotifs =
+                    !trimmed || isExactMatch
+                      ? motifs
+                      : motifs.filter(m => m.toLowerCase().includes(trimmed));
+                  return displayedMotifs.length > 0 ? (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                      {displayedMotifs.map(m => (
+                        <div 
+                          key={m} 
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setEditMotif(m);
+                            setShowEditMotifDropdown(false);
+                          }}
+                          className={`p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium border-b border-slate-50 last:border-0 ${
+                            m.toLowerCase() === trimmed ? 'bg-primary-50/60 text-primary-700 font-bold' : 'text-slate-700'
+                          }`}
+                        >
+                          {m}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null;
+                })()}
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {[
+                    'Kinésithérapie classique',
+                    'Tecar thérapie',
+                    'Réathlétisation',
+                    'Thérapie manuelle',
+                    'Onde de choc',
+                    'Cupping thérapie',
+                    'Récupération',
+                    'Séance de bilan',
+                  ].map((quickMotif) => {
+                    const active = editMotif.trim().toLowerCase() === quickMotif.toLowerCase();
+                    return (
+                      <button
+                        key={quickMotif}
+                        type="button"
+                        onClick={() => {
+                          setEditMotif(quickMotif);
                           setShowEditMotifDropdown(false);
                         }}
-                        className="p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 border-b border-slate-50 last:border-0"
+                        className={`px-2 py-0.5 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer ${
+                          active
+                            ? 'bg-primary-600 text-white border-primary-600'
+                            : 'bg-slate-50 hover:bg-primary-50 text-slate-600 hover:text-primary-700 border-slate-200'
+                        }`}
                       >
-                        {m}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                        {quickMotif}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
             <Button 
@@ -1426,9 +1512,10 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
               size="sm" 
               onClick={handleUpdateAppointment} 
               disabled={loading} 
-              className="w-full mt-2 rounded-xl h-10 font-bold bg-primary-50 hover:bg-primary-100 text-primary-700 border border-primary-200 transition-all"
+              className="w-full mt-2 rounded-xl h-10 font-bold bg-primary-600 hover:bg-primary-700 text-white shadow-xs gap-1.5 transition-all"
             >
-              Enregistrer la modification d'heure / date
+              <Edit2 className="h-3.5 w-3.5" />
+              {loading ? 'Enregistrement...' : "Enregistrer le motif / praticien / horaire"}
             </Button>
           </div>
 

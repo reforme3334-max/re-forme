@@ -50,6 +50,7 @@ const MOTIFS_SEANCE = [
   'Consultation nutritionnelle',
   'Séance de contrôle',
   'Thérapie manuelle',
+  'Séance de Suivi',
   'Séance à domicile',
   'Clinique Taghzout',
   'Clinique Chiekhe Essaadi Agadir'
@@ -152,11 +153,14 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [appointmentToDelete, setAppointmentToDelete] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
-  // Edit Appointment Time/Date Modal State
+  // Edit Appointment (Motif / Practitioner / Date / Time) Modal State
   const [isEditAppointmentModalOpen, setIsEditAppointmentModalOpen] = useState(false);
   const [appointmentToEdit, setAppointmentToEdit] = useState<any>(null);
   const [editAppDate, setEditAppDate] = useState('');
   const [editAppTime, setEditAppTime] = useState('');
+  const [editAppMotif, setEditAppMotif] = useState('');
+  const [editAppTherapist, setEditAppTherapist] = useState('');
+  const [showEditAppMotifDropdown, setShowEditAppMotifDropdown] = useState(false);
   const [editAppLoading, setEditAppLoading] = useState(false);
 
   // Delete & Edit Billing Modal State (Admin-only modification)
@@ -953,9 +957,15 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     const dd = String(parsed.getDate()).padStart(2, '0');
     const hh = String(parsed.getHours()).padStart(2, '0');
     const min = String(parsed.getMinutes()).padStart(2, '0');
+    const cleanMotif = String(app.notes_seance || '')
+      .replace(/^\|\|TH_ID:[a-f0-9-]+\|\|/i, '')
+      .trim();
     setAppointmentToEdit(app);
     setEditAppDate(`${yyyy}-${mm}-${dd}`);
     setEditAppTime(`${hh}:${min}`);
+    setEditAppMotif(cleanMotif || 'Séance de Suivi');
+    setEditAppTherapist(app.therapist_id || '');
+    setShowEditAppMotifDropdown(false);
     setIsEditAppointmentModalOpen(true);
   };
 
@@ -963,15 +973,39 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
     e.preventDefault();
     if (!appointmentToEdit || !editAppDate || !editAppTime) return;
     setEditAppLoading(true);
+
+    const trimmedMotif = editAppMotif.trim() || 'Séance de Suivi';
+    await ensureMotifExists(trimmedMotif);
+
     const newIso = toClinicIsoString(editAppDate, editAppTime);
+    const resolvedThId = editAppTherapist ? editAppTherapist : null;
+
+    const dbNotes = resolvedThId
+      ? `||TH_ID:${resolvedThId}||${trimmedMotif}`
+      : trimmedMotif;
+
     const { error } = await supabase
       .from('appointments')
-      .update({ date_heure: newIso })
+      .update({
+        date_heure: newIso,
+        notes_seance: dbNotes,
+        therapist_id: null,
+      })
       .eq('id', appointmentToEdit.id);
+
     setEditAppLoading(false);
     if (!error) {
       setAppointments(prev =>
-        prev.map(a => (a.id === appointmentToEdit.id ? { ...a, date_heure: newIso } : a))
+        prev.map(a =>
+          a.id === appointmentToEdit.id
+            ? {
+                ...a,
+                date_heure: newIso,
+                notes_seance: trimmedMotif,
+                therapist_id: resolvedThId,
+              }
+            : a
+        )
       );
       setIsEditAppointmentModalOpen(false);
       setAppointmentToEdit(null);
@@ -2170,12 +2204,23 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                       const displayNote = String(app.notes_seance || '').replace(/^\|\|TH_ID:[a-f0-9-]+\|\|/i, '').trim();
                       return (
                         <div key={app.id} className="group relative bg-white p-4 rounded-xl border border-slate-100 hover:border-primary-100 hover:shadow-md hover:shadow-primary-500/5 transition-all">
-                          <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center justify-between gap-2 mb-2">
                             <div className="flex items-center gap-2">
                               <span className="w-2 h-2 rounded-full bg-primary-500" />
                               <span className="text-sm font-bold text-slate-900">Séance du {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR')}</span>
                             </div>
-                            <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md">{parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => openEditAppointmentModal(app)}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold text-primary-600 hover:bg-primary-50 transition-colors cursor-pointer"
+                                title="Modifier le motif ou la note de cette séance"
+                              >
+                                <Edit2 className="h-3 w-3" />
+                                Modifier
+                              </button>
+                              <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md">{parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
                           </div>
                           <p className="text-sm text-slate-600 leading-relaxed italic">"{displayNote || 'Séance enregistrée'}"</p>
                         </div>
@@ -2400,6 +2445,7 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                   <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-200">
                     <tr>
                       <th className="px-6 py-4 font-medium">Date & Heure</th>
+                      <th className="px-6 py-4 font-medium">Motif / Soin</th>
                       <th className="px-6 py-4 font-medium">Durée</th>
                       <th className="px-6 py-4 font-medium">Statut</th>
                       <th className="px-6 py-4 font-medium text-right">Actions</th>
@@ -2408,52 +2454,78 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
                   <tbody className="divide-y divide-slate-100">
                     {appointments.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
+                        <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
                           Aucun rendez-vous trouvé.
                         </td>
                       </tr>
                     ) : (
-                      appointments.map((app) => (
-                        <tr key={app.id} className="bg-white hover:bg-slate-50 transition-colors">
-                          <td className="px-6 py-4 font-medium text-slate-900">
-                            {parseClinicDate(app.date_heure).toLocaleString('fr-FR', {
-                              dateStyle: 'long',
-                              timeStyle: 'short'
-                            })}
-                          </td>
-                          <td className="px-6 py-4 text-slate-600">
-                            {app.duree || 30} min
-                          </td>
-                          <td className="px-6 py-4">
-                            <Badge variant={app.statut === 'Effectué' ? 'success' : app.statut === 'Annulé' ? 'outline' : 'default'}>
-                              {app.statut || 'Confirmé'}
-                            </Badge>
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
+                      appointments.map((app) => {
+                        const cleanMotif = String(app.notes_seance || '')
+                          .replace(/^\|\|TH_ID:[a-f0-9-]+\|\|/i, '')
+                          .trim();
+                        return (
+                          <tr key={app.id} className="bg-white hover:bg-slate-50 transition-colors">
+                            <td className="px-6 py-4 font-medium text-slate-900">
+                              {parseClinicDate(app.date_heure).toLocaleString('fr-FR', {
+                                dateStyle: 'long',
+                                timeStyle: 'short'
+                              })}
+                            </td>
+                            <td className="px-6 py-4">
+                              <button
+                                type="button"
                                 onClick={() => openEditAppointmentModal(app)}
-                                className="text-primary-600 hover:text-primary-700 hover:bg-primary-50 gap-1 text-xs font-semibold"
-                                title="Modifier l'heure ou la date"
+                                title="Cliquer pour modifier le motif de cette séance"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-50 hover:bg-primary-50 border border-slate-200 hover:border-primary-200 text-xs font-semibold text-slate-800 hover:text-primary-700 transition-colors cursor-pointer text-left"
                               >
-                                <Clock className="h-3.5 w-3.5" />
-                                Modifier l'heure
-                              </Button>
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                onClick={() => confirmDeleteAppointment(app.id)}
-                                className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
-                                title="Supprimer la séance"
+                                <span>{cleanMotif || 'Non précisé'}</span>
+                                <Edit2 className="h-3 w-3 opacity-60 shrink-0" />
+                              </button>
+                            </td>
+                            <td className="px-6 py-4 text-slate-600">
+                              {app.duree || 30} min
+                            </td>
+                            <td className="px-6 py-4">
+                              <Badge
+                                variant={
+                                  app.statut === 'Effectué'
+                                    ? 'success'
+                                    : app.statut === 'Annulé'
+                                    ? 'outline'
+                                    : 'default'
+                                }
                               >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
+                                {app.statut === 'Impayé'
+                                  ? 'Réalisé (À régler)'
+                                  : app.statut || 'Confirmé'}
+                              </Badge>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <div className="flex items-center justify-end gap-1">
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm" 
+                                  onClick={() => openEditAppointmentModal(app)}
+                                  className="text-primary-600 hover:text-primary-700 hover:bg-primary-50 gap-1 text-xs font-semibold"
+                                  title="Modifier le motif, le praticien ou l'horaire de la séance"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                  Modifier la séance
+                                </Button>
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm" 
+                                  onClick={() => confirmDeleteAppointment(app.id)}
+                                  className="text-rose-500 hover:text-rose-700 hover:bg-rose-50"
+                                  title="Supprimer la séance"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -3385,35 +3457,60 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
           <div className="space-y-2 relative">
             <label className="text-sm font-medium text-slate-700">Motif de la séance</label>
-            <input
-              type="text"
-              value={newAppointmentMotif}
-              onChange={(e) => {
-                setNewAppointmentMotif(e.target.value);
-                setShowNewMotifDropdown(true);
-              }}
-              onFocus={() => setShowNewMotifDropdown(true)}
-              onBlur={() => setTimeout(() => setShowNewMotifDropdown(false), 200)}
-              placeholder="Sélectionner ou écrire un motif..."
-              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-            />
-            {showNewMotifDropdown && (
-              <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                {motifs.filter(m => m.toLowerCase().includes(newAppointmentMotif.toLowerCase())).map(m => (
-                  <div 
-                    key={m} 
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      setNewAppointmentMotif(m);
-                      setShowNewMotifDropdown(false);
-                    }}
-                    className="p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 border-b border-slate-50 last:border-0"
-                  >
-                    {m}
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="relative">
+              <input
+                type="text"
+                value={newAppointmentMotif}
+                onChange={(e) => {
+                  setNewAppointmentMotif(e.target.value);
+                  setShowNewMotifDropdown(true);
+                }}
+                onFocus={() => setShowNewMotifDropdown(true)}
+                onBlur={() => setTimeout(() => setShowNewMotifDropdown(false), 200)}
+                placeholder="Sélectionner ou écrire un motif..."
+                className="w-full p-2 pr-8 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+              {newAppointmentMotif && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setNewAppointmentMotif('');
+                    setShowNewMotifDropdown(true);
+                  }}
+                  className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            {showNewMotifDropdown && (() => {
+              const trimmed = newAppointmentMotif.trim().toLowerCase();
+              const isExactMatch = motifs.some(m => m.toLowerCase() === trimmed);
+              const displayedMotifs =
+                !trimmed || isExactMatch
+                  ? motifs
+                  : motifs.filter(m => m.toLowerCase().includes(trimmed));
+              return displayedMotifs.length > 0 ? (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                  {displayedMotifs.map(m => (
+                    <div 
+                      key={m} 
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setNewAppointmentMotif(m);
+                        setShowNewMotifDropdown(false);
+                      }}
+                      className={`p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium border-b border-slate-50 last:border-0 ${
+                        m.toLowerCase() === trimmed ? 'bg-primary-50/60 text-primary-700 font-bold' : 'text-slate-700'
+                      }`}
+                    >
+                      {m}
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
           </div>
 
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
@@ -3943,13 +4040,134 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
         </form>
       </Modal>
 
-      {/* Modal Modification Date / Heure de Rendez-vous */}
+      {/* Modal Modification Séance (Motif, Praticien, Date & Heure — y compris séances déjà réalisées) */}
       <Modal
         isOpen={isEditAppointmentModalOpen}
         onClose={() => setIsEditAppointmentModalOpen(false)}
-        title="Modifier la date et l'heure du rendez-vous"
+        title="Modifier la séance (motif, praticien, date & heure)"
       >
         <form onSubmit={handleSaveAppointmentTime} className="space-y-4">
+          {appointmentToEdit &&
+            (appointmentToEdit.statut === 'Effectué' || appointmentToEdit.statut === 'Impayé') && (
+              <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-800 flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                <span>
+                  Séance déjà réalisée ({appointmentToEdit.statut === 'Effectué' ? 'réglée' : 'à régler'}). Vous pouvez librement modifier son motif ou son horaire sans impacter la facturation.
+                </span>
+              </div>
+            )}
+
+          <div className="space-y-1.5 relative">
+            <label className="text-sm font-medium text-slate-700">
+              Motif / Acte thérapeutique de la séance
+            </label>
+            <div className="relative">
+              <input
+                type="text"
+                required
+                value={editAppMotif}
+                onChange={(e) => {
+                  setEditAppMotif(e.target.value);
+                  setShowEditAppMotifDropdown(true);
+                }}
+                onFocus={() => setShowEditAppMotifDropdown(true)}
+                onBlur={() => setTimeout(() => setShowEditAppMotifDropdown(false), 200)}
+                placeholder="Ex: Réathlétisation, Tecar thérapie..."
+                className="w-full p-2.5 pr-9 border border-slate-200 rounded-lg text-sm font-bold text-slate-900 focus:ring-2 focus:ring-primary-500 outline-none"
+              />
+              {editAppMotif && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setEditAppMotif('');
+                    setShowEditAppMotifDropdown(true);
+                  }}
+                  title="Effacer pour afficher tous les motifs"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            {showEditAppMotifDropdown && (() => {
+              const trimmed = editAppMotif.trim().toLowerCase();
+              const isExactMatch = motifs.some(m => m.toLowerCase() === trimmed);
+              const displayedMotifs =
+                !trimmed || isExactMatch
+                  ? motifs
+                  : motifs.filter(m => m.toLowerCase().includes(trimmed));
+              return displayedMotifs.length > 0 ? (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                  {displayedMotifs.map(m => (
+                    <div
+                      key={m}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setEditAppMotif(m);
+                        setShowEditAppMotifDropdown(false);
+                      }}
+                      className={`p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium border-b border-slate-50 last:border-0 ${
+                        m.toLowerCase() === trimmed
+                          ? 'bg-primary-50/60 text-primary-700 font-bold'
+                          : 'text-slate-700'
+                      }`}
+                    >
+                      {m}
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
+
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {[
+                'Kinésithérapie classique',
+                'Tecar thérapie',
+                'Réathlétisation',
+                'Thérapie manuelle',
+                'Onde de choc',
+                'Cupping thérapie',
+                'Récupération',
+                'Séance de bilan',
+                'Séance de Suivi',
+              ].map((quickMotif) => {
+                const active = editAppMotif.trim().toLowerCase() === quickMotif.toLowerCase();
+                return (
+                  <button
+                    key={quickMotif}
+                    type="button"
+                    onClick={() => {
+                      setEditAppMotif(quickMotif);
+                      setShowEditAppMotifDropdown(false);
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-xs font-semibold border transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-primary-600 text-white border-primary-600'
+                        : 'bg-slate-50 hover:bg-primary-50 text-slate-600 hover:text-primary-700 border-slate-200'
+                    }`}
+                  >
+                    {quickMotif}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-slate-700">Praticien (optionnel)</label>
+            <select
+              value={editAppTherapist}
+              onChange={(e) => setEditAppTherapist(e.target.value)}
+              className="w-full p-2.5 border border-slate-200 rounded-lg bg-white text-sm text-slate-900 focus:ring-2 focus:ring-primary-500 outline-none"
+            >
+              <option value="">Non assigné</option>
+              {therapists.map(t => (
+                <option key={t.id} value={t.id}>{t.prenom} {t.nom}</option>
+              ))}
+            </select>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-slate-700">Date de la séance</label>
@@ -3972,12 +4190,13 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
               />
             </div>
           </div>
-          <div className="pt-3 flex justify-end gap-3">
+
+          <div className="pt-3 flex justify-end gap-3 border-t border-slate-100">
             <Button type="button" variant="outline" onClick={() => setIsEditAppointmentModalOpen(false)}>
               Annuler
             </Button>
             <Button type="submit" disabled={editAppLoading}>
-              {editAppLoading ? 'Enregistrement...' : 'Enregistrer la nouvelle heure'}
+              {editAppLoading ? 'Enregistrement...' : 'Enregistrer les modifications'}
             </Button>
           </div>
         </form>

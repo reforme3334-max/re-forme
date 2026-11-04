@@ -26,6 +26,7 @@ import {
   Edit2,
   Plus,
   FolderOpen,
+  X,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase, clearStoredAuthSession } from '../lib/supabaseClient';
@@ -97,6 +98,23 @@ const STANDARD_MOTIFS_LOWER = new Set(
     'clinique chiekhe essaadi agadir',
   ].map((s) => s.toLowerCase())
 );
+
+const DEFAULT_CLUB_MOTIFS = [
+  'Kinésithérapie classique',
+  'Tecar thérapie',
+  'Réathlétisation',
+  'Thérapie manuelle',
+  'Onde de choc',
+  'Cupping thérapie',
+  'Récupération',
+  'Kiné-respiratoire',
+  'Rééducation vestibulaire',
+  'Séance de bilan',
+  'Séance de contrôle',
+  'Consultation nutritionnelle',
+  'Séance à domicile',
+  'Séance de Suivi',
+];
 
 export interface TreatmentBreakdownItem {
   motif: string;
@@ -353,6 +371,15 @@ export function ClubPortal() {
   const [sessionsEditSaving, setSessionsEditSaving] = useState(false);
   const [sessionsEditError, setSessionsEditError] = useState<string>('');
 
+  // Staff-only Quick Edit Session Motif Modal (`isStaffPreview` only — works on completed sessions too)
+  const [clubMotifs, setClubMotifs] = useState<string[]>(DEFAULT_CLUB_MOTIFS);
+  const [apptForMotifEdit, setApptForMotifEdit] = useState<any | null>(null);
+  const [motifEditValue, setMotifEditValue] = useState<string>('');
+  const [showClubMotifDropdown, setShowClubMotifDropdown] = useState<boolean>(false);
+  const [applyMotifToSameOldMotif, setApplyMotifToSameOldMotif] = useState<boolean>(false);
+  const [motifEditSaving, setMotifEditSaving] = useState<boolean>(false);
+  const [motifEditError, setMotifEditError] = useState<string>('');
+
   useEffect(() => {
     try {
       const savedReturn = sessionStorage.getItem('reforme_club_return_route');
@@ -445,10 +472,20 @@ export function ClubPortal() {
       setCustomInvoiceRefs(customRefsCfg);
 
       const motifsSet = new Set<string>(STANDARD_MOTIFS_LOWER);
+      const mergedMotifLabels = [...DEFAULT_CLUB_MOTIFS];
       for (const m of motifsRes.data || []) {
-        if (m?.nom) motifsSet.add(String(m.nom).trim().toLowerCase());
+        if (m?.nom) {
+          const cleanLabel = String(m.nom).trim();
+          if (cleanLabel) {
+            motifsSet.add(cleanLabel.toLowerCase());
+            if (!mergedMotifLabels.some((lbl) => lbl.toLowerCase() === cleanLabel.toLowerCase())) {
+              mergedMotifLabels.push(cleanLabel);
+            }
+          }
+        }
       }
       setKnownMotifsLower(motifsSet);
+      setClubMotifs(mergedMotifLabels);
 
       const thMap = new Map<string, string>();
       for (const th of therapistsRes.data || []) {
@@ -1107,6 +1144,78 @@ export function ClubPortal() {
       );
     } finally {
       setSessionsEditSaving(false);
+    }
+  };
+
+  const openStaffEditApptMotif = (appt: any, e?: React.MouseEvent) => {
+    if (!isStaffPreview || !appt) return;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setApptForMotifEdit(appt);
+    setMotifEditValue(String(appt.notes_seance || 'Séance de Suivi').trim());
+    setShowClubMotifDropdown(false);
+    setApplyMotifToSameOldMotif(false);
+    setMotifEditError('');
+  };
+
+  const handleSaveStaffApptMotif = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isStaffPreview || !apptForMotifEdit) return;
+
+    const trimmed = motifEditValue.trim() || 'Séance de Suivi';
+    setMotifEditSaving(true);
+    setMotifEditError('');
+
+    try {
+      // Ensure custom motif exists in seance_motifs so future sessions and ClubPortal recognize it
+      if (!clubMotifs.some((m) => m.toLowerCase() === trimmed.toLowerCase())) {
+        await supabase.from('seance_motifs').insert([{ nom: trimmed }]);
+        setClubMotifs((prev) => [...prev, trimmed]);
+      }
+      setKnownMotifsLower((prev) => {
+        const next = new Set(prev);
+        next.add(trimmed.toLowerCase());
+        return next;
+      });
+
+      const oldMotifClean = String(apptForMotifEdit.notes_seance || '').trim();
+      const targetAppts =
+        applyMotifToSameOldMotif && selectedPlayer
+          ? selectedPlayer.appointments.filter(
+              (a) => String(a.notes_seance || '').trim() === oldMotifClean
+            )
+          : [apptForMotifEdit];
+
+      const effectiveTargets = targetAppts.length > 0 ? targetAppts : [apptForMotifEdit];
+
+      for (const target of effectiveTargets) {
+        const dbNotes = target.therapist_id
+          ? `||TH_ID:${target.therapist_id}||${trimmed}`
+          : trimmed;
+
+        const { error: updErr } = await supabase
+          .from('appointments')
+          .update({
+            notes_seance: dbNotes,
+            therapist_id: null,
+          })
+          .eq('id', target.id);
+
+        if (updErr) throw updErr;
+      }
+
+      const updatedIds = new Set(effectiveTargets.map((t) => t.id));
+      setClubAppointments((prev) =>
+        prev.map((a) => (updatedIds.has(a.id) ? { ...a, notes_seance: trimmed } : a))
+      );
+
+      setApptForMotifEdit(null);
+    } catch (err: any) {
+      setMotifEditError(err.message || 'Impossible de modifier le motif de la séance.');
+    } finally {
+      setMotifEditSaving(false);
     }
   };
 
@@ -2397,9 +2506,22 @@ export function ClubPortal() {
                                   {appt.notes_seance || 'Séance de kinésithérapie'}
                                 </p>
                               </div>
-                              <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
-                                Réalisée
-                              </span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {isStaffPreview && (
+                                  <button
+                                    type="button"
+                                    onClick={(ev) => openStaffEditApptMotif(appt, ev)}
+                                    title="Modifier le motif de cette séance"
+                                    className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-colors cursor-pointer"
+                                  >
+                                    <Edit2 className="h-3 w-3" />
+                                    Modifier motif
+                                  </button>
+                                )}
+                                <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+                                  Réalisée
+                                </span>
+                              </div>
                             </div>
                           );
                         })}
@@ -2460,20 +2582,31 @@ export function ClubPortal() {
                                 minute: '2-digit',
                               })}
                             </div>
-                            {appt.notes_seance && (
-                              <p className="text-indigo-700 font-semibold mt-0.5">
-                                {appt.notes_seance}
-                              </p>
-                            )}
+                            <p className="text-indigo-700 font-semibold mt-0.5">
+                              {appt.notes_seance || 'Séance de Suivi'}
+                            </p>
                             {thName && (
                               <p className="text-slate-500 mt-0.5">Praticien : {thName}</p>
                             )}
                           </div>
-                          <span
-                            className={`self-start sm:self-center px-2.5 py-0.5 rounded font-bold shrink-0 ${statusBadgeClass}`}
-                          >
-                            {statusBadgeLabel}
-                          </span>
+                          <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
+                            {isStaffPreview && (
+                              <button
+                                type="button"
+                                onClick={(ev) => openStaffEditApptMotif(appt, ev)}
+                                title="Modifier le motif de cette séance"
+                                className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold transition-colors cursor-pointer"
+                              >
+                                <Edit2 className="h-3 w-3" />
+                                Modifier motif
+                              </button>
+                            )}
+                            <span
+                              className={`px-2.5 py-0.5 rounded font-bold shrink-0 ${statusBadgeClass}`}
+                            >
+                              {statusBadgeLabel}
+                            </span>
+                          </div>
                         </div>
                       );
                     })}
@@ -2754,6 +2887,191 @@ export function ClubPortal() {
                 className="bg-indigo-600 hover:bg-indigo-700 text-white"
               >
                 {sessionsEditSaving ? 'Enregistrement...' : 'Enregistrer'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* Staff-only Modal: Edit Session Motif (even if already completed/settled) */}
+      <Modal
+        isOpen={Boolean(isStaffPreview && apptForMotifEdit)}
+        onClose={() => {
+          if (!motifEditSaving) setApptForMotifEdit(null);
+        }}
+        title="Modifier le motif de la séance"
+      >
+        {apptForMotifEdit && (
+          <form onSubmit={handleSaveStaffApptMotif} className="space-y-4">
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-900">
+                  {selectedPlayer?.fullName || 'Joueur'}
+                </span>
+                <span className="font-semibold text-slate-600 tabular-nums">
+                  {parseClinicDate(apptForMotifEdit.date_heure).toLocaleDateString('fr-FR')} à{' '}
+                  {parseClinicDate(apptForMotifEdit.date_heure).toLocaleTimeString('fr-FR', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+              </div>
+              <p className="text-slate-600">
+                Motif actuel :{' '}
+                <strong className="text-indigo-700">
+                  {apptForMotifEdit.notes_seance || 'Séance de Suivi'}
+                </strong>
+              </p>
+              {isPerformedSessionStatus(apptForMotifEdit.statut) && (
+                <p className="text-[11px] text-emerald-700 font-medium pt-0.5">
+                  Séance déjà réalisée : la modification du motif met à jour le suivi des soins sans modifier la facturation.
+                </p>
+              )}
+            </div>
+
+            {motifEditError && (
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">
+                {motifEditError}
+              </div>
+            )}
+
+            <div className="relative">
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                Nouveau motif / acte réalisé
+              </label>
+              <div className="relative flex items-center">
+                <input
+                  type="text"
+                  required
+                  value={motifEditValue}
+                  onChange={(ev) => {
+                    setMotifEditValue(ev.target.value);
+                    setShowClubMotifDropdown(true);
+                  }}
+                  onFocus={() => setShowClubMotifDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowClubMotifDropdown(false), 200)}
+                  placeholder="Choisir ou saisir un motif (ex: Réathlétisation, Tecar thérapie...)"
+                  className="w-full h-11 rounded-xl border border-slate-300 bg-white px-3.5 pr-9 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                {motifEditValue && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMotifEditValue('');
+                      setShowClubMotifDropdown(true);
+                    }}
+                    title="Effacer pour voir tous les motifs"
+                    className="absolute right-2.5 p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+
+              {showClubMotifDropdown && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                  {(() => {
+                    const trimmed = motifEditValue.trim().toLowerCase();
+                    const isExact = clubMotifs.some((m) => m.toLowerCase() === trimmed);
+                    const list =
+                      !trimmed || isExact
+                        ? clubMotifs
+                        : clubMotifs.filter((m) => m.toLowerCase().includes(trimmed));
+                    return list.map((m) => (
+                      <div
+                        key={m}
+                        onMouseDown={(ev) => {
+                          ev.preventDefault();
+                          setMotifEditValue(m);
+                          setShowClubMotifDropdown(false);
+                        }}
+                        className={`px-3.5 py-2 text-xs cursor-pointer hover:bg-indigo-50 hover:text-indigo-700 flex items-center justify-between ${
+                          m.toLowerCase() === trimmed
+                            ? 'bg-indigo-50/70 font-bold text-indigo-700'
+                            : 'text-slate-700 font-medium'
+                        }`}
+                      >
+                        <span>{m}</span>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
+
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {[
+                  'Kinésithérapie classique',
+                  'Tecar thérapie',
+                  'Réathlétisation',
+                  'Thérapie manuelle',
+                  'Onde de choc',
+                  'Cupping thérapie',
+                  'Récupération',
+                  'Séance de bilan',
+                ].map((quickMotif) => {
+                  const active =
+                    motifEditValue.trim().toLowerCase() === quickMotif.toLowerCase();
+                  return (
+                    <button
+                      key={quickMotif}
+                      type="button"
+                      onClick={() => {
+                        setMotifEditValue(quickMotif);
+                        setShowClubMotifDropdown(false);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      {quickMotif}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {selectedPlayer &&
+              (() => {
+                const oldMotif = String(apptForMotifEdit.notes_seance || '').trim();
+                const matchingCount = selectedPlayer.appointments.filter(
+                  (a) => String(a.notes_seance || '').trim() === oldMotif
+                ).length;
+                if (matchingCount <= 1) return null;
+                return (
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-indigo-50/70 border border-indigo-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={applyMotifToSameOldMotif}
+                      onChange={(ev) => setApplyMotifToSameOldMotif(ev.target.checked)}
+                      className="mt-0.5 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span className="text-xs text-slate-700 leading-snug">
+                      Appliquer également ce nouveau motif aux{' '}
+                      <strong className="text-indigo-700">{matchingCount} séances</strong> de{' '}
+                      <strong>{selectedPlayer.fullName}</strong> ayant actuellement le motif{' '}
+                      <em>« {oldMotif || 'Séance de Suivi'} »</em>.
+                    </span>
+                  </label>
+                );
+              })()}
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={motifEditSaving}
+                onClick={() => setApptForMotifEdit(null)}
+              >
+                Annuler
+              </Button>
+              <Button
+                type="submit"
+                disabled={motifEditSaving}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                {motifEditSaving ? 'Enregistrement...' : 'Enregistrer le motif'}
               </Button>
             </div>
           </form>
