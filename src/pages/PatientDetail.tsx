@@ -242,14 +242,41 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
       fetchPatientDetails();
 
       const handleFocus = () => syncPainAndExercises();
+      const handlePainEvent = (e: any) => {
+        if (!e.detail?.patientId || e.detail.patientId === patientId) {
+          syncPainAndExercises();
+        }
+      };
+
       window.addEventListener('focus', handleFocus);
+      window.addEventListener('reforme_pain_updated', handlePainEvent);
+
       const timer = setInterval(() => {
         syncPainAndExercises();
-      }, 15000);
+      }, 10000);
+
+      // Realtime channel for immediate sync when patient rates EVA on their portal
+      const channel = supabase
+        .channel(`patient-pain-live-${patientId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'patients',
+            filter: `id=eq.${patientId}`
+          },
+          () => {
+            syncPainAndExercises();
+          }
+        )
+        .subscribe();
 
       return () => {
         window.removeEventListener('focus', handleFocus);
+        window.removeEventListener('reforme_pain_updated', handlePainEvent);
         clearInterval(timer);
+        supabase.removeChannel(channel);
       };
     }
   }, [patientId]);

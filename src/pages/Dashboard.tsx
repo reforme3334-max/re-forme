@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Users, Wallet, Activity, AlertCircle, Send, Calendar, Lock, Mail, AlertTriangle, Phone, Clock, Bell, ArrowRight, Check } from 'lucide-react';
+import { Users, Wallet, Activity, AlertCircle, Send, Calendar, Lock, Mail, AlertTriangle, Phone, Clock, Bell, ArrowRight, Check, HeartPulse } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { LineChart, Line, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { supabase } from '../lib/supabaseClient';
@@ -83,13 +83,22 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
 
   useEffect(() => {
     fetchData();
+
+    const handleFocus = () => fetchData();
+    const handlePainEvent = () => fetchData();
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('reforme_pain_updated', handlePainEvent);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('reforme_pain_updated', handlePainEvent);
+    };
   }, []);
 
   const fetchData = async () => {
     setLoading(true);
     try {
       const [patients, billings, rawAppointments, treatments, therapists] = await Promise.all([
-        fetchAllRows('patients', 'id, nom, prenom, created_at, pathologie, telephone, email, nombre_seances, has_access'),
+        fetchAllRows('patients', 'id, nom, prenom, created_at, pathologie, telephone, email, nombre_seances, has_access, follow_up_status, last_follow_up_date, notes_antecedents'),
         fetchAllRows('billings', 'id, patient_id, appointment_id, montant, statut, date_facturation, appointments(id, date_heure, statut)', { column: 'date_facturation', ascending: false }),
         fetchAllRows('appointments', 'id, patient_id, therapist_id, date_heure, statut, notes_seance', { column: 'date_heure', ascending: false }),
         fetchAllRows('treatments', '*'),
@@ -392,6 +401,46 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
       attendanceAlerts: attendanceAlerts
     };
   }, [rawData, filter, customDate, selectedMonths]);
+
+  const recentPainPatients = useMemo(() => {
+    return (rawData.patients || [])
+      .map((p) => {
+        let score: number | null = null;
+        let dateStr = '';
+        let noteStr = '';
+        const fus = p.follow_up_status;
+        if (fus && String(fus).startsWith('PAIN:')) {
+          const parts = String(fus).replace('PAIN:', '').split('|');
+          score = parseInt(parts[0], 10);
+          dateStr = parts[1] || '';
+          noteStr = parts[2] || '';
+        } else if (p.notes_antecedents) {
+          try {
+            const parsed = typeof p.notes_antecedents === 'string' ? JSON.parse(p.notes_antecedents) : p.notes_antecedents;
+            if (parsed && Array.isArray(parsed.painLogs) && parsed.painLogs.length > 0) {
+              score = Number(parsed.painLogs[0].score);
+              dateStr = parsed.painLogs[0].date?.split('T')[0] || '';
+              noteStr = parsed.painLogs[0].note || '';
+            }
+          } catch {}
+        }
+        if (score === null || isNaN(score)) return null;
+        return {
+          id: p.id,
+          nom: p.nom,
+          prenom: p.prenom,
+          telephone: p.telephone,
+          pathologie: p.pathologie,
+          score,
+          dateStr,
+          noteStr,
+          lastDate: p.last_follow_up_date || dateStr
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => new Date(b.lastDate || b.dateStr).getTime() - new Date(a.lastDate || a.dateStr).getTime())
+      .slice(0, 8);
+  }, [rawData.patients]);
 
   const [pieToggle, setPieToggle] = useState<'motifs' | 'pathologies'>('motifs');
   const [dashboardNotice, setDashboardNotice] = useState<string>('');
@@ -996,6 +1045,80 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
           </CardContent>
         </Card>
       </div>
+
+      {/* 6. Suivi des Évaluations de Douleur (EVA) reçues */}
+      {recentPainPatients.length > 0 && (
+        <div className="mt-4">
+          <Card className="border-0 shadow-sm border-t-4 border-t-rose-500">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base font-semibold flex items-center gap-2 text-slate-800">
+                  <HeartPulse className="h-5 w-5 text-rose-500" />
+                  Dernières Évaluations Douleur EVA reçues
+                </CardTitle>
+                <span className="text-[11px] font-bold text-slate-400">
+                  Synchronisé en direct
+                </span>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
+                {recentPainPatients.map((p: any) => {
+                  const todayStr = getMoroccoTodayStr();
+                  const isToday = p.dateStr === todayStr;
+                  const isYesterday = (() => {
+                    const y = new Date();
+                    y.setDate(y.getDate() - 1);
+                    return p.dateStr === y.toISOString().split('T')[0];
+                  })();
+                  const timeLabel = isToday ? "Aujourd'hui" : isYesterday ? "Hier" : p.dateStr ? new Date(p.dateStr).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) : '';
+                  const colorCls = p.score <= 2
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : p.score <= 4
+                    ? 'bg-lime-50 text-lime-700 border-lime-200'
+                    : p.score <= 6
+                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                    : p.score <= 8
+                    ? 'bg-orange-50 text-orange-700 border-orange-200'
+                    : 'bg-rose-50 text-rose-700 border-rose-200';
+
+                  return (
+                    <div
+                      key={p.id}
+                      onClick={() => onSelectPatient ? onSelectPatient(p.id) : openPatientDossier(p.id, 'dashboard')}
+                      className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 border border-slate-100 transition-all cursor-pointer flex flex-col justify-between gap-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-slate-900 truncate">
+                            {p.prenom} {p.nom}
+                          </p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {p.pathologie || p.telephone || 'Dossier patient'}
+                          </p>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-black border shrink-0 ${colorCls}`}>
+                          EVA {p.score}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-200/60">
+                        <span className="font-semibold text-slate-500">{timeLabel}</span>
+                        {p.noteStr ? (
+                          <span className="text-slate-600 truncate max-w-[130px] italic" title={p.noteStr}>
+                            « {p.noteStr} »
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">Voir dossier →</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

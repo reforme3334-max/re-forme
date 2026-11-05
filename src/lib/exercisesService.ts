@@ -284,7 +284,7 @@ export function parsePainLogsFromPatient(rawInput: any, patientId?: string): Pai
   // Append fallback follow_up_status logs last so full notes_antecedents logs take priority
   const allLogs = [...rawLogs, ...fallbackStatusLogs];
 
-  // Deduplicate by date (YYYY-MM-DD), keeping the entry with the most recent timestamp or longest note
+  // Deduplicate by date (YYYY-MM-DD), ensuring the most recent evaluation always wins
   const byDay = new Map<string, PainLogItem>();
   for (const item of allLogs) {
     if (!item || typeof item.score !== 'number' || isNaN(item.score) || !item.date) continue;
@@ -295,10 +295,19 @@ export function parsePainLogsFromPatient(rawInput: any, patientId?: string): Pai
     } else {
       const existingIsFallback = String(existing.id).startsWith('status-') || String(existing.id).startsWith('db-');
       const itemIsFallback = String(item.id).startsWith('status-') || String(item.id).startsWith('db-');
+
       if (existingIsFallback && !itemIsFallback) {
         byDay.set(dayKey, item);
-      } else if (!existingIsFallback && !itemIsFallback && (item.note?.length || 0) > (existing.note?.length || 0)) {
-        byDay.set(dayKey, item);
+      } else if (!existingIsFallback && itemIsFallback) {
+        // preserve real existing entry over fallback status
+      } else {
+        const itemTime = new Date(item.date).getTime() || 0;
+        const existingTime = new Date(existing.date).getTime() || 0;
+        if (itemTime > existingTime) {
+          byDay.set(dayKey, item);
+        } else if (itemTime === existingTime && (item.note?.length || 0) > (existing.note?.length || 0)) {
+          byDay.set(dayKey, item);
+        }
       }
     }
   }
@@ -469,17 +478,37 @@ export async function savePainLogsForPatient(
       return { success: false, error: error.message };
     }
 
-    // Sync across duplicate patient rows sharing the same phone number
-    const digitsOnly = (patientTelephone || '').replace(/\D/g, '');
-    const tail = digitsOnly.slice(-8);
-    if (tail.length === 8 && !/^0+$/.test(tail)) {
-      const { data: allPhones } = await supabase
+    // Sync across duplicate patient rows sharing the same phone number or matching name
+    try {
+      const { data: currentPatient } = await supabase
         .from('patients')
-        .select('id, telephone');
-      if (allPhones && allPhones.length > 0) {
-        const duplicateIds = allPhones
-          .filter(p => p.id !== patientId && (p.telephone || '').replace(/\D/g, '').endsWith(tail))
+        .select('id, nom, prenom, telephone')
+        .eq('id', patientId)
+        .maybeSingle();
+
+      const phoneToUse = patientTelephone || currentPatient?.telephone || '';
+      const digitsOnly = phoneToUse.replace(/\D/g, '');
+      const tail = digitsOnly.slice(-8);
+      const hasValidTail = tail.length === 8 && !/^0+$/.test(tail);
+      const normName = (v: string) => (v || '').trim().toLowerCase();
+      const pNom = normName(currentPatient?.nom || '');
+      const pPrenom = normName(currentPatient?.prenom || '');
+
+      const { data: allPatients } = await supabase
+        .from('patients')
+        .select('id, nom, prenom, telephone');
+
+      if (allPatients && allPatients.length > 0) {
+        const duplicateIds = allPatients
+          .filter(p => {
+            if (p.id === patientId) return false;
+            const pTail = (p.telephone || '').replace(/\D/g, '').slice(-8);
+            const phoneMatch = hasValidTail && pTail.length === 8 && pTail === tail;
+            const nameMatch = pNom && pPrenom && normName(p.nom) === pNom && normName(p.prenom) === pPrenom;
+            return phoneMatch || nameMatch;
+          })
           .map(p => p.id);
+
         if (duplicateIds.length > 0) {
           await supabase
             .from('patients')
@@ -487,6 +516,16 @@ export async function savePainLogsForPatient(
             .in('id', duplicateIds);
         }
       }
+    } catch (e) {
+      console.warn('Error during duplicate rows pain sync:', e);
+    }
+
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('reforme_pain_updated', {
+          detail: { patientId, score: latest?.score, date: latest?.date, note: latest?.note }
+        }));
+      } catch {}
     }
 
     return { success: true };

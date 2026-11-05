@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase, supabaseUrl, supabaseAnonKey } from '@/lib/supabaseClient';
 import { fetchAllRows } from '@/lib/financeUtils';
-import { getMoroccoNow, parseClinicDate } from '@/lib/timeUtils';
+import { getMoroccoNow, getMoroccoTodayStr, parseClinicDate } from '@/lib/timeUtils';
 import { normalizePatientPhone, provisionOrResetPatientAccess } from '@/lib/patientAuthUtils';
 import {
   ORGANISMES_MUTUELLE,
@@ -249,6 +249,32 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
         setCanEditSessionCount(canManageSessionCounts(profile?.role, session.user.email));
       }
     });
+
+    const handleFocus = () => fetchPatients();
+    const handlePainEvent = () => fetchPatients();
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('reforme_pain_updated', handlePainEvent);
+
+    const channel = supabase
+      .channel('patient-manager-live-pain')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'patients'
+        },
+        () => {
+          fetchPatients();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('reforme_pain_updated', handlePainEvent);
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const fetchPatients = async () => {
@@ -257,7 +283,7 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
 
     try {
       const patientColumns =
-        'id, nom, prenom, telephone, email, date_naissance, cin, adresse, pathologie, nombre_seances, atcd, forfait_seances, has_access, last_follow_up_date, follow_up_status, created_at';
+        'id, nom, prenom, telephone, email, date_naissance, cin, adresse, pathologie, nombre_seances, atcd, forfait_seances, has_access, last_follow_up_date, follow_up_status, notes_antecedents, created_at';
 
       let { data: pData, error: fetchError } = await supabase
         .from('patients')
@@ -1760,37 +1786,63 @@ export function PatientManager({ onSelectPatient }: PatientManagerProps) {
                                 </span>
                               ) : null;
                             })()}
-                            {(patient as any).follow_up_status &&
-                              String((patient as any).follow_up_status).startsWith('PAIN:') &&
-                              (() => {
-                                const parts = String((patient as any).follow_up_status)
-                                  .replace('PAIN:', '')
-                                  .split('|');
-                                const score = parseInt(parts[0], 10);
-                                const dateStr = parts[1] || '';
-                                const noteStr = parts[2] || '';
-                                if (isNaN(score)) return null;
-                                const colorCls =
-                                  score <= 2
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                    : score <= 4
-                                    ? 'bg-lime-50 text-lime-700 border-lime-200'
-                                    : score <= 6
-                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
-                                    : score <= 8
-                                    ? 'bg-orange-50 text-orange-700 border-orange-200'
-                                    : 'bg-rose-50 text-rose-700 border-rose-200';
-                                return (
-                                  <div
-                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${colorCls}`}
-                                    title={`Douleur EVA ${score}/10 (${dateStr})${
-                                      noteStr ? ' : ' + noteStr : ''
-                                    }`}
-                                  >
-                                    <span>EVA : {score}/10</span>
-                                  </div>
-                                );
-                              })()}
+                            {(() => {
+                              const fus = (patient as any).follow_up_status;
+                              let score: number | null = null;
+                              let dateStr = '';
+                              let noteStr = '';
+
+                              if (fus && String(fus).startsWith('PAIN:')) {
+                                const parts = String(fus).replace('PAIN:', '').split('|');
+                                score = parseInt(parts[0], 10);
+                                dateStr = parts[1] || '';
+                                noteStr = parts[2] || '';
+                              } else if ((patient as any).notes_antecedents) {
+                                try {
+                                  const parsed = typeof (patient as any).notes_antecedents === 'string'
+                                    ? JSON.parse((patient as any).notes_antecedents)
+                                    : (patient as any).notes_antecedents;
+                                  if (parsed && Array.isArray(parsed.painLogs) && parsed.painLogs.length > 0) {
+                                    score = Number(parsed.painLogs[0].score);
+                                    dateStr = parsed.painLogs[0].date?.split('T')[0] || '';
+                                    noteStr = parsed.painLogs[0].note || '';
+                                  }
+                                } catch {}
+                              }
+
+                              if (score === null || isNaN(score)) return null;
+
+                              const todayStr = getMoroccoTodayStr();
+                              const isToday = dateStr === todayStr;
+                              const isYesterday = (() => {
+                                const y = new Date();
+                                y.setDate(y.getDate() - 1);
+                                return dateStr === y.toISOString().split('T')[0];
+                              })();
+
+                              const timeLabel = isToday ? "Aujourd'hui" : isYesterday ? "Hier" : dateStr ? new Date(dateStr).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) : '';
+
+                              const colorCls =
+                                score <= 2
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : score <= 4
+                                  ? 'bg-lime-50 text-lime-700 border-lime-200'
+                                  : score <= 6
+                                  ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                  : score <= 8
+                                  ? 'bg-orange-50 text-orange-700 border-orange-200'
+                                  : 'bg-rose-50 text-rose-700 border-rose-200';
+
+                              return (
+                                <div
+                                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold border ${colorCls} shadow-2xs`}
+                                  title={`Douleur EVA : ${score}/10 (${dateStr})${noteStr ? ' — ' + noteStr : ''}`}
+                                >
+                                  <span>EVA : {score}/10</span>
+                                  {timeLabel && <span className="opacity-75 font-medium">({timeLabel})</span>}
+                                </div>
+                              );
+                            })()}
                           </div>
                         </td>
                         <td className="px-4 py-4 text-slate-500">

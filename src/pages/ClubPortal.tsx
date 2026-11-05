@@ -391,11 +391,14 @@ export function ClubPortal() {
     loadClubPortalData(false);
 
     const handleFocus = () => loadClubPortalData(true);
+    const handlePainEvent = () => loadClubPortalData(true);
     window.addEventListener('focus', handleFocus);
+    window.addEventListener('reforme_pain_updated', handlePainEvent);
     const interval = setInterval(() => loadClubPortalData(true), 30000);
 
     return () => {
       window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('reforme_pain_updated', handlePainEvent);
       clearInterval(interval);
     };
   }, []);

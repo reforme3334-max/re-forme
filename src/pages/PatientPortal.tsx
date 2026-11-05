@@ -419,10 +419,15 @@ export function PatientPortal() {
       setPainLogs(updated);
       setShowPainHistory(true);
 
-      await savePainLogsForPatient(patient.id, updated, patient.telephone);
+      const res = await savePainLogsForPatient(patient.id, updated, patient.telephone);
 
-      setPainSuccessMsg("Votre niveau de douleur a été enregistré et synchronisé avec le cabinet !");
-      setTimeout(() => setPainSuccessMsg(''), 4000);
+      if (res && res.success === false) {
+        console.warn('Sync cloud warning:', res.error);
+        setPainSuccessMsg("Évaluation enregistrée sur votre appareil (synchronisation cloud en cours...)");
+      } else {
+        setPainSuccessMsg("Votre niveau de douleur a été enregistré et synchronisé en direct avec le cabinet !");
+      }
+      setTimeout(() => setPainSuccessMsg(''), 4500);
     } catch (err: any) {
       console.error('Erreur sauvegarde douleur:', err);
     } finally {

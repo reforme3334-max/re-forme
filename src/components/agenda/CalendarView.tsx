@@ -35,7 +35,7 @@ interface Appointment {
   duree: number;
   statut: string;
   notes_seance: string; // Utilisé pour stocker "Bilan" ou "Séance"
-  patients?: { nom: string; prenom: string; telephone?: string; pathologie?: string; atcd?: string };
+  patients?: { nom: string; prenom: string; telephone?: string; pathologie?: string; atcd?: string; follow_up_status?: string };
   therapists?: { nom: string; prenom: string };
 }
 
@@ -188,6 +188,15 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
     fetchPatients();
     fetchTherapists();
     fetchMotifs();
+
+    const handleFocus = () => fetchAppointments();
+    const handlePainEvent = () => fetchAppointments();
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('reforme_pain_updated', handlePainEvent);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('reforme_pain_updated', handlePainEvent);
+    };
   }, [currentDate]);
 
   const handleOpenPatientDossier = (patientId?: string) => {
@@ -247,7 +256,7 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
       .lte('date_heure', endRange);
     
     if (!appError && appData) {
-      const { data: patData } = await supabase.from('patients').select('id, nom, prenom, telephone, pathologie, atcd');
+      const { data: patData } = await supabase.from('patients').select('id, nom, prenom, telephone, pathologie, atcd, follow_up_status');
       const { data: therData } = await supabase.from('therapists').select('id, nom, prenom');
       
       const patientsMap = new Map(patData ? patData.map(p => [p.id, p]) : []);
@@ -965,7 +974,28 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
                                         <FolderOpen className="h-3 w-3" />
                                       </button>
                                     )}
-                                    <div className={`flex shrink-0 gap-1 ${isNarrow ? 'hidden group-hover/app:flex' : ''}`}>
+                                    <div className={`flex shrink-0 items-center gap-1 ${isNarrow ? 'hidden group-hover/app:flex' : ''}`}>
+                                      {(() => {
+                                        const fus = app.patients?.follow_up_status;
+                                        if (!fus || !fus.startsWith('PAIN:')) return null;
+                                        const parts = fus.replace('PAIN:', '').split('|');
+                                        const score = parseInt(parts[0], 10);
+                                        if (isNaN(score)) return null;
+                                        const color =
+                                          score <= 2 ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
+                                          score <= 4 ? 'bg-lime-100 text-lime-800 border-lime-300' :
+                                          score <= 6 ? 'bg-amber-100 text-amber-800 border-amber-300' :
+                                          score <= 8 ? 'bg-orange-100 text-orange-800 border-orange-300' :
+                                          'bg-rose-100 text-rose-800 border-rose-300';
+                                        return (
+                                          <span
+                                            className={`inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-black border ${color}`}
+                                            title={`Score EVA : ${score}/10 (${parts[1] || ''})${parts[2] ? ' — ' + parts[2] : ''}`}
+                                          >
+                                            EVA {score}
+                                          </span>
+                                        );
+                                      })()}
                                       {app.statut === 'Effectué' && <CheckCircle className="h-3 w-3 text-emerald-500" />}
                                       {app.statut === 'Impayé' && <AlertCircle className="h-3 w-3 text-rose-500 animate-pulse" />}
                                       {isPending && <Bell className="h-3 w-3 text-amber-600 animate-bounce" />}
@@ -1359,6 +1389,31 @@ export function CalendarView({ onSelectPatient }: { onSelectPatient?: (id: strin
                       {selectedAppointment.patients.pathologie}
                     </p>
                   )}
+                  {selectedAppointment.patients?.follow_up_status?.startsWith('PAIN:') && (() => {
+                    const parts = selectedAppointment.patients.follow_up_status.replace('PAIN:', '').split('|');
+                    const score = parseInt(parts[0], 10);
+                    const dateStr = parts[1] || '';
+                    const noteStr = parts[2] || '';
+                    if (isNaN(score)) return null;
+                    const colorCls = score <= 2
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : score <= 4
+                      ? 'bg-lime-50 text-lime-700 border-lime-200'
+                      : score <= 6
+                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                      : score <= 8
+                      ? 'bg-orange-50 text-orange-700 border-orange-200'
+                      : 'bg-rose-50 text-rose-700 border-rose-200';
+                    return (
+                      <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold border ${colorCls}`}>
+                          Douleur EVA : {score} / 10
+                        </span>
+                        {dateStr && <span className="text-[11px] text-slate-400 font-medium">({new Date(dateStr).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })})</span>}
+                        {noteStr && <span className="text-xs text-slate-500 italic truncate max-w-xs">— « {noteStr} »</span>}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
               {selectedAppointment.patient_id && (
