@@ -245,8 +245,14 @@ export function Dashboard({ onSelectPatient }: { onSelectPatient?: (id: string) 
     // PieChart: Care types (Motifs)
     const actsMap = new Map();
     rawData.appointments.filter(a => isDateInRange(a.date_heure, dateRange)).forEach(a => {
-      const act = a.treatments?.motif || a.notes_seance || a.motif || 'Général';
-      actsMap.set(act, (actsMap.get(act) || 0) + 1);
+      const rawAct = String(a.treatments?.motif || a.notes_seance || a.motif || 'Général')
+        .replace(/^\|\|TH_ID:[a-f0-9-]+\|\|/i, '')
+        .trim();
+      const parts = rawAct.split(/\s*(?:\+|\/|&)\s*/).map(p => p.trim()).filter(Boolean);
+      const actsToCount = parts.length > 0 ? parts : ['Général'];
+      actsToCount.forEach(act => {
+        actsMap.set(act, (actsMap.get(act) || 0) + 1);
+      });
     });
     const actsChartData = Array.from(actsMap, ([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 8);
     if (actsChartData.length === 0) actsChartData.push({ name: 'Aucun soin', value: 1 });

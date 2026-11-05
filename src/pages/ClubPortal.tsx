@@ -64,11 +64,14 @@ import {
 } from '../lib/clubPortalUtils';
 import { openPatientDossier } from '../lib/patientNavigation';
 import { resolveOrBindCollaboratorSession, canManageSessionCounts } from '../lib/teamUtils';
+import { DualMotifSelector } from '../components/motifs/DualMotifSelector';
 
 const STANDARD_MOTIFS_LOWER = new Set(
   [
     'kinésithérapie classique',
     'kinesitherapie classique',
+    'échographie',
+    'echographie',
     'kiné-respiratoire',
     'kine-respiratoire',
     'réathlétisation',
@@ -253,6 +256,10 @@ function isDetailedClinicalObservation(
   if (/^\d+([.,]\d+)?$/.test(clean)) return false;
   const lower = clean.toLowerCase();
   if (STANDARD_MOTIFS_LOWER.has(lower) || knownMotifsLower.has(lower)) {
+    return false;
+  }
+  const parts = clean.split(/\s*(?:\+|\/|&)\s*/).map((p) => p.trim().toLowerCase());
+  if (parts.length > 1 && parts.every((p) => STANDARD_MOTIFS_LOWER.has(p) || knownMotifsLower.has(p))) {
     return false;
   }
   return clean.length >= 12;
@@ -1182,14 +1189,18 @@ export function ClubPortal() {
     setMotifEditError('');
 
     try {
-      // Ensure custom motif exists in seance_motifs so future sessions and ClubPortal recognize it
-      if (!clubMotifs.some((m) => m.toLowerCase() === trimmed.toLowerCase())) {
-        await supabase.from('seance_motifs').insert([{ nom: trimmed }]);
-        setClubMotifs((prev) => [...prev, trimmed]);
+      // Ensure each part exists in seance_motifs so future sessions and ClubPortal recognize it
+      const parts = trimmed.split(/\s*(?:\+|\/|&)\s*/).map((p) => p.trim()).filter(Boolean);
+      for (const part of parts) {
+        if (!clubMotifs.some((m) => m.toLowerCase() === part.toLowerCase())) {
+          await supabase.from('seance_motifs').insert([{ nom: part }]);
+          setClubMotifs((prev) => [...prev, part]);
+        }
       }
       setKnownMotifsLower((prev) => {
         const next = new Set(prev);
         next.add(trimmed.toLowerCase());
+        parts.forEach((p) => next.add(p.toLowerCase()));
         return next;
       });
 
@@ -2948,102 +2959,14 @@ export function ClubPortal() {
               </div>
             )}
 
-            <div className="relative">
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Nouveau motif / acte réalisé
-              </label>
-              <div className="relative flex items-center">
-                <input
-                  type="text"
-                  required
-                  value={motifEditValue}
-                  onChange={(ev) => {
-                    setMotifEditValue(ev.target.value);
-                    setShowClubMotifDropdown(true);
-                  }}
-                  onFocus={() => setShowClubMotifDropdown(true)}
-                  onBlur={() => setTimeout(() => setShowClubMotifDropdown(false), 200)}
-                  placeholder="Choisir ou saisir un motif (ex: Réathlétisation, Tecar thérapie...)"
-                  className="w-full h-11 rounded-xl border border-slate-300 bg-white px-3.5 pr-9 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-                {motifEditValue && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMotifEditValue('');
-                      setShowClubMotifDropdown(true);
-                    }}
-                    title="Effacer pour voir tous les motifs"
-                    className="absolute right-2.5 p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
-
-              {showClubMotifDropdown && (
-                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                  {(() => {
-                    const trimmed = motifEditValue.trim().toLowerCase();
-                    const isExact = clubMotifs.some((m) => m.toLowerCase() === trimmed);
-                    const list =
-                      !trimmed || isExact
-                        ? clubMotifs
-                        : clubMotifs.filter((m) => m.toLowerCase().includes(trimmed));
-                    return list.map((m) => (
-                      <div
-                        key={m}
-                        onMouseDown={(ev) => {
-                          ev.preventDefault();
-                          setMotifEditValue(m);
-                          setShowClubMotifDropdown(false);
-                        }}
-                        className={`px-3.5 py-2 text-xs cursor-pointer hover:bg-indigo-50 hover:text-indigo-700 flex items-center justify-between ${
-                          m.toLowerCase() === trimmed
-                            ? 'bg-indigo-50/70 font-bold text-indigo-700'
-                            : 'text-slate-700 font-medium'
-                        }`}
-                      >
-                        <span>{m}</span>
-                      </div>
-                    ));
-                  })()}
-                </div>
-              )}
-
-              <div className="mt-2.5 flex flex-wrap gap-1.5">
-                {[
-                  'Kinésithérapie classique',
-                  'Tecar thérapie',
-                  'Réathlétisation',
-                  'Thérapie manuelle',
-                  'Onde de choc',
-                  'Cupping thérapie',
-                  'Récupération',
-                  'Séance de bilan',
-                ].map((quickMotif) => {
-                  const active =
-                    motifEditValue.trim().toLowerCase() === quickMotif.toLowerCase();
-                  return (
-                    <button
-                      key={quickMotif}
-                      type="button"
-                      onClick={() => {
-                        setMotifEditValue(quickMotif);
-                        setShowClubMotifDropdown(false);
-                      }}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer ${
-                        active
-                          ? 'bg-indigo-600 text-white border-indigo-600'
-                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
-                      }`}
-                    >
-                      {quickMotif}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <DualMotifSelector
+              value={motifEditValue}
+              onChange={setMotifEditValue}
+              availableMotifs={clubMotifs}
+              themeColor="indigo"
+              label="Nouveau motif / acte(s) réalisé(s)"
+              placeholder="Sélectionner ou saisir jusqu’à 2 motifs..."
+            />
 
             {selectedPlayer &&
               (() => {

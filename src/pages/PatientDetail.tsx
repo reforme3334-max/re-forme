@@ -31,30 +31,15 @@ import {
   exportPatientReceiptPDF,
 } from '../lib/documentTemplates';
 import { DocumentTemplateEditor } from '../components/settings/DocumentTemplateEditor';
+import { DualMotifSelector } from '../components/motifs/DualMotifSelector';
+import { STANDARD_MOTIFS } from '../lib/motifUtils';
 
 interface PatientDetailProps {
   patientId?: string;
   returnRoute?: string;
 }
 
-const MOTIFS_SEANCE = [
-  'Kinésithérapie classique',
-  'Kiné-respiratoire',
-  'Réathlétisation',
-  'Cupping thérapie',
-  'Onde de choc',
-  'Tecar thérapie',
-  'Récupération',
-  'Rééducation vestibulaire',
-  'Séance de bilan',
-  'Consultation nutritionnelle',
-  'Séance de contrôle',
-  'Thérapie manuelle',
-  'Séance de Suivi',
-  'Séance à domicile',
-  'Clinique Taghzout',
-  'Clinique Chiekhe Essaadi Agadir'
-];
+const MOTIFS_SEANCE = STANDARD_MOTIFS;
 
 export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
   const [activeTab, setActiveTab] = useState('dossier');
@@ -470,10 +455,13 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
 
   const ensureMotifExists = async (motif: string) => {
     if (!motif) return;
-    if (!motifs.includes(motif)) {
-      const { error } = await supabase.from('seance_motifs').insert([{ nom: motif }]);
-      if (!error) {
-        setMotifs(prev => [...prev, motif]);
+    const parts = motif.split(/\s*(?:\+|\/|&)\s*/).map(p => p.trim()).filter(Boolean);
+    for (const part of parts) {
+      if (!motifs.some(m => m.toLowerCase() === part.toLowerCase())) {
+        const { error } = await supabase.from('seance_motifs').insert([{ nom: part }]);
+        if (!error) {
+          setMotifs(prev => [...prev, part]);
+        }
       }
     }
   };
@@ -3518,63 +3506,13 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
             </select>
           </div>
 
-          <div className="space-y-2 relative">
-            <label className="text-sm font-medium text-slate-700">Motif de la séance</label>
-            <div className="relative">
-              <input
-                type="text"
-                value={newAppointmentMotif}
-                onChange={(e) => {
-                  setNewAppointmentMotif(e.target.value);
-                  setShowNewMotifDropdown(true);
-                }}
-                onFocus={() => setShowNewMotifDropdown(true)}
-                onBlur={() => setTimeout(() => setShowNewMotifDropdown(false), 200)}
-                placeholder="Sélectionner ou écrire un motif..."
-                className="w-full p-2 pr-8 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-              />
-              {newAppointmentMotif && (
-                <button
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    setNewAppointmentMotif('');
-                    setShowNewMotifDropdown(true);
-                  }}
-                  className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-            {showNewMotifDropdown && (() => {
-              const trimmed = newAppointmentMotif.trim().toLowerCase();
-              const isExactMatch = motifs.some(m => m.toLowerCase() === trimmed);
-              const displayedMotifs =
-                !trimmed || isExactMatch
-                  ? motifs
-                  : motifs.filter(m => m.toLowerCase().includes(trimmed));
-              return displayedMotifs.length > 0 ? (
-                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                  {displayedMotifs.map(m => (
-                    <div 
-                      key={m} 
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        setNewAppointmentMotif(m);
-                        setShowNewMotifDropdown(false);
-                      }}
-                      className={`p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium border-b border-slate-50 last:border-0 ${
-                        m.toLowerCase() === trimmed ? 'bg-primary-50/60 text-primary-700 font-bold' : 'text-slate-700'
-                      }`}
-                    >
-                      {m}
-                    </div>
-                  ))}
-                </div>
-              ) : null;
-            })()}
-          </div>
+          <DualMotifSelector
+            value={newAppointmentMotif}
+            onChange={setNewAppointmentMotif}
+            availableMotifs={motifs}
+            label="Motif(s) de la séance"
+            placeholder="Sélectionner ou saisir jusqu’à 2 motifs..."
+          />
 
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
             <Button type="button" variant="outline" onClick={() => setIsNewAppointmentModalOpen(false)}>
@@ -4138,102 +4076,13 @@ export function PatientDetail({ patientId, returnRoute }: PatientDetailProps) {
               </div>
             )}
 
-          <div className="space-y-1.5 relative">
-            <label className="text-sm font-medium text-slate-700">
-              Motif / Acte thérapeutique de la séance
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                required
-                value={editAppMotif}
-                onChange={(e) => {
-                  setEditAppMotif(e.target.value);
-                  setShowEditAppMotifDropdown(true);
-                }}
-                onFocus={() => setShowEditAppMotifDropdown(true)}
-                onBlur={() => setTimeout(() => setShowEditAppMotifDropdown(false), 200)}
-                placeholder="Ex: Réathlétisation, Tecar thérapie..."
-                className="w-full p-2.5 pr-9 border border-slate-200 rounded-lg text-sm font-bold text-slate-900 focus:ring-2 focus:ring-primary-500 outline-none"
-              />
-              {editAppMotif && (
-                <button
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    setEditAppMotif('');
-                    setShowEditAppMotifDropdown(true);
-                  }}
-                  title="Effacer pour afficher tous les motifs"
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-            {showEditAppMotifDropdown && (() => {
-              const trimmed = editAppMotif.trim().toLowerCase();
-              const isExactMatch = motifs.some(m => m.toLowerCase() === trimmed);
-              const displayedMotifs =
-                !trimmed || isExactMatch
-                  ? motifs
-                  : motifs.filter(m => m.toLowerCase().includes(trimmed));
-              return displayedMotifs.length > 0 ? (
-                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                  {displayedMotifs.map(m => (
-                    <div
-                      key={m}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        setEditAppMotif(m);
-                        setShowEditAppMotifDropdown(false);
-                      }}
-                      className={`p-3 hover:bg-slate-50 cursor-pointer text-sm font-medium border-b border-slate-50 last:border-0 ${
-                        m.toLowerCase() === trimmed
-                          ? 'bg-primary-50/60 text-primary-700 font-bold'
-                          : 'text-slate-700'
-                      }`}
-                    >
-                      {m}
-                    </div>
-                  ))}
-                </div>
-              ) : null;
-            })()}
-
-            <div className="flex flex-wrap gap-1.5 pt-1">
-              {[
-                'Kinésithérapie classique',
-                'Tecar thérapie',
-                'Réathlétisation',
-                'Thérapie manuelle',
-                'Onde de choc',
-                'Cupping thérapie',
-                'Récupération',
-                'Séance de bilan',
-                'Séance de Suivi',
-              ].map((quickMotif) => {
-                const active = editAppMotif.trim().toLowerCase() === quickMotif.toLowerCase();
-                return (
-                  <button
-                    key={quickMotif}
-                    type="button"
-                    onClick={() => {
-                      setEditAppMotif(quickMotif);
-                      setShowEditAppMotifDropdown(false);
-                    }}
-                    className={`px-2 py-0.5 rounded-md text-xs font-semibold border transition-colors cursor-pointer ${
-                      active
-                        ? 'bg-primary-600 text-white border-primary-600'
-                        : 'bg-slate-50 hover:bg-primary-50 text-slate-600 hover:text-primary-700 border-slate-200'
-                    }`}
-                  >
-                    {quickMotif}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <DualMotifSelector
+            value={editAppMotif}
+            onChange={setEditAppMotif}
+            availableMotifs={motifs}
+            label="Motif / Acte thérapeutique de la séance"
+            placeholder="Sélectionner ou saisir jusqu’à 2 motifs..."
+          />
 
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-slate-700">Praticien (optionnel)</label>
