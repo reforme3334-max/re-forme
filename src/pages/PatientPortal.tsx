@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase, supabaseUrl, supabaseAnonKey, clearStoredAuthSession } from '../lib/supabaseClient';
-import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download, Camera, Upload, Trash2, Image as ImageIcon, Play, HeartPulse, ExternalLink, CheckCircle2, ChevronRight } from 'lucide-react';
+import { LogOut, AlertCircle, Calendar, Clock, CheckCircle, CreditCard, Activity, User, Key, FileText, Settings, Phone, MessageCircle, Plus, Download, Camera, Upload, Trash2, Image as ImageIcon, Play, HeartPulse, ExternalLink, CheckCircle2, ChevronRight, Trophy, ShieldCheck } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ReviewSection } from '../components/reviews/ReviewSection';
@@ -694,6 +694,10 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
   const unpaidPortalTotal = sumMoney(unpaidPortalBillings, b => b.montant);
   const unpaidAppointments = pastAppointments.filter(a => a.statut !== 'Effectué');
 
+  const mutuelleInfo = parsePatientMutuelle(patient);
+  const isClubPlayer = Boolean(mutuelleInfo.club && mutuelleInfo.club.trim());
+  const clubName = mutuelleInfo.club?.trim();
+
   return (
     <div className="min-h-screen bg-slate-50 pb-20 font-sans">
       {isStaffPreview && (
@@ -906,7 +910,7 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                 );
               })}
 
-              {(unpaidPortalBillings.length > 0 || unpaidAppointments.length > 0) && (
+              {!isClubPlayer && (unpaidPortalBillings.length > 0 || unpaidAppointments.length > 0) && (
                 <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4 flex items-start gap-3 shadow-sm">
                   <AlertCircle className="h-6 w-6 text-orange-500 flex-shrink-0 mt-0.5" />
                   <div>
@@ -920,6 +924,28 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                       en attente de règlement
                       {unpaidPortalTotal > 0 ? ` (${formatMoney(unpaidPortalTotal)} DH)` : ''}.
                     </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Bannière Joueur Conventionné */}
+              {isClubPlayer && (
+                <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-blue-50 border border-emerald-200/80 rounded-2xl p-4 flex items-center justify-between gap-3 shadow-xs">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center flex-shrink-0 font-bold shadow-xs">
+                      <Trophy className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider bg-emerald-100/90 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                        Club Partenaire Conventionné
+                      </span>
+                      <h3 className="font-black text-slate-900 text-sm mt-1">
+                        {clubName}
+                      </h3>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Prise en charge directe par convention du club — Aucun règlement requis au cabinet.
+                      </p>
+                    </div>
                   </div>
                 </div>
               )}
@@ -974,6 +1000,53 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                   <p className="text-sm font-medium text-slate-600">Aucune séance prévue prochainement.</p>
                 </div>
               ) : null}
+
+              {/* Autres rendez-vous à venir */}
+              {upcomingAppointments.length > 1 && (
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                      <Calendar className="h-3.5 w-3.5 text-blue-600" />
+                      Autres rendez-vous programmés ({upcomingAppointments.length - 1})
+                    </span>
+                    <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                      Confirmés
+                    </span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {upcomingAppointments.slice(1).map((appt) => (
+                      <div key={appt.id} className="py-2.5 first:pt-1 last:pb-1 flex items-center justify-between gap-3 text-xs">
+                        <div className="flex items-start gap-2.5">
+                          <div className="h-2 w-2 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                          <div>
+                            <p className="font-bold text-slate-900 capitalize">
+                              {parseClinicDate(appt.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à {parseClinicDate(appt.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              {appt.notes_seance?.replace(/\[DEMANDE.*?\]/g, '') || 'Séance de kinésithérapie'}
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setSelectedApptToReschedule(appt);
+                            setNewRescheduleDate('');
+                            setNewRescheduleTime('');
+                            setRescheduleMotif('');
+                            setRescheduleModalOpen(true);
+                          }}
+                          className="text-[11px] font-semibold text-slate-600 hover:text-purple-700 hover:bg-purple-50 h-7 px-2 rounded-lg"
+                        >
+                          Changer
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Suivi Quotidien de la Douleur (Échelle EVA 1 à 10) */}
@@ -1161,55 +1234,95 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
             </section>
 
 
-            {/* Suivi des Règlements */}
-            <section>
-              <h2 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2 px-1">
-                <CreditCard className="h-5 w-5 text-primary-500" />
-                Suivi des Règlements
-              </h2>
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden divide-y divide-slate-50">
-                {pastAppointments.length === 0 ? (
-                  <div className="p-6 text-center text-sm text-slate-500">Aucun historique disponible.</div>
-                ) : (
-                  pastAppointments.map(app => {
-                    const billing = billings.find(b => b.appointment_id === app.id);
-                    const isPaid = app.statut === 'Effectué' || (billing && isPaidBillingStatus(billing.statut));
-                    
-                    return (
+            {/* Suivi des Séances / Règlements */}
+            {isClubPlayer ? (
+              <section>
+                <div className="flex items-center justify-between mb-3 px-1">
+                  <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                    <Activity className="h-5 w-5 text-mint-600" />
+                    Historique de mes séances
+                  </h2>
+                  <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100 flex items-center gap-1">
+                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                    Convention {clubName}
+                  </span>
+                </div>
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden divide-y divide-slate-50">
+                  {pastAppointments.length === 0 ? (
+                    <div className="p-6 text-center text-sm text-slate-500">Aucune séance passée enregistrée.</div>
+                  ) : (
+                    pastAppointments.map(app => (
                       <div key={app.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-slate-50 transition-colors gap-3">
                         <div>
-                          <p className="text-sm font-semibold text-slate-900">
-                            {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })} à {parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                          <p className="text-sm font-bold text-slate-900 capitalize">
+                            {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })} à {parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                           </p>
-                          <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                            <Activity className="h-3 w-3" /> {app.notes_seance?.replace('\[DEMANDE EN LIGNE\]', '') || 'Séance de suivi'}
+                          <p className="text-xs text-slate-600 mt-1 flex items-center gap-1.5 font-medium">
+                            <Activity className="h-3.5 w-3.5 text-mint-500 flex-shrink-0" />
+                            {app.notes_seance?.replace(/\[DEMANDE.*?\]/g, '') || 'Séance de soins et rééducation'}
                           </p>
                         </div>
-                        <div className="flex items-center justify-between sm:flex-col sm:items-end gap-2">
-                          {isPaid ? (
-                            <div className="flex items-center gap-1.5 text-mint-700 bg-mint-50 px-3 py-1.5 rounded-full text-xs font-bold border border-mint-100">
-                              <CheckCircle className="h-3.5 w-3.5" /> Réglé{billing ? ` (${formatMoney(billing.montant)} DH)` : ''}
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1.5 text-orange-700 bg-orange-50 px-3 py-1.5 rounded-full text-xs font-bold border border-orange-100">
-                              <Clock className="h-3.5 w-3.5" /> En attente{billing ? ` (${formatMoney(billing.montant)} DH)` : ''}
-                            </div>
-                          )}
-                          {isPaid && billing && (
-                            <button 
-                              onClick={() => downloadReceipt(billing, app)}
-                              className="text-xs font-medium text-slate-500 hover:text-mint-600 flex items-center gap-1 bg-white border border-slate-200 px-2 py-1 rounded shadow-sm"
-                            >
-                              <Download className="h-3 w-3" /> Reçu ({formatMoney(billing.montant)} DH)
-                            </button>
-                          )}
+                        <div className="flex items-center">
+                          <div className="flex items-center gap-1.5 text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-full text-xs font-bold border border-emerald-100">
+                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                            Séance réalisée
+                          </div>
                         </div>
                       </div>
-                    );
-                  })
-                )}
-              </div>
-            </section>
+                    ))
+                  )}
+                </div>
+              </section>
+            ) : (
+              <section>
+                <h2 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2 px-1">
+                  <CreditCard className="h-5 w-5 text-primary-500" />
+                  Suivi des Règlements
+                </h2>
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden divide-y divide-slate-50">
+                  {pastAppointments.length === 0 ? (
+                    <div className="p-6 text-center text-sm text-slate-500">Aucun historique disponible.</div>
+                  ) : (
+                    pastAppointments.map(app => {
+                      const billing = billings.find(b => b.appointment_id === app.id);
+                      const isPaid = app.statut === 'Effectué' || (billing && isPaidBillingStatus(billing.statut));
+                      
+                      return (
+                        <div key={app.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-slate-50 transition-colors gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">
+                              {parseClinicDate(app.date_heure).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })} à {parseClinicDate(app.date_heure).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                              <Activity className="h-3 w-3" /> {app.notes_seance?.replace(/\[DEMANDE.*?\]/g, '') || 'Séance de suivi'}
+                            </p>
+                          </div>
+                          <div className="flex items-center justify-between sm:flex-col sm:items-end gap-2">
+                            {isPaid ? (
+                              <div className="flex items-center gap-1.5 text-mint-700 bg-mint-50 px-3 py-1.5 rounded-full text-xs font-bold border border-mint-100">
+                                <CheckCircle className="h-3.5 w-3.5" /> Réglé{billing ? ` (${formatMoney(billing.montant)} DH)` : ''}
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 text-orange-700 bg-orange-50 px-3 py-1.5 rounded-full text-xs font-bold border border-orange-100">
+                                <Clock className="h-3.5 w-3.5" /> En attente{billing ? ` (${formatMoney(billing.montant)} DH)` : ''}
+                              </div>
+                            )}
+                            {isPaid && billing && (
+                              <button 
+                                onClick={() => downloadReceipt(billing, app)}
+                                className="text-xs font-medium text-slate-500 hover:text-mint-600 flex items-center gap-1 bg-white border border-slate-200 px-2 py-1 rounded shadow-sm"
+                              >
+                                <Download className="h-3 w-3" /> Reçu ({formatMoney(billing.montant)} DH)
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </section>
+            )}
 
             {/* Section Avis */}
             <div className="pt-2">
@@ -1435,11 +1548,20 @@ const handleUpdateProfile = async (e: React.FormEvent) => {
                   <hr className="border-slate-50" />
                   <div>
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Dossier Médical</h3>
+                    {isClubPlayer && (
+                      <p className="text-sm text-slate-800 mb-1 flex items-center gap-2">
+                        <span className="font-medium text-slate-600">Club conventionné :</span>
+                        <span className="font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 text-xs inline-flex items-center gap-1">
+                          <Trophy className="h-3 w-3 text-emerald-600" />
+                          {clubName}
+                        </span>
+                      </p>
+                    )}
                     <p className="text-sm text-slate-800 mb-1">
                       <span className="font-medium text-slate-600">Pathologie :</span> {patient.pathologie || 'Non renseignée'}
                     </p>
                     <p className="text-sm text-slate-800">
-                      <span className="font-medium text-slate-600">Antécédents :</span> {parsePatientMutuelle(patient).cleanAtcd || 'Aucun antécédent particulier'}
+                      <span className="font-medium text-slate-600">Antécédents :</span> {mutuelleInfo.cleanAtcd || 'Aucun antécédent particulier'}
                     </p>
                   </div>
                 </div>
